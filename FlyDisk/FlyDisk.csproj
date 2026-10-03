@@ -1,0 +1,85 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 阶段二（2026-09-27）：单项目形态。
+       阶段一这里是"UI + Core + Service"三个项目加 IPC/SCM，形态换成 iSCSI 块设备后
+       不再需要双进程（盘符是 disk.sys 枚举的系统级磁盘，天生对所有会话可见），
+       于是 Core 与 Service 两个项目整体退役到 废\阶段一-IPC与SCM\（见 阶段二-iSCSI块设备形态.md §3.7.4）。 -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 程序名 FlyDisk：项目文件已改名，程序集/exe 名随之默认取 FlyDisk；这里把"产品名/标题"
+         也显式钉成 FlyDisk，供文件属性、崩溃提示等系统取用处显示。 -->
+    <AssemblyName>FlyDisk</AssemblyName>
+    <Product>FlyDisk</Product>
+    <AssemblyTitle>FlyDisk</AssemblyTitle>
+    <!-- 版本号（发布用）。约定：AssemblyVersion / FileVersion 只放纯数字（四段），
+         预发布标记只挂在 Version 上（它同时是「产品版本」InformationalVersion）——
+         于是 exe 属性里看到的是「0.1.0-beta」，而程序集绑定用的仍是 0.1.0.0。
+         首版 Beta，后续升版只改这三行即可。 -->
+    <Version>0.1.0-beta</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <!-- 未托管内存池（CacheService 的指针操作）与物理盘原始扇区读写（PhysicalDiskHandle）都需要 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- requireAdministrator：整盘脱机与独占打开物理盘都要求管理员 -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- exe 的静态图标（**编译期固定、不随主题**）：资源管理器里直接看 exe、以及被固定成
+         快捷方式且尚未运行过时，系统取的就是它。运行中的标题栏 / 任务栏 / 托盘走 AppIcon，
+         桌面快捷方式走 ShortcutIcon，两者都能跟随主题（见 深色主题.md）。
+         ⚠ 图标(icons\)与帮助文档(帮助文档.html)都随项目放在本目录内，**这里不要再出现 ..\ 上级引用**——
+         本目录要能单独拿出来编译。 -->
+    <ApplicationIcon>icons\icon-light.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 标题 / 副标题用的像素字体（Fusion Pixel 12px Proportional）**嵌进 exe**：
+         原先 Designer 里是按名字 new Font("Fusion Pixel 12px Proportional ", …)，那要求机器上装过它，
+         换台机器就静默退回默认字体。资源名用 LogicalName 钉死，免得随目录结构变（见 EmbeddedFont）。
+         字体文件就放在项目目录下，只被嵌入、不参与编译。 -->
+    <EmbeddedResource Include="fusion-pixel-12px-proportional-zh_hans.ttf">
+      <LogicalName>FlyDisk.fusion-pixel-12px-proportional-zh_hans.ttf</LogicalName>
+    </EmbeddedResource>
+
+    <!-- 语言字典（每种语言一份 `键 → 文字` 的 JSON）同样**嵌进 exe**，见 Localization\Locale.cs。
+         资源名钉死为 FlyDisk.<语言>.json，与文件所在目录无关。 -->
+    <EmbeddedResource Include="Localization\zh-CN.json">
+      <LogicalName>FlyDisk.zh-CN.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Localization\en-US.json">
+      <LogicalName>FlyDisk.en-US.json</LogicalName>
+    </EmbeddedResource>
+
+    <!-- 应用图标两枚（浅色 / 深色），同样**嵌进 exe**：运行时按系统主题挑一枚构造 Icon
+         （标题栏 / 任务栏 / 托盘，见 Theming\AppIcon.cs）；ShortcutIcon 还会把选中的那枚
+         落一份到数据目录，供桌面快捷方式引用（快捷方式只认"文件 + 索引"，取不到嵌入资源）。 -->
+    <EmbeddedResource Include="icons\icon-light.ico">
+      <LogicalName>FlyDisk.icon-light.ico</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="icons\icon-dark.ico">
+      <LogicalName>FlyDisk.icon-dark.ico</LogicalName>
+    </EmbeddedResource>
+
+    <!-- 帮助文档（单文件 HTML，中英双语都在里面）：同样**嵌进 exe**，启动时落一份到数据目录
+         供用户直接打开（见 HelpDocument.cs）。资源名钉死，与文件所在位置无关。 -->
+    <EmbeddedResource Include="帮助文档.html">
+      <LogicalName>FlyDisk.help.html</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- iSCSI 协议层不自研：直接用现成库（LGPL-3.0，动态引用）。
+         ISCSI 提供 PDU 编解码 / 登录协商 / SCSI 命令分发（VirtualSCSITarget）；
+         DiskAccessLibrary.Win32 提供 PhysicalDiskControl（几何/联机状态/设备描述符）等 Win32 助手。
+         我们只需实现 Disk 抽象类的 4 个成员（见 Engine/CachedPhysicalDisk.cs）。 -->
+    <PackageReference Include="ISCSI" Version="1.5.6" />
+    <PackageReference Include="DiskAccessLibrary.Win32" Version="1.6.3" />
+
+    <!-- 自动挂载 iSCSI：先用 ServiceController 把 MSiSCSI 服务拉起来，再调 iscsidsc.dll 登录。
+         该托管类型在 net10 已不再内置，需单独引这个包（见 后续待办.md 待办 3 §10 方法 A）。 -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.12" />
+  </ItemGroup>
+
+</Project>

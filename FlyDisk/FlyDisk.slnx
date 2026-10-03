@@ -1,0 +1,4 @@
+<Solution>
+  <!-- 阶段二：单项目（WinForms 管理员程序 + 引擎层同程序集）。见 阶段二-iSCSI块设备形态.md §3.7.4 -->
+  <Project Path="FlyDisk.csproj" />
+</Solution>

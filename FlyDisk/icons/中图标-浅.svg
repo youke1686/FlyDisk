@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 224 224" width="256" height="256">
+  <!-- 画布裁切到底板边界（16..240），使图案铺满整个画布 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EDF4FA"/>
+      <stop offset="0.55" stop-color="#CDE3F0"/>
+      <stop offset="1" stop-color="#ADD6E8"/>
+    </linearGradient>
+
+    <linearGradient id="disk" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A5F82"/>
+      <stop offset="0.5" stop-color="#2A3A55"/>
+      <stop offset="1" stop-color="#172033"/>
+    </linearGradient>
+
+    <linearGradient id="platter" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#B9FBFF"/>
+      <stop offset="0.45" stop-color="#38D6FF"/>
+      <stop offset="1" stop-color="#1478FF"/>
+    </linearGradient>
+
+    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFF3B0"/>
+      <stop offset="0.45" stop-color="#FFD166"/>
+      <stop offset="1" stop-color="#FF9F1C"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="8"/>
+      <feOffset dx="0" dy="8" result="offset"/>
+      <feFlood flood-color="#000000" flood-opacity="0.4" result="color"/>
+      <feComposite in="color" in2="offset" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- 底板：浅色背景 -->
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#bg)"/>
+
+  <!-- 机械硬盘 -->
+  <g filter="url(#shadow)">
+    <rect x="45" y="70" width="166" height="120" rx="29" fill="url(#disk)"/>
+  </g>
+
+  <!-- 盘片 -->
+  <circle cx="105" cy="131" r="46" fill="url(#platter)"/>
+  <circle cx="105" cy="131" r="15" fill="#0A1020" opacity="0.82"/>
+  <circle cx="105" cy="131" r="5.2" fill="#B9FBFF"/>
+
+  <!-- 闪电 -->
+  <path d="M194.8 51 L152.8 126.6 H178 L147.2 205 L208.8 115.4 H183.6 L203.2 51 Z"
+        fill="url(#bolt)" stroke="#FFF3B0" stroke-width="2"
+        stroke-linejoin="round" filter="url(#glow)"/>
+</svg>

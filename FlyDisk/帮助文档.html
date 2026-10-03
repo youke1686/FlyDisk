@@ -1,0 +1,3662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlyDisk 使用帮助</title>
+<style>
+    :root {
+        color-scheme: light dark;
+
+        /* 浅色：取自「大图标-浅」 */
+        --bg: #EDF4FA;
+        --panel: #F7FBFD;
+        --ink: #172033;
+        --ink2: #2A3A55;
+        --navy: #4A5F82;
+        --line: #ADD6E8;
+        --line-soft: #CDE3F0;
+        --cyan: #1478FF;
+        --cyan-lt: #38D6FF;
+        --green: #239E82;
+        --green-lt: #5FD9BE;
+        --gold: #FF9F1C;
+        --gold-lt: #FFD166;
+        --silver: #8A96AA;
+
+        --code-bg: #DCEAF5;
+        --pre-bg: #E3EFF8;
+        --row-even: #F4F9FC;
+        --warn-bg: #FFF6E0;
+        --note-bg: #E8F4F0;
+        --tip-bg: #E8F2FE;
+        --toc-bg: rgba(247, 251, 253, 0.96);
+        --hero-grad: linear-gradient(135deg, #EDF4FA 0%, #CDE3F0 55%, #ADD6E8 100%);
+        --shadow: 0 6px 18px rgba(23, 32, 51, 0.14);
+        --shadow-soft: 0 6px 18px rgba(23, 32, 51, 0.08);
+        --shadow-ctl: 0 2px 8px rgba(23, 32, 51, 0.12);
+        --badge-ink: #ffffff;
+    }
+
+    /* 深色：跟随系统，取自「大图标-深」 */
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #0E1828;
+            --panel: #16243A;
+            --ink: #E8F4FB;
+            --ink2: #B9D4E6;
+            --navy: #7FA6C9;
+            --line: #2C4A6B;
+            --line-soft: #24405C;
+            --cyan: #4FC3FF;
+            --cyan-lt: #7DF9FF;
+            --green: #45E0A8;
+            --green-lt: #3DFFB8;
+            --gold: #FFD166;
+            --gold-lt: #FF9F1C;
+            --silver: #7E93A8;
+
+            --code-bg: #1C3049;
+            --pre-bg: #142338;
+            --row-even: #16263D;
+            --warn-bg: #2B2413;
+            --note-bg: #0F2E27;
+            --tip-bg: #10283F;
+            --toc-bg: rgba(20, 34, 54, 0.96);
+            --hero-grad: linear-gradient(135deg, #14243C 0%, #1D3A5A 55%, #24506E 100%);
+            --shadow: 0 6px 22px rgba(0, 0, 0, 0.55);
+            --shadow-soft: 0 6px 18px rgba(0, 0, 0, 0.45);
+            --shadow-ctl: 0 2px 10px rgba(0, 0, 0, 0.5);
+            --badge-ink: #0A1020;
+        }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 32px 24px 64px;
+        color: var(--ink);
+        line-height: 1.75;
+        background: var(--bg);
+    }
+
+    /* 页眉 */
+    .hero {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 20px 24px;
+        border-radius: 18px;
+        background: var(--hero-grad);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow-soft);
+        margin-bottom: 26px;
+    }
+    .hero svg { flex: 0 0 auto; }
+    .hero-icon-dark { display: none; }
+    @media (prefers-color-scheme: dark) {
+        .hero-icon-light { display: none; }
+        .hero-icon-dark { display: block; }
+    }
+    .hero-text h1 {
+        margin: 0;
+        border: none;
+        padding: 0;
+        font-size: 26px;
+        color: var(--ink);
+        text-align: left;
+    }
+    .hero-text p {
+        margin: 4px 0 0;
+        font-size: 13.5px;
+        color: var(--ink2);
+    }
+
+    h1 {
+        text-align: center;
+        color: var(--ink);
+        border-bottom: 2px solid var(--line);
+        padding-bottom: 12px;
+        margin-bottom: 28px;
+    }
+    h2 {
+        color: var(--ink);
+        margin-top: 40px;
+        border-left: 4px solid var(--cyan);
+        padding-left: 12px;
+        scroll-margin-top: 24px;
+    }
+    h3 {
+        color: var(--green);
+        margin-top: 24px;
+        scroll-margin-top: 24px;
+    }
+    h4 {
+        color: var(--ink2);
+        margin-top: 16px;
+        scroll-margin-top: 24px;
+    }
+
+    p { margin: 12px 0; }
+
+    a { color: var(--cyan); }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 14px 0 22px;
+        background: var(--panel);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    th, td {
+        border: 1px solid var(--line-soft);
+        padding: 9px 12px;
+        text-align: left;
+        font-size: 14px;
+        vertical-align: top;
+    }
+    th {
+        background: var(--line-soft);
+        color: var(--ink);
+        font-weight: 600;
+    }
+    tr:nth-child(even) td { background: var(--row-even); }
+
+    code {
+        background: var(--code-bg);
+        color: var(--ink2);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 13px;
+        font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    }
+    pre {
+        background: var(--pre-bg);
+        border: 1px solid var(--line-soft);
+        padding: 12px 16px;
+        border-radius: 8px;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.5;
+    }
+    pre code { background: none; padding: 0; }
+
+    ul, ol { padding-left: 26px; }
+    li { margin: 6px 0; }
+
+    blockquote {
+        background: var(--warn-bg);
+        border-left: 4px solid var(--gold-lt);
+        padding: 10px 16px;
+        margin: 16px 0;
+        font-size: 14px;
+        border-radius: 0 8px 8px 0;
+    }
+
+    .warn {
+        background: var(--warn-bg);
+        border-left: 4px solid var(--gold);
+        padding: 10px 16px;
+        margin: 16px 0;
+        border-radius: 0 8px 8px 0;
+        font-size: 14px;
+    }
+    .note {
+        background: var(--note-bg);
+        border-left: 4px solid var(--green);
+        padding: 10px 16px;
+        margin: 16px 0;
+        border-radius: 0 8px 8px 0;
+        font-size: 14px;
+    }
+    .tip {
+        background: var(--tip-bg);
+        border-left: 4px solid var(--cyan);
+        padding: 10px 16px;
+        margin: 16px 0;
+        border-radius: 0 8px 8px 0;
+        font-size: 14px;
+    }
+
+    .badge {
+        display: inline-block;
+        min-width: 22px;
+        height: 22px;
+        line-height: 22px;
+        text-align: center;
+        padding: 0 7px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, var(--green-lt), var(--green));
+        color: var(--badge-ink);
+        font-size: 13px;
+        font-weight: 600;
+        margin-right: 6px;
+    }
+
+    hr {
+        border: none;
+        border-top: 1px solid var(--line);
+        margin: 30px 0;
+    }
+
+    /* 右侧目录 */
+    .toc {
+        position: fixed;
+        right: 20px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: var(--toc-bg);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: var(--shadow);
+        max-width: 200px;
+        font-size: 13px;
+        max-height: 76vh;
+        overflow-y: auto;
+    }
+    .toc-title {
+        font-weight: bold;
+        color: var(--ink);
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--line-soft);
+    }
+    .toc ul { list-style: none; padding: 0; margin: 0; }
+    .toc li { margin: 5px 0; }
+    .toc a {
+        color: var(--ink2);
+        text-decoration: none;
+        display: block;
+        padding: 3px 8px;
+        border-radius: 6px;
+        transition: all 0.2s;
+    }
+    .toc a:hover { background: var(--line-soft); color: var(--ink); }
+    .toc .toc-h3 { padding-left: 14px; font-size: 12px; }
+    .toc .toc-h4 { padding-left: 24px; font-size: 11.5px; color: var(--silver); }
+    .toc .toc-collapsible > a { display: inline-block; }
+    .toc .toc-collapse-toggle {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        cursor: pointer;
+        text-align: center;
+        line-height: 14px;
+        color: var(--silver);
+        font-size: 10px;
+        vertical-align: baseline;
+        user-select: none;
+        margin-right: 4px;
+        text-decoration: none;
+    }
+    .toc .toc-collapse-toggle:hover { color: var(--ink); }
+    .toc .toc-collapsed .toc-collapse-toggle { transform: rotate(-90deg); }
+    .toc .toc-collapsible-content { overflow: hidden; transition: max-height 0.3s ease-out; }
+    .toc .toc-collapsed .toc-collapsible-content { max-height: 0 !important; }
+
+    h2.highlight, h3.highlight, h4.highlight {
+        animation: highlight-flash 0.8s ease-out;
+        border-radius: 6px;
+    }
+    @keyframes highlight-flash {
+        0% { background: rgba(56, 214, 255, 0.35); }
+        100% { background: transparent; }
+    }
+
+    /* 语言选择器 */
+    .lang-selector {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 1000;
+    }
+    .lang-selector select {
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--toc-bg);
+        color: var(--ink);
+        font-size: 14px;
+        cursor: pointer;
+        box-shadow: var(--shadow-ctl);
+    }
+    .lang-selector select:hover { border-color: var(--cyan); }
+    .lang-selector select:focus {
+        outline: none;
+        border-color: var(--cyan);
+        box-shadow: 0 0 0 2px rgba(20, 120, 255, 0.25);
+    }
+
+    .content-section { display: none; }
+    .content-section.active { display: block; }
+
+    @media (max-width: 1220px) {
+        body { padding: 32px 12px 64px; margin-right: 150px; }
+        .toc { right: 8px; max-width: 132px; padding: 12px 14px; font-size: 12px; }
+        .toc a { padding: 3px 6px; }
+        .lang-selector { right: 8px; top: 10px; }
+        .lang-selector select { padding: 6px 10px; font-size: 13px; }
+    }
+    @media (max-width: 680px) {
+        body { margin-right: 0; padding: 64px 10px 64px; }
+        .toc {
+            position: static;
+            transform: none;
+            max-width: none;
+            width: 100%;
+            margin-bottom: 20px;
+            max-height: none;
+        }
+        .toc ul { display: flex; flex-wrap: wrap; gap: 4px; }
+        .toc li { margin: 0; }
+        .toc a { white-space: nowrap; }
+        .toc .toc-h3, .toc .toc-h4 { padding-left: 8px; }
+        .lang-selector { position: fixed; right: 8px; top: 8px; }
+        .hero { flex-direction: column; text-align: center; }
+    }
+
+    /* 第三方组件与许可证：说明文字随语言，许可证全文语言中立 */
+    .license-texts {
+        margin-top: 48px;
+        padding-top: 24px;
+        border-top: 2px solid var(--line);
+    }
+    .license-texts details {
+        background: var(--panel);
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+        padding: 10px 18px;
+    }
+    .license-texts summary {
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--cyan);
+        padding: 6px 0;
+    }
+    .license-texts h4 { margin-top: 28px; }
+    .license-texts pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 420px;
+        overflow-y: auto;
+    }
+</style>
+</head>
+<body>
+
+<div class="lang-selector">
+    <select id="langSelect" onchange="switchLanguage(this.value)">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+    </select>
+</div>
+
+<!-- ============================ 中文 ============================ -->
+<div class="content-section" id="content-zh" lang="zh-CN">
+
+<nav class="toc">
+    <div class="toc-title">目录</div>
+    <ul>
+        <li><a href="#intro-zh">简介</a></li>
+        <li><a href="#quickstart-zh">快速上手</a></li>
+        <li><a href="#cache-zh">两级缓存 L1 / L2</a></li>
+        <li class="toc-collapsible">
+            <a href="#"><span class="toc-collapse-toggle" onclick="event.preventDefault(); event.stopPropagation(); toggleCollapse(this)">▼</span>界面说明</a>
+            <div class="toc-collapsible-content">
+                <ul>
+                    <li class="toc-h3"><a href="#mainui-zh">主界面说明</a></li>
+                    <li class="toc-h3"><a href="#start-zh">启动加速与选盘</a></li>
+                    <li class="toc-h3"><a href="#settings-zh">设置界面</a></li>
+                    <li class="toc-h3"><a href="#inspector-zh">检查器</a></li>
+                    <li class="toc-h3"><a href="#verify-zh">校验 L2</a></li>
+                    <li class="toc-h3"><a href="#reonline-zh">重新联机硬盘</a></li>
+                    <li class="toc-h3"><a href="#remote-zh">远程加速</a></li>
+                </ul>
+            </div>
+        </li>
+        <li><a href="#tray-zh">托盘与退出</a></li>
+        <li><a href="#lang-zh">语言与主题</a></li>
+        <li><a href="#faq-zh">常见问题</a></li>
+        <li><a href="#notices-zh">第三方组件与许可证</a></li>
+    </ul>
+</nav>
+
+<div class="hero">
+    <svg class="hero-icon-light" xmlns="http://www.w3.org/2000/svg" viewBox="16 16 224 224" width="72" height="72" aria-hidden="true">
+        <defs>
+            <linearGradient id="zh-bg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#EDF4FA"/><stop offset="0.55" stop-color="#CDE3F0"/><stop offset="1" stop-color="#ADD6E8"/>
+            </linearGradient>
+            <linearGradient id="zh-disk" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#4A5F82"/><stop offset="0.5" stop-color="#2A3A55"/><stop offset="1" stop-color="#172033"/>
+            </linearGradient>
+            <linearGradient id="zh-platter" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#B9FBFF"/><stop offset="0.45" stop-color="#38D6FF"/><stop offset="1" stop-color="#1478FF"/>
+            </linearGradient>
+            <linearGradient id="zh-cache" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#5FD9BE"/><stop offset="0.55" stop-color="#3EBFA3"/><stop offset="1" stop-color="#239E82"/>
+            </linearGradient>
+            <linearGradient id="zh-bolt" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#FFF3B0"/><stop offset="0.45" stop-color="#FFD166"/><stop offset="1" stop-color="#FF9F1C"/>
+            </linearGradient>
+            <linearGradient id="zh-silver" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#E8EDF5"/><stop offset="0.5" stop-color="#B8C2D4"/><stop offset="1" stop-color="#8A96AA"/>
+            </linearGradient>
+        </defs>
+        <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#zh-bg)"/>
+        <g>
+            <rect x="58" y="66" width="6" height="18" rx="1.5" fill="#FFD166"/>
+            <rect x="64" y="60" width="138" height="30" rx="6" fill="url(#zh-cache)"/>
+            <rect x="93" y="69" width="12" height="12" rx="2" fill="#0A1020" opacity="0.9" transform="rotate(45 99 75)"/>
+            <rect x="134" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <rect x="158" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <circle cx="188" cy="75" r="4.5" fill="none" stroke="#0A1020" stroke-width="2" opacity="0.7"/>
+        </g>
+        <rect x="56" y="88" width="144" height="104" rx="20" fill="url(#zh-disk)"/>
+        <circle cx="108" cy="141" r="40" fill="url(#zh-platter)"/>
+        <circle cx="108" cy="141" r="13" fill="#0A1020" opacity="0.82"/>
+        <circle cx="108" cy="141" r="4.5" fill="#B9FBFF"/>
+        <g>
+            <polygon points="173.5,163.7 156.1,149.6 149.1,158.2 166.5,172.3" fill="url(#zh-silver)"/>
+            <circle cx="170" cy="168" r="8" fill="url(#zh-silver)"/>
+            <circle cx="170" cy="168" r="3.5" fill="#0A1020"/>
+            <polygon points="156.1,149.6 149.1,158.2 127,133" fill="url(#zh-silver)"/>
+        </g>
+        <path d="M206 94 L176 154 H198 L172 216 L220 140 H198 L216 94 Z" fill="url(#zh-bolt)" stroke="#FFF3B0" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+    <svg class="hero-icon-dark" xmlns="http://www.w3.org/2000/svg" viewBox="16 16 224 224" width="72" height="72" aria-hidden="true">
+        <defs>
+            <linearGradient id="zh-d-bg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#1A2A44"/><stop offset="0.55" stop-color="#256286"/><stop offset="1" stop-color="#2F97B5"/>
+            </linearGradient>
+            <linearGradient id="zh-d-disk" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#4A5F82"/><stop offset="0.5" stop-color="#2A3A55"/><stop offset="1" stop-color="#172033"/>
+            </linearGradient>
+            <linearGradient id="zh-d-platter" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#B9FBFF"/><stop offset="0.45" stop-color="#38D6FF"/><stop offset="1" stop-color="#1478FF"/>
+            </linearGradient>
+            <linearGradient id="zh-d-cache" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#7DF9FF" stop-opacity="0.95"/><stop offset="0.55" stop-color="#3DFFB8" stop-opacity="0.55"/><stop offset="1" stop-color="#3DFFB8" stop-opacity="0.15"/>
+            </linearGradient>
+            <linearGradient id="zh-d-bolt" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#FFF3B0"/><stop offset="0.45" stop-color="#FFD166"/><stop offset="1" stop-color="#FF9F1C"/>
+            </linearGradient>
+            <linearGradient id="zh-d-silver" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#E8EDF5"/><stop offset="0.5" stop-color="#B8C2D4"/><stop offset="1" stop-color="#8A96AA"/>
+            </linearGradient>
+        </defs>
+        <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#zh-d-bg)"/>
+        <g>
+            <rect x="58" y="66" width="6" height="18" rx="1.5" fill="#FFD166"/>
+            <rect x="64" y="60" width="138" height="30" rx="6" fill="url(#zh-d-cache)"/>
+            <rect x="93" y="69" width="12" height="12" rx="2" fill="#0A1020" opacity="0.9" transform="rotate(45 99 75)"/>
+            <rect x="134" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <rect x="158" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <circle cx="188" cy="75" r="4.5" fill="none" stroke="#0A1020" stroke-width="2" opacity="0.7"/>
+        </g>
+        <rect x="56" y="88" width="144" height="104" rx="20" fill="url(#zh-d-disk)"/>
+        <circle cx="108" cy="141" r="40" fill="url(#zh-d-platter)"/>
+        <circle cx="108" cy="141" r="13" fill="#0A1020" opacity="0.82"/>
+        <circle cx="108" cy="141" r="4.5" fill="#B9FBFF"/>
+        <g>
+            <polygon points="173.5,163.7 156.1,149.6 149.1,158.2 166.5,172.3" fill="url(#zh-d-silver)"/>
+            <circle cx="170" cy="168" r="8" fill="url(#zh-d-silver)"/>
+            <circle cx="170" cy="168" r="3.5" fill="#0A1020"/>
+            <polygon points="156.1,149.6 149.1,158.2 127,133" fill="url(#zh-d-silver)"/>
+        </g>
+        <path d="M206 94 L176 154 H198 L172 216 L220 140 H198 L216 94 Z" fill="url(#zh-d-bolt)" stroke="#FFF3B0" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+    <div class="hero-text">
+        <h1>FlyDisk 使用帮助</h1>
+        <p>机械硬盘块级缓存加速器 · 给慢盘加一层内存 + 硬盘缓存</p>
+    </div>
+</div>
+
+<h2 id="intro-zh">简介</h2>
+
+<p>FlyDisk 是一款面向<strong>机械硬盘（HDD）</strong>的加速工具。它会接管你指定的那块 HDD，在它前面铺一层由内存和固态硬盘组成的缓存，把反复读取的「热数据」<strong>留在快盘或内存上</strong>，从而缓解机械盘<strong>寻道慢、随机读慢</strong>的老毛病。</p>
+
+<p>它的做法是块级接管，即<strong>完全接管一整块物理硬盘</strong>：点「启动加速」后，程序把目标盘<strong>整盘脱机并独占</strong>，再通过本机的 iSCSI 目标把这块盘重新暴露给 Windows。Windows 会像平常一样挂上盘上原有的 NTFS 卷，<strong>原来的盘符也会回来</strong>。此后你对该 iSCSI 盘的读写都会先经过缓存层。</p>
+
+<div class="warn">
+    <strong>⚠ 使用前请知悉</strong>
+    <ul>
+        <li>本软件处于 <strong>Beta 测试阶段</strong>，稳定性尚未充分验证，<strong>请勿用于重要数据</strong>。对于因此造成的损失，我们不承担任何责任。</li>
+        <li>理论上<strong>存在游戏误封号可能</strong>，虽然可能性极小，但如果用于游戏加速，依旧务必先<strong>新开小号</strong>做<strong>至少一周高强度游戏</strong>的可行性验证。&nbsp;</li>
+<li>停止加速后，目标盘会<strong>保持脱机、在系统里看不到，</strong>这是有意设计：盘归本程序独占，跨重启的缓存才敢采信。要还盘给系统，见「重新联机硬盘」。</li>
+        <li>程序必须<strong>以管理员身份运行</strong>，否则无法把整盘脱机或独占打开。</li>
+    </ul>
+</div>
+
+<h2 id="quickstart-zh">快速上手</h2>
+
+<p>第一次使用，照下面五步走即可。</p>
+
+<ol>
+  
+    <li>双击运行 <code>FlyDisk</code>，在 UAC 弹窗点「<strong>是</strong>」（如果有）。主界面出现。</li>
+    <li>点主界面中间的「<strong>启动加速</strong>」按钮，弹出「<strong>选择要加速的硬盘</strong>」对话框。</li>
+    <li>在列表里选择你想加速的机械硬盘，点「<strong>确定</strong>」。</li>
+    <li>程序开始启动，通常只需等待 5 秒左右，日志区会逐步打印进度。</li>
+    <li>中心按钮显示「停止加速」后，打开「此电脑」，确认盘一切正常。</li>
+    <li>开始使用你的硬盘，感受<strong>飞一样的速度</strong>。&nbsp;</li>
+    <li>使用完成后可以点击「<strong>停止加速</strong>」即可使硬盘空载，或直接关机（稳定性未充分测试，不是非常推荐），下次再使用时重新进行「<strong>启动加速</strong>」流程</li>
+</ol>
+
+<div class="tip">
+  <p>加速效果取决于你的访问是否「有热点缓存」。反复打开同一个软件、反复读同一批文件时最明显；全盘顺序读写这类没有重复的场景，加速收益有限。</p>
+  <p>目前不支持开机自启、自动加速，需要的话可以自己用 AI 随便贡献点代码&nbsp;</p>
+</div>
+
+<h2 id="cache-zh">两级缓存 L1 / L2</h2>
+
+<p>FlyDisk 的缓存分两层，术语统一叫 <strong>L1 缓存</strong>与 <strong>L2 缓存</strong>。</p>
+
+<table>
+    <tr><th>层</th><th>介质</th><th>特点</th><th>断电后</th></tr>
+    <tr><td><strong>L1 缓存</strong>（内存缓存）</td><td>系统内存</td><td>最快，容量小，根据整机内存占用自动淘汰</td><td>不保留</td></tr>
+    <tr><td><strong>L2 缓存</strong>（硬盘缓存）</td><td>另一块盘（推荐使用SSD）</td><td>比内存慢但通常容量大，跨重启保留</td><td>保留</td></tr>
+</table>
+
+<h3>缓存怎么工作</h3>
+<p>我们目前只支持读缓存。当系统需要读取硬盘中的数据时：</p>
+<p>系统默认行为：直接从源盘读取（会有少量内存缓存，但通常可以忽略）</p>
+<p>我们的行为：优先从 L1 L2 中读取数据，若 L1 L2 中均没有对应数据，才回到源盘读取数据，并同时直接存放到 L1 中，按需存放到 L2 中以便下次读取到相同数据时的加速</p>
+<div class="note">L2 能跨重启保留，但在上次出现非正常退出、目标盘被手动联机等情况后需要进行全量校验以保证数据不出错，启动时若发现问题，程序会弹窗让你选择。</div>
+<div class="warn"> <strong>⚠ 注意：</strong>在开启 L2 功能时，你<strong>有责任避免</strong>进行手动脱机、使用另一个电脑/双操作系统的另一个使用硬盘等会<strong>令 L2 和实际数据不一致</strong>的操作，这种操作我们的程序无法有效自动察觉，应<strong>手动触发一轮 L2 校验</strong>。如你不确定你的操作是否会导致上述问题，也应<strong>手动触发一轮 L2 校验</strong>。</div>
+
+<h2 id="mainui-zh">主界面说明</h2>
+
+<table>
+    <tr><th>区域</th><th>作用</th></tr>
+    <tr><td>菜单栏</td><td>设置 / 检查器 / 校验 L2 / 重新联机硬盘 / 远程 / 🌍 语言。加速运行中，部分入口会暂时禁用。</td></tr>
+    <tr><td>主按钮</td><td>「启动加速」↔「停止加速」等。负责主要功能。</td></tr>
+    <tr><td>状态行</td><td>显示 iSCSI 地址、当前连接数、链路状态等少量运行状态指示信息。</td></tr>
+<tr><td>日志区</td><td>运行过程中的提示与错误，按「问题 → 原因 → 处理」的口径记录，遇到问题先看这里。</td></tr>
+</table>
+
+<h2 id="start-zh">启动加速与选盘</h2>
+
+<p><strong>每次启动都要重新确认一次选盘</strong>——这是故意的：避免你改过配置后隔几天才启动、已经忘了上次选的是哪块导致的误操作选错盘，但再这一步默认选项是上次的选择。</p>
+
+<h3>列表怎么看</h3>
+<p>每一行长这样：</p>
+<pre><code>磁盘 0（C: , D:）    型号字样    （容量）</code></pre>
+<p>括号里是该盘上的<strong>盘符</strong>（一块盘可能对应多个卷、多个盘符，用英文逗号分隔）；脱机的盘通常是由于你加速过，没有盘符，那一格显示「<em>脱机</em>」。</p>
+<p>目前仅能同时加速一整块物理硬盘，不单卷加速 。</p>
+<h3>盘信息区</h3>
+<p>选中一行后，下方会显示：</p>
+<ul>
+    <li>第一行基本信息：<strong>字节/扇区 · 容量 · 序列号</strong>。</li>
+    <li>接下来是「不能加速」的 ❌ 原因及排查方法（如果有）。</li>
+    <li>再往下是一些性能相关的提示，建议关注一下。</li>
+</ul>
+
+<h2 id="settings-zh">设置界面</h2>
+<p>通过菜单「<strong>设置</strong>」打开。配置只在「启动加速」那一刻被实际应用，加速运行中不能修改设置。</p>
+
+<h3 id="set-disk-zh">iSCSI 监听端口</h3>
+<ul>
+    <li><strong>监听端口</strong>：除非特殊需求否则一般不用改。默认 <code>3260</code>，范围 1–65535。只监听回环地址 <code>127.0.0.1</code>，供本机 iSCSI 发起程序连接。</li>
+</ul>
+
+<h3 id="set-l1-zh">L1 缓存设置（内存缓存）</h3>
+<ul>
+    <li><strong>启用 L1 缓存</strong>：默认<strong>开启</strong>。关掉后不再用L1缓存，不影响 L2。</li>
+    <li><strong>开始淘汰阈值（内存使用率）</strong>：默认 <code>80%</code>。系统内存使用率超过它时，开始淘汰冷块以释放内存。</li>
+    <li><strong>停止缓存阈值（内存使用率）</strong>：默认 <code>90%</code>。若数据量过大无法及时淘汰，超过它时暂停接受新的缓存数据。需保持「淘汰 &lt; 停止」。</li>
+</ul>
+
+<h3 id="set-l2-zh">L2 缓存设置（硬盘缓存）</h3>
+<ul>
+    <li><strong>启用 L2 缓存</strong>：默认<strong>关闭</strong>。</li>
+    <li><strong>L2 缓存盘</strong>：下拉列出当前可用的盘符。请选一块速度快性能好的 SSD。</li>
+    <li><strong>容量预算（GiB）</strong>：默认 <code>8</code>，范围 1–64。这是 L2 在缓存盘上最多占用的空间。如果已有 L2 缓存则不应修改，修改后只能清空重建。</li>
+    <p class="tip">&nbsp;与 L1 不同，L2 会立刻划分预算，占用相应硬盘空间，以确保缓存的稳定</p>
+<li><strong>保守线（L2 缓存占用率）</strong>：默认 <code>80%</code>，范围 50–99%。L2 占用率超过它后缓存接收策略转为保守。</li>
+</ul>
+<p><strong>预计额外内存</strong>：有些缓存以外的必要内存开销会随着缓存增多而增大，窗口底部会给出估算，请对照内存余量合理决策。</p>
+<h2 id="inspector-zh">检查器</h2>
+<p>菜单「<strong>检查器</strong>」打开，用来观察当前运行状态、统计数据，以便确定加速有没有效果。顶部有两个页签：</p>
+
+<h3>简要页</h3>
+<ul>
+    <li><strong>两个速度方框</strong>：「加速后读取」指加速后各种软件读取硬盘的速度；「源盘读取」指实际硬盘的繁忙程度/所有回源读取的速度</li>
+    <li><strong>命中情况指示条</strong>：L1 命中 / L2 命中 / 源盘读取的块数在不同时间尺度下的统计。源盘读取越少代表这段时间加速效果越好。</li>
+    <li><strong>L1 内存水位条</strong>与<strong>L2 占用条</strong>。</li>
+    
+    <li>底部显示 iSCSI 连接数与快照时间。</li>
+</ul>
+
+<h3>详细页</h3>
+<p>使用时通常不需要关注，纯文字，排查问题时方便直接复制粘贴给 AI。</p>
+
+<h3>悬浮窗与置顶</h3>
+<ul>
+    <li>检查器<strong>最小化</strong>时，会变成一个 <strong>50×50 的悬浮窗</strong>方便随时查看加速情况：左右分半，用灰阶分别显示「加速后读取」与「源盘读取」速度。单击悬浮窗可快捷打开检查器。</li>
+    <li>检查器恢复显示后，悬浮窗自动隐藏。</li>
+    <li>不想要就直接彻底关闭检查器即可。&nbsp;</li>
+</ul>
+
+<h2 id="verify-zh">校验 L2</h2>
+
+<p>当程序判断 L2 缓存的可信度存疑时强制进行。你也可以手动触发，但正常使用时通常没必要 。&nbsp;<strong>&nbsp;</strong></p>
+<div class="warn"> <strong>⚠ 注意：</strong>在开启 L2 功能时，你<strong>有责任避免</strong>进行手动脱机、使用另一个电脑/双操作系统的另一个使用硬盘等会<strong>令 L2 和实际数据不一致</strong>的操作，这种操作我们的程序无法有效自动察觉，应<strong>手动触发一轮 L2 校验</strong>。如你不确定你的操作是否会导致上述问题，也应<strong>手动触发一轮 L2 校验</strong>。</div>
+<p>手动校验方法如下：&nbsp;</p>
+
+<ol>
+    <li>菜单「<strong>校验 L2</strong>」→ 确认要校验的物理盘。</li>
+    <li>点「<strong>校验</strong>」：程序逐块比对 L2 缓存与源盘，可能需要几分钟，取决于你的 L2 占用情况。</li>
+    <li>结果显示「一致：N 块全部相同」或「不一致 N 块（错误率 …）」。</li>
+    <li>若发现不一致，可点「<strong>修复</strong>」：把源盘的数据回写到 L2 容器，把这些错乱的块修回来。</li>
+</ol>
+
+<div class="warn">校验要对源盘做只读访问；因此不能在加速运行时进行——请先「停止加速」。校验过程可随时「取消」，取消不会破坏已有缓存。</div>
+
+<h2 id="reonline-zh">重新联机硬盘（把盘还给系统）</h2>
+
+<p>停止加速后，目标盘保持脱机，系统不可见，以便下次加速使用。要把它交还给操作系统，有两种办法：</p>
+<ul>
+    <li><strong>菜单「重新联机硬盘」</strong>：列表只显示脱机盘，大概率都是你加速过的，选一块、确定即可一键完成。</li>
+    <li>或者用 Windows 自带：<strong>磁盘管理 → 右键该盘 → 联机</strong>。如失败也可以咨询 AI 后使用命令行联机。</li>
+</ul>
+
+<div class="note">联机后，这块盘就<strong>脱离本程序控制</strong>了，可能被其他程序写入。如果你启用了 L2 缓存，<strong>下次启动加速需要强制校验 L2</strong>（可能花一两分钟）。程序会给出这条提醒。</div>
+
+<h2 id="remote-zh">远程加速（实验性）</h2>
+
+<div class="warn">
+    <p> <strong>⚠ 实验性特性</strong>：正在开发中，尚未经过充分验证。不保证功能可用（可能配不上对、可能中途断开、可能长时间无响应）；不保证数据安全（通道<strong>不加密</strong>；同意对端要盘时，本机会把整块物理盘脱机后交出去，对方写入的内容与程序自身的缺陷都可能损坏盘上数据）。<strong>不要使用，</strong>如果不小心点到请点击「取消」。 </p>
+    <p>如果实在希望有这个功能可以去提交 issue 或者直接用 AI 给我们贡献一点代码&nbsp;</p>
+</div>
+
+<p>远程功能用于把<strong>另一台机器</strong>上的一块物理盘，通过网络借到本机来加速（或反过来把本机磁盘借给对方）。</p>
+
+<h3>服务端（提供盘的一方）</h3>
+<ol>
+    <li>打开菜单「<strong>远程</strong>」，在弹窗里选「<strong>开放远程服务（本机监听，等对方来配对）</strong>」。</li>
+    <li>填「监听端口」（默认 <code>10808</code>），点「<strong>开放远程服务</strong>」。</li>
+    <li>有客户端请求使用某块盘时，本机会弹窗请你确认「是否信任并同意脱机」。</li>
+</ol>
+
+<h3>客户端（使用盘的一方）</h3>
+<ol>
+    <li>选「<strong>配对远程服务（连接到对方）</strong>」。</li>
+    <li>填「对端地址」，格式为 <code>主机:端口</code>（例如 <code>192.168.1.5:10808</code>），点「<strong>配对远程服务</strong>」。</li>
+    <li>配对成功后，点「启动加速」会列出<strong>对端的磁盘清单</strong>，选一块即可。之后与本地加速的操作一致。</li>
+</ol>
+
+<h3>断开与提醒</h3>
+<ul>
+    <li>点「<strong>断开</strong>」结束配对。</li>
+    <li>仍处于配对状态时，关闭远程服务会被拒绝——请先断开配对。</li>
+    <li>远程形态目前<strong>不支持逐块校验 L2</strong>；L2 不匹配时只能选择「清空重建」。</li>
+    <li>任何能连到本机的人都能「列出」磁盘清单，但真正使用某块盘仍需你在弹窗上逐次确认。</li>
+</ul>
+
+<h2 id="tray-zh">托盘与退出</h2>
+<ul>
+    <li><strong>加速运行中关闭主窗口</strong>：程序不退出，而是最小化到<strong>通知区（托盘）</strong>，出现一个图标。检查器与悬浮窗不受影响，不会跟着最小化。</li>
+    <li><strong>单击托盘图标</strong>：把主窗口叫回来。托盘图标只在主窗口隐藏时出现。</li>
+    <li><strong>退出路径只有一条</strong>：先「停止加速」，再关闭主窗口，才会真正退出整个程序。</li>
+</ul>
+
+<h2 id="lang-zh">语言与主题</h2>
+<ul>
+    <li><strong>语言</strong>：通过菜单「🌍 语言」切换。<strong>切换即时生效</strong>。默认跟随系统。</li>
+    <li><strong>主题</strong>：界面深 / 浅色跟随系统。应用图标会随主题切换；桌面快捷方式若已存在，其图标也会同步更新（程序<strong>只更新已有快捷方式</strong>，不会新建或删除）。</li>
+</ul>
+
+<h2 id="faq-zh">常见问题</h2>
+
+<h3>停止加速后，那块盘在系统里不见了？</h3>
+<p>正常。停止加速后盘中保留「脱机并由本程序独占」的状态，这是为了跨重启缓存可信。再次使用只需再次加速即可。也可以用菜单「重新联机硬盘」或「磁盘管理 → 联机」即可还盘。见“重新联机硬盘”章节</p>
+
+<h3>启动时提示「L2 缓存不匹配」或「需要校验」？</h3>
+<p><strong>这是两个不同的弹窗，按钮都是「是 / 否」，但含义相反</strong>，请按标题和正文写的那一条来判断：</p>
+<ul>
+    <li><strong>「L2 缓存不匹配」</strong>（盘或配置变了）：<strong>「是」= 清空这份 L2 并重建</strong>（原缓存内容全部作废，之后重新学习）；「否」= 中止启动、不做任何改动（下次启动还会问）。这是在提醒你选择上次的盘/改回上次的配置。</li>
+    <li><strong>「L2 缓存需要校验」</strong>（上次没正常关服、盘原本是联机状态等）：<strong>「是」= 现在开始校验</strong>（打开校验窗口逐块比对，可能要几分钟；校验干净后启动会带着这份 L2 继续）；「否」= 清空这份 L2 并继续启动。默认停在「是」。</li>
+</ul>
+<p>拿不准时：在「不匹配」弹窗选「否」中止启动，再到菜单「校验 L2」逐块比对、修复后再启动，是最稳的一步。</p>
+
+<h3>提示「抢不到 L2 单实例锁」？</h3>
+<p>目标正在运行，或另一个 FlyDisk 实例正在使用这份缓存。请先点「停止加速」。</p>
+
+<h3>启动失败，说盘被占用 / 无法独占打开？</h3>
+<p>说明盘正在被使用，确认没有别的程序（备份软件、杀毒软件、另一个 FlyDisk 实例）正在使用该盘，再重试。</p>
+
+<h3>提示启动成功，但 iSCSI 没有自动挂载导致看不到盘？</h3>
+<p>可以到「开始菜单 → Windows 管理工具 → iSCSI 发起程序」手动连接启动，首次使用 iSCSI 发起程序 方法如下：</p>
+<ol>
+  <li> 打开&nbsp;iSCSI 发起程序</li>
+  <li>点击发现选项卡 → 发现门户(P) → IP地址填写“127.0.0.1”→ 确定(O)</li>
+  <li>点击目标选项卡 → 刷新(R) → 连接(N) → 确定</li>
+  <li>去此电脑中检查加速盘出现，使用一切正常&nbsp;</li>
+</ol>
+
+<p>如果依旧有问题可以将项目源代码下载下来拿着咨询 AI&nbsp;</p>
+
+<h2 id="notices-zh">第三方组件与许可证</h2>
+<p>FlyDisk 自身以 <strong>GNU GPL v3 或更新</strong>发布。此外它在构建与运行中使用了下列第三方组件与资源，谨此致谢。各组件的许可证全文集中列在本页末尾，语言中立，不随中英切换重复。</p>
+
+<h3>随程序分发的库</h3>
+<table>
+<tr><th>组件</th><th>版本</th><th>用途</th><th>许可证</th></tr>
+<tr><td>ISCSI</td><td>1.5.6</td><td>iSCSI target，PDU 编解码，登录协商，SCSI 命令分发</td><td>LGPL-3.0-or-later</td></tr>
+<tr><td>DiskAccessLibrary</td><td>1.6.3</td><td>Disk 等磁盘基类（CachedPhysicalDisk 继承 Disk）</td><td>LGPL-3.0-or-later</td></tr>
+<tr><td>DiskAccessLibrary.Win32</td><td>1.6.3</td><td>PhysicalDiskControl：磁盘几何，联机状态，设备号，设备描述符</td><td>LGPL-3.0-or-later</td></tr>
+<tr><td>System.ServiceProcess.ServiceController</td><td>10.0.12</td><td>启动 MSiSCSI 服务</td><td>MIT</td></tr>
+</table>
+
+<h3>随程序分发的资源</h3>
+<table>
+<tr><th>资源</th><th>用途</th><th>许可证</th></tr>
+<tr><td>fusion-pixel-12px-proportional-zh_hans.ttf（Fusion Pixel Font）</td><td>主窗口标题与副标题的像素字体，嵌入 exe</td><td>SIL OFL 1.1（字体本体）+ MIT（工具链）</td></tr>
+</table>
+
+<h3>版权声明</h3>
+<ul>
+<li>ISCSI，DiskAccessLibrary，DiskAccessLibrary.Win32：Copyright © Tal Aloni 2012-2024（https://github.com/TalAloni/iSCSIConsole ，https://github.com/TalAloni/DiskAccessLibrary）</li>
+<li>System.ServiceProcess.ServiceController：Copyright (c) .NET Foundation and Contributors（https://github.com/dotnet/dotnet）</li>
+<li>Fusion Pixel Font：Copyright (c) 2022, TakWolf（https://takwolf.com ，https://github.com/TakWolf/fusion-pixel-font）</li>
+</ul>
+
+<h3>LGPL-3.0 合规要点（前三项库）</h3>
+<ol>
+<li>随分发附上 LGPL-3.0 全文与 GPL-3.0 全文（LGPL-3.0 正文通过引用并入 GPL-3.0 条款），以及上方版权声明。</li>
+<li>不得单独出售这些库。</li>
+<li>使用者应能自行替换这些库。本项目以 .NET 程序集形式引用它们（非静态链接），替换方式是换掉对应的 ISCSI.dll，DiskAccessLibrary.dll，DiskAccessLibrary.Win32.dll。</li>
+</ol>
+
+<p>许可证全文见本页末尾的「展开查看全部许可证全文」。</p>
+
+</div>
+
+<!-- ============================ English ============================ -->
+<div class="content-section" id="content-en" lang="en">
+
+<nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ul>
+        <li><a href="#intro-en">Overview</a></li>
+        <li><a href="#quickstart-en">Quick Start</a></li>
+        <li><a href="#cache-en">Two Cache Levels: L1 / L2</a></li>
+        <li class="toc-collapsible">
+            <a href="#"><span class="toc-collapse-toggle" onclick="event.preventDefault(); event.stopPropagation(); toggleCollapse(this)">▼</span>Interface Guide</a>
+            <div class="toc-collapsible-content">
+                <ul>
+                    <li class="toc-h3"><a href="#mainui-en">Main Window</a></li>
+                    <li class="toc-h3"><a href="#start-en">Starting &amp; Choosing a Disk</a></li>
+                    <li class="toc-h3"><a href="#settings-en">Settings</a></li>
+                    <li class="toc-h3"><a href="#inspector-en">Inspector</a></li>
+                    <li class="toc-h3"><a href="#verify-en">Verify L2</a></li>
+                    <li class="toc-h3"><a href="#reonline-en">Re-online a Disk</a></li>
+                    <li class="toc-h3"><a href="#remote-en">Remote Acceleration</a></li>
+                </ul>
+            </div>
+        </li>
+        <li><a href="#tray-en">Tray &amp; Exit</a></li>
+        <li><a href="#lang-en">Language &amp; Theme</a></li>
+        <li><a href="#faq-en">FAQ</a></li>
+        <li><a href="#notices-en">Third-Party Notices</a></li>
+    </ul>
+</nav>
+
+<div class="hero">
+    <svg class="hero-icon-light" xmlns="http://www.w3.org/2000/svg" viewBox="16 16 224 224" width="72" height="72" aria-hidden="true">
+        <defs>
+            <linearGradient id="en-bg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#EDF4FA"/><stop offset="0.55" stop-color="#CDE3F0"/><stop offset="1" stop-color="#ADD6E8"/>
+            </linearGradient>
+            <linearGradient id="en-disk" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#4A5F82"/><stop offset="0.5" stop-color="#2A3A55"/><stop offset="1" stop-color="#172033"/>
+            </linearGradient>
+            <linearGradient id="en-platter" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#B9FBFF"/><stop offset="0.45" stop-color="#38D6FF"/><stop offset="1" stop-color="#1478FF"/>
+            </linearGradient>
+            <linearGradient id="en-cache" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#5FD9BE"/><stop offset="0.55" stop-color="#3EBFA3"/><stop offset="1" stop-color="#239E82"/>
+            </linearGradient>
+            <linearGradient id="en-bolt" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#FFF3B0"/><stop offset="0.45" stop-color="#FFD166"/><stop offset="1" stop-color="#FF9F1C"/>
+            </linearGradient>
+            <linearGradient id="en-silver" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#E8EDF5"/><stop offset="0.5" stop-color="#B8C2D4"/><stop offset="1" stop-color="#8A96AA"/>
+            </linearGradient>
+        </defs>
+        <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#en-bg)"/>
+        <g>
+            <rect x="58" y="66" width="6" height="18" rx="1.5" fill="#FFD166"/>
+            <rect x="64" y="60" width="138" height="30" rx="6" fill="url(#en-cache)"/>
+            <rect x="93" y="69" width="12" height="12" rx="2" fill="#0A1020" opacity="0.9" transform="rotate(45 99 75)"/>
+            <rect x="134" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <rect x="158" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <circle cx="188" cy="75" r="4.5" fill="none" stroke="#0A1020" stroke-width="2" opacity="0.7"/>
+        </g>
+        <rect x="56" y="88" width="144" height="104" rx="20" fill="url(#en-disk)"/>
+        <circle cx="108" cy="141" r="40" fill="url(#en-platter)"/>
+        <circle cx="108" cy="141" r="13" fill="#0A1020" opacity="0.82"/>
+        <circle cx="108" cy="141" r="4.5" fill="#B9FBFF"/>
+        <g>
+            <polygon points="173.5,163.7 156.1,149.6 149.1,158.2 166.5,172.3" fill="url(#en-silver)"/>
+            <circle cx="170" cy="168" r="8" fill="url(#en-silver)"/>
+            <circle cx="170" cy="168" r="3.5" fill="#0A1020"/>
+            <polygon points="156.1,149.6 149.1,158.2 127,133" fill="url(#en-silver)"/>
+        </g>
+        <path d="M206 94 L176 154 H198 L172 216 L220 140 H198 L216 94 Z" fill="url(#en-bolt)" stroke="#FFF3B0" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+    <svg class="hero-icon-dark" xmlns="http://www.w3.org/2000/svg" viewBox="16 16 224 224" width="72" height="72" aria-hidden="true">
+        <defs>
+            <linearGradient id="en-d-bg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#1A2A44"/><stop offset="0.55" stop-color="#256286"/><stop offset="1" stop-color="#2F97B5"/>
+            </linearGradient>
+            <linearGradient id="en-d-disk" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#4A5F82"/><stop offset="0.5" stop-color="#2A3A55"/><stop offset="1" stop-color="#172033"/>
+            </linearGradient>
+            <linearGradient id="en-d-platter" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#B9FBFF"/><stop offset="0.45" stop-color="#38D6FF"/><stop offset="1" stop-color="#1478FF"/>
+            </linearGradient>
+            <linearGradient id="en-d-cache" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#7DF9FF" stop-opacity="0.95"/><stop offset="0.55" stop-color="#3DFFB8" stop-opacity="0.55"/><stop offset="1" stop-color="#3DFFB8" stop-opacity="0.15"/>
+            </linearGradient>
+            <linearGradient id="en-d-bolt" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#FFF3B0"/><stop offset="0.45" stop-color="#FFD166"/><stop offset="1" stop-color="#FF9F1C"/>
+            </linearGradient>
+            <linearGradient id="en-d-silver" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#E8EDF5"/><stop offset="0.5" stop-color="#B8C2D4"/><stop offset="1" stop-color="#8A96AA"/>
+            </linearGradient>
+        </defs>
+        <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#en-d-bg)"/>
+        <g>
+            <rect x="58" y="66" width="6" height="18" rx="1.5" fill="#FFD166"/>
+            <rect x="64" y="60" width="138" height="30" rx="6" fill="url(#en-d-cache)"/>
+            <rect x="93" y="69" width="12" height="12" rx="2" fill="#0A1020" opacity="0.9" transform="rotate(45 99 75)"/>
+            <rect x="134" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <rect x="158" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+            <circle cx="188" cy="75" r="4.5" fill="none" stroke="#0A1020" stroke-width="2" opacity="0.7"/>
+        </g>
+        <rect x="56" y="88" width="144" height="104" rx="20" fill="url(#en-d-disk)"/>
+        <circle cx="108" cy="141" r="40" fill="url(#en-d-platter)"/>
+        <circle cx="108" cy="141" r="13" fill="#0A1020" opacity="0.82"/>
+        <circle cx="108" cy="141" r="4.5" fill="#B9FBFF"/>
+        <g>
+            <polygon points="173.5,163.7 156.1,149.6 149.1,158.2 166.5,172.3" fill="url(#en-d-silver)"/>
+            <circle cx="170" cy="168" r="8" fill="url(#en-d-silver)"/>
+            <circle cx="170" cy="168" r="3.5" fill="#0A1020"/>
+            <polygon points="156.1,149.6 149.1,158.2 127,133" fill="url(#en-d-silver)"/>
+        </g>
+        <path d="M206 94 L176 154 H198 L172 216 L220 140 H198 L216 94 Z" fill="url(#en-d-bolt)" stroke="#FFF3B0" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+    <div class="hero-text">
+        <h1>FlyDisk Help</h1>
+        <p>HDD block-level cache accelerator · a memory + disk cache in front of a slow drive</p>
+    </div>
+</div>
+
+<h2 id="intro-en">Overview</h2>
+
+<p>FlyDisk accelerates a <strong>mechanical hard drive (HDD)</strong>. It takes over the disk you choose and puts a two-level cache (memory + SSD) in front of it, keeping frequently read "hot" data on the fast media — which mitigates the classic HDD weakness of <strong>slow seeks and slow random reads</strong>.</p>
+
+<p>It works at the <strong>block level</strong>. When you press "Start Acceleration", the program takes the target disk <strong>entirely offline and exclusively</strong>, then re-exposes it to Windows through a local iSCSI target. Windows mounts the existing NTFS volumes just as before and <strong>your original drive letters come back</strong>. From then on, all reads and writes to that disk pass through the cache.</p>
+
+<div class="warn">
+    <strong>⚠ Please read first</strong>
+    <ul>
+        <li>This software is in <strong>Beta</strong>. Stability is not 100% guaranteed — <strong>do not use it with important data</strong>.</li>
+        <li>After you stop acceleration, the target disk <strong>stays offline and invisible</strong> to the system. This is intentional (the disk stays owned by the program so the cache survives reboots). See "Re-online a Disk" to give it back.</li>
+        <li>The program must run <strong>as administrator</strong> (the manifest requests it, so a UAC prompt appears), otherwise it cannot take the disk offline or open it exclusively.</li>
+    </ul>
+</div>
+
+<h2 id="quickstart-en">Quick Start</h2>
+
+<p>Follow these steps for the first run.</p>
+
+<ol>
+    <li>Double-click <code>FlyDisk</code> and click "<strong>Yes</strong>" on the UAC prompt (if any). The main window appears.</li>
+    <li>Click the "<strong>Start Acceleration</strong>" button in the middle. The "<strong>Select the Disk to Accelerate</strong>" dialog opens.</li>
+    <li>Pick the mechanical disk you want to accelerate and click "<strong>OK</strong>".</li>
+    <li>The program starts up; it usually takes about 5 seconds, and the log box prints progress step by step.</li>
+    <li>Once the center button shows "<strong>Stop Acceleration</strong>", open "This PC" and confirm the disk works normally.</li>
+    <li>Start using your disk and feel the <strong>flying speed</strong>.&nbsp;</li>
+    <li>When done, click "<strong>Stop Acceleration</strong>" to idle the disk, or just shut down (stability has not been fully tested, so this is not strongly recommended); next time you use it, run the "<strong>Start Acceleration</strong>" flow again.</li>
+</ol>
+
+<div class="tip">
+  <p>Speedup depends on whether your workload has "hot spots". Repeatedly opening the same app or reading the same files benefits most; a purely sequential full-disk read/write with no reuse gains little.</p>
+  <p>Start-on-boot and auto-acceleration are not supported yet; if you want them, you are welcome to contribute a bit of code with AI.&nbsp;</p>
+</div>
+
+<h2 id="cache-en">Two Cache Levels: L1 / L2</h2>
+
+<p>FlyDisk's cache has two levels, uniformly called the <strong>L1 cache</strong> and the <strong>L2 cache</strong>.</p>
+
+<table>
+    <tr><th>Level</th><th>Media</th><th>Traits</th><th>After power-off</th></tr>
+    <tr><td><strong>L1 cache</strong> (memory cache)</td><td>System RAM</td><td>Fastest, small; evicted automatically based on overall memory usage</td><td>Not kept</td></tr>
+    <tr><td><strong>L2 cache</strong> (disk cache)</td><td>Another disk (SSD recommended)</td><td>Slower than RAM but usually larger; survives reboots</td><td>Kept</td></tr>
+</table>
+
+<h3>How caching works</h3>
+<p>For now we only support read caching. When the system needs to read data from the disk:</p>
+<p>Default system behavior: read straight from the source disk (there is a small amount of memory caching, usually negligible).</p>
+<p>Our behavior: prefer reading from L1 / L2; only when the data is in neither do we fall back to the source disk, and then we store it directly into L1 and, as needed, into L2, so that reading the same data next time is accelerated.</p>
+<div class="note">L2 survives reboots, but after an abnormal exit last time, the target disk being manually brought online, or similar cases, a full verification is needed to make sure the data is correct. If a problem is found at startup, the program shows a dialog for you to choose.</div>
+<div class="warn"> <strong>⚠ Note:</strong> while L2 is enabled, <strong>it is your responsibility to avoid</strong> operations that make <strong>L2 and the actual data inconsistent</strong>, such as manually taking the disk offline or using the disk from another computer / another OS in a dual-boot setup. The program cannot reliably detect such operations automatically, so you should <strong>manually trigger a round of L2 verification</strong>. If you are unsure whether your operation could cause the above problem, you should also <strong>manually trigger a round of L2 verification</strong>.</div>
+
+<h2 id="mainui-en">Main Window</h2>
+
+<table>
+    <tr><th>Area</th><th>Purpose</th></tr>
+    <tr><td>Menu bar</td><td>Settings / Inspector / Verify L2 / Re-online Disk / Remote / 🌍 Language. Some entries are temporarily disabled while acceleration is running.</td></tr>
+    <tr><td>Main button</td><td>"Start Acceleration" ↔ "Stop Acceleration", etc. Handles the main functions.</td></tr>
+    <tr><td>Status line</td><td>Shows a few run-state indicators such as the iSCSI address, the current connection count and the link state.</td></tr>
+    <tr><td>Log box</td><td>Notices and errors during operation, written as "problem → cause → action". Check here first when something goes wrong.</td></tr>
+</table>
+
+<h2 id="start-en">Starting &amp; Choosing a Disk</h2>
+
+<p><strong>You confirm the disk every time you start</strong> — on purpose. Otherwise, after changing the configuration you might start days later and have forgotten which disk you chose, and pick the wrong one by mistake; the default option at this step is your previous choice.</p>
+
+<h3>Reading the list</h3>
+<p>Each row looks like this:</p>
+<pre><code>Disk 0 (C: , D:)    Model    (Capacity)</code></pre>
+<p>The parentheses hold the <strong>drive letters</strong> on that disk (a disk may map to several volumes and letters, separated by English commas). An offline disk usually means you accelerated it before, so it has no letters and that slot shows "<em>offline</em>".</p>
+<p>For now you can accelerate only a whole physical disk at once; per-volume acceleration is not supported.</p>
+
+<h3>Disk info area</h3>
+<p>After selecting a row, the area below shows:</p>
+<ul>
+    <li>The first line of basic info: <strong>bytes per sector · capacity · serial number</strong>.</li>
+    <li>Then the ❌ reasons why it <strong>cannot</strong> be accelerated and how to troubleshoot them (if any).</li>
+    <li>Then a few performance-related hints — worth a look.</li>
+</ul>
+
+<h2 id="settings-en">Settings</h2>
+<p>Open it from the "<strong>Settings</strong>" menu. The configuration is actually applied at the moment you press "Start Acceleration"; settings cannot be changed while acceleration is running.</p>
+
+<h3 id="set-disk-en">iSCSI listen port</h3>
+<ul>
+    <li><strong>Listen port</strong>: normally no need to change unless you have a special requirement. Default <code>3260</code>, range 1–65535. It listens only on loopback <code>127.0.0.1</code>, for the local iSCSI initiator to connect.</li>
+</ul>
+
+<h3 id="set-l1-en">L1 cache settings (memory cache)</h3>
+<ul>
+    <li><strong>Enable L1 cache</strong>: <strong>on</strong> by default. Turning it off stops using the L1 cache; it does not affect L2.</li>
+    <li><strong>Eviction start threshold (memory usage)</strong>: default <code>80%</code>. When system memory usage exceeds it, cold blocks start being evicted to free memory.</li>
+    <li><strong>Stop caching threshold (memory usage)</strong>: default <code>90%</code>. If too much data cannot be evicted in time and usage exceeds it, new cache data stops being accepted. Keep "eviction &lt; stop".</li>
+</ul>
+
+<h3 id="set-l2-en">L2 cache settings (disk cache)</h3>
+<ul>
+    <li><strong>Enable L2 cache</strong>: <strong>off</strong> by default.</li>
+    <li><strong>L2 cache drive</strong>: a drop-down of the currently available drive letters. Choose a fast, high-performance SSD.</li>
+    <li><strong>Size budget (GiB)</strong>: default <code>8</code>, range 1–64. The most L2 may occupy on the cache disk. If an L2 cache already exists, do not change it — changing it only allows a clear-and-rebuild.</li>
+    <p class="tip">&nbsp;Unlike L1, L2 immediately partitions the budget and occupies that disk space, to keep the cache stable.</p>
+    <li><strong>Conservative line (L2 usage)</strong>: default <code>80%</code>, range 50–99%. Once L2 usage exceeds it, the admission policy switches to conservative.</li>
+</ul>
+<p><strong>Estimated extra memory</strong>: some necessary memory overhead beyond the cache itself grows as the cache grows; the bottom of the window gives an estimate — decide the budget sensibly against your free memory.</p>
+
+<h2 id="inspector-en">Inspector</h2>
+<p>Open it from the "<strong>Inspector</strong>" menu to watch the current run state and statistics, so you can tell whether acceleration is doing its job. There are two tabs at the top:</p>
+
+<h3>Brief tab</h3>
+<ul>
+    <li><strong>Two speed boxes</strong>: "accelerated read" is the speed at which various software reads the disk after acceleration; "source read" reflects how busy the actual disk is / the speed of all fallback reads.</li>
+    <li><strong>Hit indicator bars</strong>: L1 hits / L2 hits / source reads by block count over different time scales. Fewer source reads means better acceleration over that period.</li>
+    <li><strong>L1 memory watermark bar</strong> and <strong>L2 usage bar</strong>.</li>
+    <li>Footer: the iSCSI connection count and the snapshot time.</li>
+</ul>
+
+<h3>Detail tab</h3>
+<p>Usually nothing to worry about during use; it is plain text, handy for copying and pasting to an AI when troubleshooting.</p>
+
+<h3>Floating window and top-most</h3>
+<ul>
+    <li>When the inspector is <strong>minimized</strong>, it turns into a <strong>50×50 floating window</strong> for checking acceleration at any time: split into left/right halves showing the "accelerated read" and "source read" speeds in grayscale. Single-click the floating window to open the inspector.</li>
+    <li>Restoring the inspector hides the floating window automatically.</li>
+    <li>If you do not want it, just close the inspector entirely.&nbsp;</li>
+</ul>
+
+<h2 id="verify-en">Verify L2</h2>
+
+<p>It is forced when the program judges the L2 cache's trustworthiness to be in doubt. You can also trigger it manually, but in normal use it is usually unnecessary.&nbsp;<strong>&nbsp;</strong></p>
+<div class="warn"> <strong>⚠ Note:</strong> while L2 is enabled, <strong>it is your responsibility to avoid</strong> operations that make <strong>L2 and the actual data inconsistent</strong>, such as manually taking the disk offline or using the disk from another computer / another OS in a dual-boot setup. The program cannot reliably detect such operations automatically, so you should <strong>manually trigger a round of L2 verification</strong>. If you are unsure whether your operation could cause the above problem, you should also <strong>manually trigger a round of L2 verification</strong>.</div>
+<p>To verify manually:&nbsp;</p>
+
+<ol>
+    <li>Menu "<strong>Verify L2</strong>" → confirm the physical disk to verify.</li>
+    <li>Click "<strong>Verify</strong>": the program compares the L2 cache against the source disk block by block; this may take minutes depending on how much L2 is in use.</li>
+    <li>The result reads "consistent: all N blocks equal" or "N inconsistent blocks (error rate …)".</li>
+    <li>If inconsistencies are found, click "<strong>Repair</strong>": it writes the source data back into the L2 container and fixes those scrambled blocks.</li>
+</ol>
+
+<div class="warn">Verification reads the source disk read-only, so it cannot run while acceleration is active — stop first. You can "Cancel" at any time; cancelling does not damage the existing cache.</div>
+
+<h2 id="reonline-en">Re-online a Disk (give the disk back to the system)</h2>
+
+<p>After stopping acceleration the target disk stays offline and invisible to the system, ready for the next acceleration. To give it back to the OS, there are two ways:</p>
+<ul>
+    <li>Menu "<strong>Re-online Disk</strong>": the list shows only offline disks — most likely the ones you accelerated. Pick one and confirm to finish in one click.</li>
+    <li>Or use the Windows built-in: <strong>Disk Management → right-click the disk → Online</strong>. If that fails, you can also consult an AI and bring it online from the command line.</li>
+</ul>
+
+<div class="note">Once online, the disk <strong>leaves this program's control</strong> and may be written by other programs. If you have L2 enabled, <strong>the next start of acceleration will force an L2 verification</strong> (may take a minute or two). The program gives you this reminder.</div>
+
+<h2 id="remote-en">Remote Acceleration (Experimental)</h2>
+
+<div class="warn">
+    <p> <strong>⚠ Experimental feature</strong>: under development, not yet fully validated. Availability is not guaranteed (pairing may fail, the link may drop, it may become unresponsive for a long time); data safety is not guaranteed (the channel is <strong>unencrypted</strong>; when you agree to lend a disk, this machine takes the whole physical disk offline and hands it over — whatever the peer writes, and defects in the program itself, may corrupt the data on it). <strong>Do not use it;</strong> if you click it by accident, click "Cancel". </p>
+    <p>If you really want this feature, you can submit an issue, or just contribute some code to us with AI.&nbsp;</p>
+</div>
+
+<p>Remote acceleration is for borrowing a physical disk from <strong>another machine</strong> over the network to accelerate locally (or, conversely, lending this machine's disk to a peer).</p>
+
+<h3>Server side (the one lending the disk)</h3>
+<ol>
+    <li>Open the "<strong>Remote</strong>" menu and choose "<strong>Open remote service (listen here, wait for the peer)</strong>".</li>
+    <li>Enter the listen port (default <code>10808</code>) and click "<strong>Open remote service</strong>".</li>
+    <li>When a client asks to use a disk, this machine prompts you to confirm "trust and take offline".</li>
+</ol>
+
+<h3>Client side (the one using the disk)</h3>
+<ol>
+    <li>Choose "<strong>Pair with remote service (connect to the peer)</strong>".</li>
+    <li>Enter the peer address as <code>host:port</code> (e.g. <code>192.168.1.5:10808</code>) and click "<strong>Pair</strong>".</li>
+    <li>Once paired, "Start Acceleration" lists the <strong>peer's disks</strong>; pick one. From there it works like local acceleration.</li>
+</ol>
+
+<h3>Disconnecting and caveats</h3>
+<ul>
+    <li>Click "<strong>Disconnect</strong>" to end pairing.</li>
+    <li>While still paired, closing the remote service is refused — disconnect first.</li>
+    <li>Remote mode <strong>does not support block-by-block L2 verification</strong>; on a mismatch the only option is clear-and-rebuild.</li>
+    <li>Anyone who can reach this machine can <em>list</em> disks, but actually using one still requires your per-request confirmation.</li>
+</ul>
+
+<h2 id="tray-en">Tray &amp; Exit</h2>
+<ul>
+    <li><strong>Closing the main window while accelerating</strong> does not exit; the program minimizes to the <strong>notification area (tray)</strong> and shows an icon. The inspector and floating window are unaffected and do not minimize with it.</li>
+    <li><strong>Single-click the tray icon</strong> to bring the main window back (the icon then disappears). The tray icon appears only while the window is hidden.</li>
+    <li><strong>There is only one exit path</strong>: stop acceleration first, then close the window to really exit.</li>
+</ul>
+
+<h2 id="lang-en">Language &amp; Theme</h2>
+<ul>
+    <li><strong>Language</strong>: switch via the "🌍 Language" menu. Switching takes effect <strong>immediately</strong>. The default follows the system.</li>
+    <li><strong>Theme</strong>: the UI light / dark follows the system. The app icon switches with the theme; if a desktop shortcut already exists, its icon is updated too (the program <strong>only updates existing shortcuts</strong>; it never creates or deletes them).</li>
+</ul>
+
+<h2 id="faq-en">FAQ</h2>
+
+<h3>The disk disappeared from Windows after stopping?</h3>
+<p>Normal. After stopping, the disk keeps the "offline and exclusively owned by this program" state so the cache stays trustworthy across reboots. To use it again, just accelerate again; you can also use the menu "Re-online Disk" or "Disk Management → Online" to give it back. See the "Re-online a Disk" section.</p>
+
+<h3>"L2 cache mismatch" or "needs verification" at startup?</h3>
+<p><strong>These are two different dialogs. Both use "Yes / No", but Yes means opposite things</strong> — judge by what the title and body say:</p>
+<ul>
+    <li><strong>"L2 cache mismatch"</strong> (the disk or configuration changed): <strong>Yes = clear this L2 and rebuild</strong> (everything in it is discarded and re-learned); No = abort startup and change nothing (you will be asked again next time). This is a reminder to pick the previous disk / restore the previous configuration.</li>
+    <li><strong>"L2 cache needs verification"</strong> (abnormal shutdown last time, the disk was originally online, etc.): <strong>Yes = start verifying now</strong> (opens the verify window and compares block by block, which may take minutes; if it comes back clean, startup continues with this L2); No = clear this L2 and continue startup. The default is Yes.</li>
+</ul>
+<p>If unsure: in the "mismatch" dialog choose No to abort startup, then run "Verify L2" from the menu to compare block by block and repair before starting — that is the safest step.</p>
+
+<h3>"Could not acquire the L2 single-instance lock"?</h3>
+<p>The target is running, or another FlyDisk instance is using this cache. Click "Stop Acceleration" first.</p>
+
+<h3>Startup fails, saying the disk is busy / cannot be opened exclusively?</h3>
+<p>The disk is in use. Make sure no other program (backup software, antivirus, another FlyDisk instance) is using it, then retry.</p>
+
+<h3>It says startup succeeded, but iSCSI did not auto-mount so the disk is invisible?</h3>
+<p>You can go to "Start menu → Windows Administrative Tools → iSCSI Initiator" and connect manually. For first-time use of the iSCSI Initiator, the steps are:</p>
+<ol>
+  <li> Open the iSCSI Initiator.</li>
+  <li>Click the Discovery tab → Discover Portal (P) → enter "127.0.0.1" as the IP address → OK (O).</li>
+  <li>Click the Targets tab → Refresh (R) → Connect (N) → OK.</li>
+  <li>Check in "This PC" that the accelerated disk appears and works normally.&nbsp;</li>
+</ol>
+
+<p>If there are still problems, you can download the project source code and consult an AI with it.&nbsp;</p>
+
+<h2 id="notices-en">Third-Party Notices</h2>
+<p>FlyDisk itself is released under the <strong>GNU GPL v3 or later</strong>. In addition, it uses the following third-party components and resources. Their full license texts are collected at the end of this page; they are language-neutral and are not duplicated per language.</p>
+
+<h3>Libraries distributed with the program</h3>
+<table>
+<tr><th>Component</th><th>Version</th><th>Purpose</th><th>License</th></tr>
+<tr><td>ISCSI</td><td>1.5.6</td><td>iSCSI target, PDU encoding/decoding, login negotiation, SCSI command dispatch</td><td>LGPL-3.0-or-later</td></tr>
+<tr><td>DiskAccessLibrary</td><td>1.6.3</td><td>Disk base classes (CachedPhysicalDisk inherits Disk)</td><td>LGPL-3.0-or-later</td></tr>
+<tr><td>DiskAccessLibrary.Win32</td><td>1.6.3</td><td>PhysicalDiskControl: disk geometry, online status, device number, device descriptor</td><td>LGPL-3.0-or-later</td></tr>
+<tr><td>System.ServiceProcess.ServiceController</td><td>10.0.12</td><td>Start the MSiSCSI service</td><td>MIT</td></tr>
+</table>
+
+<h3>Resources distributed with the program</h3>
+<table>
+<tr><th>Resource</th><th>Purpose</th><th>License</th></tr>
+<tr><td>fusion-pixel-12px-proportional-zh_hans.ttf (Fusion Pixel Font)</td><td>Pixel font for the main window title and subtitle, embedded in the exe</td><td>SIL OFL 1.1 (font) + MIT (toolchain)</td></tr>
+</table>
+
+<h3>Copyright notices</h3>
+<ul>
+<li>ISCSI, DiskAccessLibrary, DiskAccessLibrary.Win32: Copyright © Tal Aloni 2012-2024 (https://github.com/TalAloni/iSCSIConsole , https://github.com/TalAloni/DiskAccessLibrary)</li>
+<li>System.ServiceProcess.ServiceController: Copyright (c) .NET Foundation and Contributors (https://github.com/dotnet/dotnet)</li>
+<li>Fusion Pixel Font: Copyright (c) 2022, TakWolf (https://takwolf.com , https://github.com/TakWolf/fusion-pixel-font)</li>
+</ul>
+
+<h3>LGPL-3.0 compliance notes (first three libraries)</h3>
+<ol>
+<li>Distribute the full LGPL-3.0 and GPL-3.0 texts (LGPL-3.0 incorporates the GPL-3.0 terms by reference) together with the copyright notices above.</li>
+<li>These libraries must not be sold by themselves.</li>
+<li>Users must be able to replace these libraries. This project references them as .NET assemblies (not statically linked); they can be replaced by swapping ISCSI.dll, DiskAccessLibrary.dll and DiskAccessLibrary.Win32.dll.</li>
+</ol>
+
+<p>The full license texts are at the end of this page under "Show full license texts".</p>
+
+</div>
+
+<!-- 许可证全文（语言中立，不随中英切换，不进目录；各组件的说明文字见各自语言区块） -->
+<section class="license-texts">
+<details>
+<summary>展开查看全部许可证全文 / Show full license texts（LGPL-3.0 · GPL-3.0 · MIT · OFL 1.1 · Third-Party Notices）</summary>
+
+<h4>1. GNU Lesser General Public License v3（or later）— ISCSI / DiskAccessLibrary / DiskAccessLibrary.Win32</h4>
+<pre>                   GNU LESSER GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. &lt;https://fsf.org/&gt;
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+
+  This version of the GNU Lesser General Public License incorporates
+the terms and conditions of version 3 of the GNU General Public
+License, supplemented by the additional permissions listed below.
+
+  0. Additional Definitions.
+
+  As used herein, "this License" refers to version 3 of the GNU Lesser
+General Public License, and the "GNU GPL" refers to version 3 of the GNU
+General Public License.
+
+  "The Library" refers to a covered work governed by this License,
+other than an Application or a Combined Work as defined below.
+
+  An "Application" is any work that makes use of an interface provided
+by the Library, but which is not otherwise based on the Library.
+Defining a subclass of a class defined by the Library is deemed a mode
+of using an interface provided by the Library.
+
+  A "Combined Work" is a work produced by combining or linking an
+Application with the Library.  The particular version of the Library
+with which the Combined Work was made is also called the "Linked
+Version".
+
+  The "Minimal Corresponding Source" for a Combined Work means the
+Corresponding Source for the Combined Work, excluding any source code
+for portions of the Combined Work that, considered in isolation, are
+based on the Application, and not on the Linked Version.
+
+  The "Corresponding Application Code" for a Combined Work means the
+object code and/or source code for the Application, including any data
+and utility programs needed for reproducing the Combined Work from the
+Application, but excluding the System Libraries of the Combined Work.
+
+  1. Exception to Section 3 of the GNU GPL.
+
+  You may convey a covered work under sections 3 and 4 of this License
+without being bound by section 3 of the GNU GPL.
+
+  2. Conveying Modified Versions.
+
+  If you modify a copy of the Library, and, in your modifications, a
+facility refers to a function or data to be supplied by an Application
+that uses the facility (other than as an argument passed when the
+facility is invoked), then you may convey a copy of the modified
+version:
+
+   a) under this License, provided that you make a good faith effort to
+   ensure that, in the event an Application does not supply the
+   function or data, the facility still operates, and performs
+   whatever part of its purpose remains meaningful, or
+
+   b) under the GNU GPL, with none of the additional permissions of
+   this License applicable to that copy.
+
+  3. Object Code Incorporating Material from Library Header Files.
+
+  The object code form of an Application may incorporate material from
+a header file that is part of the Library.  You may convey such object
+code under terms of your choice, provided that, if the incorporated
+material is not limited to numerical parameters, data structure
+layouts and accessors, or small macros, inline functions and templates
+(ten or fewer lines in length), you do both of the following:
+
+   a) Give prominent notice with each copy of the object code that the
+   Library is used in it and that the Library and its use are
+   covered by this License.
+
+   b) Accompany the object code with a copy of the GNU GPL and this license
+   document.
+
+  4. Combined Works.
+
+  You may convey a Combined Work under terms of your choice that,
+taken together, effectively do not restrict modification of the
+portions of the Library contained in the Combined Work and reverse
+engineering for debugging such modifications, if you also do each of
+the following:
+
+   a) Give prominent notice with each copy of the Combined Work that
+   the Library is used in it and that the Library and its use are
+   covered by this License.
+
+   b) Accompany the Combined Work with a copy of the GNU GPL and this license
+   document.
+
+   c) For a Combined Work that displays copyright notices during
+   execution, include the copyright notice for the Library among
+   these notices, as well as a reference directing the user to the
+   copies of the GNU GPL and this license document.
+
+   d) Do one of the following:
+
+       0) Convey the Minimal Corresponding Source under the terms of this
+       License, and the Corresponding Application Code in a form
+       suitable for, and under terms that permit, the user to
+       recombine or relink the Application with a modified version of
+       the Linked Version to produce a modified Combined Work, in the
+       manner specified by section 6 of the GNU GPL for conveying
+       Corresponding Source.
+
+       1) Use a suitable shared library mechanism for linking with the
+       Library.  A suitable mechanism is one that (a) uses at run time
+       a copy of the Library already present on the user's computer
+       system, and (b) will operate properly with a modified version
+       of the Library that is interface-compatible with the Linked
+       Version.
+
+   e) Provide Installation Information, but only if you would otherwise
+   be required to provide such information under section 6 of the
+   GNU GPL, and only to the extent that such information is
+   necessary to install and execute a modified version of the
+   Combined Work produced by recombining or relinking the
+   Application with a modified version of the Linked Version. (If
+   you use option 4d0, the Installation Information must accompany
+   the Minimal Corresponding Source and Corresponding Application
+   Code. If you use option 4d1, you must provide the Installation
+   Information in the manner specified by section 6 of the GNU GPL
+   for conveying Corresponding Source.)
+
+  5. Combined Libraries.
+
+  You may place library facilities that are a work based on the
+Library side by side in a single library together with other library
+facilities that are not Applications and are not covered by this
+License, and convey such a combined library under terms of your
+choice, if you do both of the following:
+
+   a) Accompany the combined library with a copy of the same work based
+   on the Library, uncombined with any other library facilities,
+   conveyed under the terms of this License.
+
+   b) Give prominent notice with the combined library that part of it
+   is a work based on the Library, and explaining where to find the
+   accompanying uncombined form of the same work.
+
+  6. Revised Versions of the GNU Lesser General Public License.
+
+  The Free Software Foundation may publish revised and/or new versions
+of the GNU Lesser General Public License from time to time. Such new
+versions will be similar in spirit to the present version, but may
+differ in detail to address new problems or concerns.
+
+  Each version is given a distinguishing version number. If the
+Library as you received it specifies that a certain numbered version
+of the GNU Lesser General Public License "or any later version"
+applies to it, you have the option of following the terms and
+conditions either of that published version or of any later version
+published by the Free Software Foundation. If the Library as you
+received it does not specify a version number of the GNU Lesser
+General Public License, you may choose any version of the GNU Lesser
+General Public License ever published by the Free Software Foundation.
+
+  If the Library as you received it specifies that a proxy can decide
+whether future versions of the GNU Lesser General Public License shall
+apply, that proxy's public statement of acceptance of any version is
+permanent authorization for you to choose that version for the
+Library.
+</pre>
+
+<h4>2. GNU General Public License v3 — 本项目自身许可证 / LGPL-3.0 的引用条款</h4>
+<pre>                    GNU GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. &lt;https://fsf.org/&gt;
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+                            Preamble
+
+  The GNU General Public License is a free, copyleft license for
+software and other kinds of works.
+
+  The licenses for most software and other practical works are designed
+to take away your freedom to share and change the works.  By contrast,
+the GNU General Public License is intended to guarantee your freedom to
+share and change all versions of a program--to make sure it remains free
+software for all its users.  We, the Free Software Foundation, use the
+GNU General Public License for most of our software; it applies also to
+any other work released this way by its authors.  You can apply it to
+your programs, too.
+
+  When we speak of free software, we are referring to freedom, not
+price.  Our General Public Licenses are designed to make sure that you
+have the freedom to distribute copies of free software (and charge for
+them if you wish), that you receive source code or can get it if you
+want it, that you can change the software or use pieces of it in new
+free programs, and that you know you can do these things.
+
+  To protect your rights, we need to prevent others from denying you
+these rights or asking you to surrender the rights.  Therefore, you have
+certain responsibilities if you distribute copies of the software, or if
+you modify it: responsibilities to respect the freedom of others.
+
+  For example, if you distribute copies of such a program, whether
+gratis or for a fee, you must pass on to the recipients the same
+freedoms that you received.  You must make sure that they, too, receive
+or can get the source code.  And you must show them these terms so they
+know their rights.
+
+  Developers that use the GNU GPL protect your rights with two steps:
+(1) assert copyright on the software, and (2) offer you this License
+giving you legal permission to copy, distribute and/or modify it.
+
+  For the developers' and authors' protection, the GPL clearly explains
+that there is no warranty for this free software.  For both users' and
+authors' sake, the GPL requires that modified versions be marked as
+changed, so that their problems will not be attributed erroneously to
+authors of previous versions.
+
+  Some devices are designed to deny users access to install or run
+modified versions of the software inside them, although the manufacturer
+can do so.  This is fundamentally incompatible with the aim of
+protecting users' freedom to change the software.  The systematic
+pattern of such abuse occurs in the area of products for individuals to
+use, which is precisely where it is most unacceptable.  Therefore, we
+have designed this version of the GPL to prohibit the practice for those
+products.  If such problems arise substantially in other domains, we
+stand ready to extend this provision to those domains in future versions
+of the GPL, as needed to protect the freedom of users.
+
+  Finally, every program is threatened constantly by software patents.
+States should not allow patents to restrict development and use of
+software on general-purpose computers, but in those that do, we wish to
+avoid the special danger that patents applied to a free program could
+make it effectively proprietary.  To prevent this, the GPL assures that
+patents cannot be used to render the program non-free.
+
+  The precise terms and conditions for copying, distribution and
+modification follow.
+
+                       TERMS AND CONDITIONS
+
+  0. Definitions.
+
+  "This License" refers to version 3 of the GNU General Public License.
+
+  "Copyright" also means copyright-like laws that apply to other kinds of
+works, such as semiconductor masks.
+
+  "The Program" refers to any copyrightable work licensed under this
+License.  Each licensee is addressed as "you".  "Licensees" and
+"recipients" may be individuals or organizations.
+
+  To "modify" a work means to copy from or adapt all or part of the work
+in a fashion requiring copyright permission, other than the making of an
+exact copy.  The resulting work is called a "modified version" of the
+earlier work or a work "based on" the earlier work.
+
+  A "covered work" means either the unmodified Program or a work based
+on the Program.
+
+  To "propagate" a work means to do anything with it that, without
+permission, would make you directly or secondarily liable for
+infringement under applicable copyright law, except executing it on a
+computer or modifying a private copy.  Propagation includes copying,
+distribution (with or without modification), making available to the
+public, and in some countries other activities as well.
+
+  To "convey" a work means any kind of propagation that enables other
+parties to make or receive copies.  Mere interaction with a user through
+a computer network, with no transfer of a copy, is not conveying.
+
+  An interactive user interface displays "Appropriate Legal Notices"
+to the extent that it includes a convenient and prominently visible
+feature that (1) displays an appropriate copyright notice, and (2)
+tells the user that there is no warranty for the work (except to the
+extent that warranties are provided), that licensees may convey the
+work under this License, and how to view a copy of this License.  If
+the interface presents a list of user commands or options, such as a
+menu, a prominent item in the list meets this criterion.
+
+  1. Source Code.
+
+  The "source code" for a work means the preferred form of the work
+for making modifications to it.  "Object code" means any non-source
+form of a work.
+
+  A "Standard Interface" means an interface that either is an official
+standard defined by a recognized standards body, or, in the case of
+interfaces specified for a particular programming language, one that
+is widely used among developers working in that language.
+
+  The "System Libraries" of an executable work include anything, other
+than the work as a whole, that (a) is included in the normal form of
+packaging a Major Component, but which is not part of that Major
+Component, and (b) serves only to enable use of the work with that
+Major Component, or to implement a Standard Interface for which an
+implementation is available to the public in source code form.  A
+"Major Component", in this context, means a major essential component
+(kernel, window system, and so on) of the specific operating system
+(if any) on which the executable work runs, or a compiler used to
+produce the work, or an object code interpreter used to run it.
+
+  The "Corresponding Source" for a work in object code form means all
+the source code needed to generate, install, and (for an executable
+work) run the object code and to modify the work, including scripts to
+control those activities.  However, it does not include the work's
+System Libraries, or general-purpose tools or generally available free
+programs which are used unmodified in performing those activities but
+which are not part of the work.  For example, Corresponding Source
+includes interface definition files associated with source files for
+the work, and the source code for shared libraries and dynamically
+linked subprograms that the work is specifically designed to require,
+such as by intimate data communication or control flow between those
+subprograms and other parts of the work.
+
+  The Corresponding Source need not include anything that users
+can regenerate automatically from other parts of the Corresponding
+Source.
+
+  The Corresponding Source for a work in source code form is that
+same work.
+
+  2. Basic Permissions.
+
+  All rights granted under this License are granted for the term of
+copyright on the Program, and are irrevocable provided the stated
+conditions are met.  This License explicitly affirms your unlimited
+permission to run the unmodified Program.  The output from running a
+covered work is covered by this License only if the output, given its
+content, constitutes a covered work.  This License acknowledges your
+rights of fair use or other equivalent, as provided by copyright law.
+
+  You may make, run and propagate covered works that you do not
+convey, without conditions so long as your license otherwise remains
+in force.  You may convey covered works to others for the sole purpose
+of having them make modifications exclusively for you, or provide you
+with facilities for running those works, provided that you comply with
+the terms of this License in conveying all material for which you do
+not control copyright.  Those thus making or running the covered works
+for you must do so exclusively on your behalf, under your direction
+and control, on terms that prohibit them from making any copies of
+your copyrighted material outside their relationship with you.
+
+  Conveying under any other circumstances is permitted solely under
+the conditions stated below.  Sublicensing is not allowed; section 10
+makes it unnecessary.
+
+  3. Protecting Users' Legal Rights From Anti-Circumvention Law.
+
+  No covered work shall be deemed part of an effective technological
+measure under any applicable law fulfilling obligations under article
+11 of the WIPO copyright treaty adopted on 20 December 1996, or
+similar laws prohibiting or restricting circumvention of such
+measures.
+
+  When you convey a covered work, you waive any legal power to forbid
+circumvention of technological measures to the extent such circumvention
+is effected by exercising rights under this License with respect to
+the covered work, and you disclaim any intention to limit operation or
+modification of the work as a means of enforcing, against the work's
+users, your or third parties' legal rights to forbid circumvention of
+technological measures.
+
+  4. Conveying Verbatim Copies.
+
+  You may convey verbatim copies of the Program's source code as you
+receive it, in any medium, provided that you conspicuously and
+appropriately publish on each copy an appropriate copyright notice;
+keep intact all notices stating that this License and any
+non-permissive terms added in accord with section 7 apply to the code;
+keep intact all notices of the absence of any warranty; and give all
+recipients a copy of this License along with the Program.
+
+  You may charge any price or no price for each copy that you convey,
+and you may offer support or warranty protection for a fee.
+
+  5. Conveying Modified Source Versions.
+
+  You may convey a work based on the Program, or the modifications to
+produce it from the Program, in the form of source code under the
+terms of section 4, provided that you also meet all of these conditions:
+
+    a) The work must carry prominent notices stating that you modified
+    it, and giving a relevant date.
+
+    b) The work must carry prominent notices stating that it is
+    released under this License and any conditions added under section
+    7.  This requirement modifies the requirement in section 4 to
+    "keep intact all notices".
+
+    c) You must license the entire work, as a whole, under this
+    License to anyone who comes into possession of a copy.  This
+    License will therefore apply, along with any applicable section 7
+    additional terms, to the whole of the work, and all its parts,
+    regardless of how they are packaged.  This License gives no
+    permission to license the work in any other way, but it does not
+    invalidate such permission if you have separately received it.
+
+    d) If the work has interactive user interfaces, each must display
+    Appropriate Legal Notices; however, if the Program has interactive
+    interfaces that do not display Appropriate Legal Notices, your
+    work need not make them do so.
+
+  A compilation of a covered work with other separate and independent
+works, which are not by their nature extensions of the covered work,
+and which are not combined with it such as to form a larger program,
+in or on a volume of a storage or distribution medium, is called an
+"aggregate" if the compilation and its resulting copyright are not
+used to limit the access or legal rights of the compilation's users
+beyond what the individual works permit.  Inclusion of a covered work
+in an aggregate does not cause this License to apply to the other
+parts of the aggregate.
+
+  6. Conveying Non-Source Forms.
+
+  You may convey a covered work in object code form under the terms
+of sections 4 and 5, provided that you also convey the
+machine-readable Corresponding Source under the terms of this License,
+in one of these ways:
+
+    a) Convey the object code in, or embodied in, a physical product
+    (including a physical distribution medium), accompanied by the
+    Corresponding Source fixed on a durable physical medium
+    customarily used for software interchange.
+
+    b) Convey the object code in, or embodied in, a physical product
+    (including a physical distribution medium), accompanied by a
+    written offer, valid for at least three years and valid for as
+    long as you offer spare parts or customer support for that product
+    model, to give anyone who possesses the object code either (1) a
+    copy of the Corresponding Source for all the software in the
+    product that is covered by this License, on a durable physical
+    medium customarily used for software interchange, for a price no
+    more than your reasonable cost of physically performing this
+    conveying of source, or (2) access to copy the
+    Corresponding Source from a network server at no charge.
+
+    c) Convey individual copies of the object code with a copy of the
+    written offer to provide the Corresponding Source.  This
+    alternative is allowed only occasionally and noncommercially, and
+    only if you received the object code with such an offer, in accord
+    with subsection 6b.
+
+    d) Convey the object code by offering access from a designated
+    place (gratis or for a charge), and offer equivalent access to the
+    Corresponding Source in the same way through the same place at no
+    further charge.  You need not require recipients to copy the
+    Corresponding Source along with the object code.  If the place to
+    copy the object code is a network server, the Corresponding Source
+    may be on a different server (operated by you or a third party)
+    that supports equivalent copying facilities, provided you maintain
+    clear directions next to the object code saying where to find the
+    Corresponding Source.  Regardless of what server hosts the
+    Corresponding Source, you remain obligated to ensure that it is
+    available for as long as needed to satisfy these requirements.
+
+    e) Convey the object code using peer-to-peer transmission, provided
+    you inform other peers where the object code and Corresponding
+    Source of the work are being offered to the general public at no
+    charge under subsection 6d.
+
+  A separable portion of the object code, whose source code is excluded
+from the Corresponding Source as a System Library, need not be
+included in conveying the object code work.
+
+  A "User Product" is either (1) a "consumer product", which means any
+tangible personal property which is normally used for personal, family,
+or household purposes, or (2) anything designed or sold for incorporation
+into a dwelling.  In determining whether a product is a consumer product,
+doubtful cases shall be resolved in favor of coverage.  For a particular
+product received by a particular user, "normally used" refers to a
+typical or common use of that class of product, regardless of the status
+of the particular user or of the way in which the particular user
+actually uses, or expects or is expected to use, the product.  A product
+is a consumer product regardless of whether the product has substantial
+commercial, industrial or non-consumer uses, unless such uses represent
+the only significant mode of use of the product.
+
+  "Installation Information" for a User Product means any methods,
+procedures, authorization keys, or other information required to install
+and execute modified versions of a covered work in that User Product from
+a modified version of its Corresponding Source.  The information must
+suffice to ensure that the continued functioning of the modified object
+code is in no case prevented or interfered with solely because
+modification has been made.
+
+  If you convey an object code work under this section in, or with, or
+specifically for use in, a User Product, and the conveying occurs as
+part of a transaction in which the right of possession and use of the
+User Product is transferred to the recipient in perpetuity or for a
+fixed term (regardless of how the transaction is characterized), the
+Corresponding Source conveyed under this section must be accompanied
+by the Installation Information.  But this requirement does not apply
+if neither you nor any third party retains the ability to install
+modified object code on the User Product (for example, the work has
+been installed in ROM).
+
+  The requirement to provide Installation Information does not include a
+requirement to continue to provide support service, warranty, or updates
+for a work that has been modified or installed by the recipient, or for
+the User Product in which it has been modified or installed.  Access to a
+network may be denied when the modification itself materially and
+adversely affects the operation of the network or violates the rules and
+protocols for communication across the network.
+
+  Corresponding Source conveyed, and Installation Information provided,
+in accord with this section must be in a format that is publicly
+documented (and with an implementation available to the public in
+source code form), and must require no special password or key for
+unpacking, reading or copying.
+
+  7. Additional Terms.
+
+  "Additional permissions" are terms that supplement the terms of this
+License by making exceptions from one or more of its conditions.
+Additional permissions that are applicable to the entire Program shall
+be treated as though they were included in this License, to the extent
+that they are valid under applicable law.  If additional permissions
+apply only to part of the Program, that part may be used separately
+under those permissions, but the entire Program remains governed by
+this License without regard to the additional permissions.
+
+  When you convey a copy of a covered work, you may at your option
+remove any additional permissions from that copy, or from any part of
+it.  (Additional permissions may be written to require their own
+removal in certain cases when you modify the work.)  You may place
+additional permissions on material, added by you to a covered work,
+for which you have or can give appropriate copyright permission.
+
+  Notwithstanding any other provision of this License, for material you
+add to a covered work, you may (if authorized by the copyright holders of
+that material) supplement the terms of this License with terms:
+
+    a) Disclaiming warranty or limiting liability differently from the
+    terms of sections 15 and 16 of this License; or
+
+    b) Requiring preservation of specified reasonable legal notices or
+    author attributions in that material or in the Appropriate Legal
+    Notices displayed by works containing it; or
+
+    c) Prohibiting misrepresentation of the origin of that material, or
+    requiring that modified versions of such material be marked in
+    reasonable ways as different from the original version; or
+
+    d) Limiting the use for publicity purposes of names of licensors or
+    authors of the material; or
+
+    e) Declining to grant rights under trademark law for use of some
+    trade names, trademarks, or service marks; or
+
+    f) Requiring indemnification of licensors and authors of that
+    material by anyone who conveys the material (or modified versions of
+    it) with contractual assumptions of liability to the recipient, for
+    any liability that these contractual assumptions directly impose on
+    those licensors and authors.
+
+  All other non-permissive additional terms are considered "further
+restrictions" within the meaning of section 10.  If the Program as you
+received it, or any part of it, contains a notice stating that it is
+governed by this License along with a term that is a further
+restriction, you may remove that term.  If a license document contains
+a further restriction but permits relicensing or conveying under this
+License, you may add to a covered work material governed by the terms
+of that license document, provided that the further restriction does
+not survive such relicensing or conveying.
+
+  If you add terms to a covered work in accord with this section, you
+must place, in the relevant source files, a statement of the
+additional terms that apply to those files, or a notice indicating
+where to find the applicable terms.
+
+  Additional terms, permissive or non-permissive, may be stated in the
+form of a separately written license, or stated as exceptions;
+the above requirements apply either way.
+
+  8. Termination.
+
+  You may not propagate or modify a covered work except as expressly
+provided under this License.  Any attempt otherwise to propagate or
+modify it is void, and will automatically terminate your rights under
+this License (including any patent licenses granted under the third
+paragraph of section 11).
+
+  However, if you cease all violation of this License, then your
+license from a particular copyright holder is reinstated (a)
+provisionally, unless and until the copyright holder explicitly and
+finally terminates your license, and (b) permanently, if the copyright
+holder fails to notify you of the violation by some reasonable means
+prior to 60 days after the cessation.
+
+  Moreover, your license from a particular copyright holder is
+reinstated permanently if the copyright holder notifies you of the
+violation by some reasonable means, this is the first time you have
+received notice of violation of this License (for any work) from that
+copyright holder, and you cure the violation prior to 30 days after
+your receipt of the notice.
+
+  Termination of your rights under this section does not terminate the
+licenses of parties who have received copies or rights from you under
+this License.  If your rights have been terminated and not permanently
+reinstated, you do not qualify to receive new licenses for the same
+material under section 10.
+
+  9. Acceptance Not Required for Having Copies.
+
+  You are not required to accept this License in order to receive or
+run a copy of the Program.  Ancillary propagation of a covered work
+occurring solely as a consequence of using peer-to-peer transmission
+to receive a copy likewise does not require acceptance.  However,
+nothing other than this License grants you permission to propagate or
+modify any covered work.  These actions infringe copyright if you do
+not accept this License.  Therefore, by modifying or propagating a
+covered work, you indicate your acceptance of this License to do so.
+
+  10. Automatic Licensing of Downstream Recipients.
+
+  Each time you convey a covered work, the recipient automatically
+receives a license from the original licensors, to run, modify and
+propagate that work, subject to this License.  You are not responsible
+for enforcing compliance by third parties with this License.
+
+  An "entity transaction" is a transaction transferring control of an
+organization, or substantially all assets of one, or subdividing an
+organization, or merging organizations.  If propagation of a covered
+work results from an entity transaction, each party to that
+transaction who receives a copy of the work also receives whatever
+licenses to the work the party's predecessor in interest had or could
+give under the previous paragraph, plus a right to possession of the
+Corresponding Source of the work from the predecessor in interest, if
+the predecessor has it or can get it with reasonable efforts.
+
+  You may not impose any further restrictions on the exercise of the
+rights granted or affirmed under this License.  For example, you may
+not impose a license fee, royalty, or other charge for exercise of
+rights granted under this License, and you may not initiate litigation
+(including a cross-claim or counterclaim in a lawsuit) alleging that
+any patent claim is infringed by making, using, selling, offering for
+sale, or importing the Program or any portion of it.
+
+  11. Patents.
+
+  A "contributor" is a copyright holder who authorizes use under this
+License of the Program or a work on which the Program is based.  The
+work thus licensed is called the contributor's "contributor version".
+
+  A contributor's "essential patent claims" are all patent claims
+owned or controlled by the contributor, whether already acquired or
+hereafter acquired, that would be infringed by some manner, permitted
+by this License, of making, using, or selling its contributor version,
+but do not include claims that would be infringed only as a
+consequence of further modification of the contributor version.  For
+purposes of this definition, "control" includes the right to grant
+patent sublicenses in a manner consistent with the requirements of
+this License.
+
+  Each contributor grants you a non-exclusive, worldwide, royalty-free
+patent license under the contributor's essential patent claims, to
+make, use, sell, offer for sale, import and otherwise run, modify and
+propagate the contents of its contributor version.
+
+  In the following three paragraphs, a "patent license" is any express
+agreement or commitment, however denominated, not to enforce a patent
+(such as an express permission to practice a patent or covenant not to
+sue for patent infringement).  To "grant" such a patent license to a
+party means to make such an agreement or commitment not to enforce a
+patent against the party.
+
+  If you convey a covered work, knowingly relying on a patent license,
+and the Corresponding Source of the work is not available for anyone
+to copy, free of charge and under the terms of this License, through a
+publicly available network server or other readily accessible means,
+then you must either (1) cause the Corresponding Source to be so
+available, or (2) arrange to deprive yourself of the benefit of the
+patent license for this particular work, or (3) arrange, in a manner
+consistent with the requirements of this License, to extend the patent
+license to downstream recipients.  "Knowingly relying" means you have
+actual knowledge that, but for the patent license, your conveying the
+covered work in a country, or your recipient's use of the covered work
+in a country, would infringe one or more identifiable patents in that
+country that you have reason to believe are valid.
+
+  If, pursuant to or in connection with a single transaction or
+arrangement, you convey, or propagate by procuring conveyance of, a
+covered work, and grant a patent license to some of the parties
+receiving the covered work authorizing them to use, propagate, modify
+or convey a specific copy of the covered work, then the patent license
+you grant is automatically extended to all recipients of the covered
+work and works based on it.
+
+  A patent license is "discriminatory" if it does not include within
+the scope of its coverage, prohibits the exercise of, or is
+conditioned on the non-exercise of one or more of the rights that are
+specifically granted under this License.  You may not convey a covered
+work if you are a party to an arrangement with a third party that is
+in the business of distributing software, under which you make payment
+to the third party based on the extent of your activity of conveying
+the work, and under which the third party grants, to any of the
+parties who would receive the covered work from you, a discriminatory
+patent license (a) in connection with copies of the covered work
+conveyed by you (or copies made from those copies), or (b) primarily
+for and in connection with specific products or compilations that
+contain the covered work, unless you entered into that arrangement,
+or that patent license was granted, prior to 28 March 2007.
+
+  Nothing in this License shall be construed as excluding or limiting
+any implied license or other defenses to infringement that may
+otherwise be available to you under applicable patent law.
+
+  12. No Surrender of Others' Freedom.
+
+  If conditions are imposed on you (whether by court order, agreement or
+otherwise) that contradict the conditions of this License, they do not
+excuse you from the conditions of this License.  If you cannot convey a
+covered work so as to satisfy simultaneously your obligations under this
+License and any other pertinent obligations, then as a consequence you may
+not convey it at all.  For example, if you agree to terms that obligate you
+to collect a royalty for further conveying from those to whom you convey
+the Program, the only way you could satisfy both those terms and this
+License would be to refrain entirely from conveying the Program.
+
+  13. Use with the GNU Affero General Public License.
+
+  Notwithstanding any other provision of this License, you have
+permission to link or combine any covered work with a work licensed
+under version 3 of the GNU Affero General Public License into a single
+combined work, and to convey the resulting work.  The terms of this
+License will continue to apply to the part which is the covered work,
+but the special requirements of the GNU Affero General Public License,
+section 13, concerning interaction through a network will apply to the
+combination as such.
+
+  14. Revised Versions of this License.
+
+  The Free Software Foundation may publish revised and/or new versions of
+the GNU General Public License from time to time.  Such new versions will
+be similar in spirit to the present version, but may differ in detail to
+address new problems or concerns.
+
+  Each version is given a distinguishing version number.  If the
+Program specifies that a certain numbered version of the GNU General
+Public License "or any later version" applies to it, you have the
+option of following the terms and conditions either of that numbered
+version or of any later version published by the Free Software
+Foundation.  If the Program does not specify a version number of the
+GNU General Public License, you may choose any version ever published
+by the Free Software Foundation.
+
+  If the Program specifies that a proxy can decide which future
+versions of the GNU General Public License can be used, that proxy's
+public statement of acceptance of a version permanently authorizes you
+to choose that version for the Program.
+
+  Later license versions may give you additional or different
+permissions.  However, no additional obligations are imposed on any
+author or copyright holder as a result of your choosing to follow a
+later version.
+
+  15. Disclaimer of Warranty.
+
+  THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY
+APPLICABLE LAW.  EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT
+HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM "AS IS" WITHOUT WARRANTY
+OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO,
+THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+PURPOSE.  THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE PROGRAM
+IS WITH YOU.  SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF
+ALL NECESSARY SERVICING, REPAIR OR CORRECTION.
+
+  16. Limitation of Liability.
+
+  IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING
+WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MODIFIES AND/OR CONVEYS
+THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY
+GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE
+USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT NOT LIMITED TO LOSS OF
+DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD
+PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER PROGRAMS),
+EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGES.
+
+  17. Interpretation of Sections 15 and 16.
+
+  If the disclaimer of warranty and limitation of liability provided
+above cannot be given local legal effect according to their terms,
+reviewing courts shall apply local law that most closely approximates
+an absolute waiver of all civil liability in connection with the
+Program, unless a warranty or assumption of liability accompanies a
+copy of the Program in return for a fee.
+
+                     END OF TERMS AND CONDITIONS
+
+            How to Apply These Terms to Your New Programs
+
+  If you develop a new program, and you want it to be of the greatest
+possible use to the public, the best way to achieve this is to make it
+free software which everyone can redistribute and change under these terms.
+
+  To do so, attach the following notices to the program.  It is safest
+to attach them to the start of each source file to most effectively
+state the exclusion of warranty; and each file should have at least
+the "copyright" line and a pointer to where the full notice is found.
+
+    &lt;one line to give the program's name and a brief idea of what it does.&gt;
+    Copyright (C) &lt;year&gt;  &lt;name of author&gt;
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see &lt;https://www.gnu.org/licenses/&gt;.
+
+Also add information on how to contact you by electronic and paper mail.
+
+  If the program does terminal interaction, make it output a short
+notice like this when it starts in an interactive mode:
+
+    &lt;program&gt;  Copyright (C) &lt;year&gt;  &lt;name of author&gt;
+    This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'.
+    This is free software, and you are welcome to redistribute it
+    under certain conditions; type `show c' for details.
+
+The hypothetical commands `show w' and `show c' should show the appropriate
+parts of the General Public License.  Of course, your program's commands
+might be different; for a GUI interface, you would use an "about box".
+
+  You should also get your employer (if you work as a programmer) or school,
+if any, to sign a "copyright disclaimer" for the program, if necessary.
+For more information on this, and how to apply and follow the GNU GPL, see
+&lt;https://www.gnu.org/licenses/&gt;.
+
+  The GNU General Public License does not permit incorporating your program
+into proprietary programs.  If your program is a subroutine library, you
+may consider it more useful to permit linking proprietary applications with
+the library.  If this is what you want to do, use the GNU Lesser General
+Public License instead of this License.  But first, please read
+&lt;https://www.gnu.org/licenses/why-not-lgpl.html&gt;.
+</pre>
+
+<h4>3. The MIT License — System.ServiceProcess.ServiceController</h4>
+<pre>The MIT License (MIT)
+
+Copyright (c) .NET Foundation and Contributors
+
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre>
+
+<h4>4. Third-Party Notices — .NET 运行时第三方组件声明</h4>
+<pre>.NET Runtime uses third-party libraries or other resources that may be
+distributed under licenses different than the .NET Runtime software.
+
+In the event that we accidentally failed to list a required notice, please
+bring it to our attention. Post an issue or email us:
+
+           dotnet@microsoft.com
+
+The attached notices are provided for information only.
+
+License notice for ASP.NET
+-------------------------------
+
+Copyright (c) .NET Foundation. All rights reserved.
+Licensed under the Apache License, Version 2.0.
+
+Available at
+https://github.com/dotnet/aspnetcore/blob/main/LICENSE.txt
+
+License notice for Slicing-by-8
+-------------------------------
+
+http://sourceforge.net/projects/slicing-by-8/
+
+Copyright (c) 2004-2006 Intel Corporation - All Rights Reserved
+
+
+This software program is licensed subject to the BSD License,  available at
+http://www.opensource.org/licenses/bsd-license.html.
+
+
+License notice for Unicode data
+-------------------------------
+
+https://www.unicode.org/license.html
+
+Copyright © 1991-2024 Unicode, Inc. All rights reserved.
+Distributed under the Terms of Use in https://www.unicode.org/copyright.html.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+License notice for zlib-ng
+-----------------------
+
+https://github.com/zlib-ng/zlib-ng/blob/d54e3769be0c522015b784eca2af258b1c026107/LICENSE.md
+
+(C) 1995-2024 Jean-loup Gailly and Mark Adler
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+
+License notice for opentelemetry-dotnet
+---------------------------------------
+
+https://github.com/open-telemetry/opentelemetry-dotnet/blob/805dd6b4abfa18ef2706d04c30d0ed28dbc2955e/LICENSE.TXT#L1
+
+Apache License
+Version 2.0, January 2004
+http://www.apache.org/licenses/
+
+Copyright The OpenTelemetry Authors
+
+
+License notice for LinuxTracepoints
+-----------------------------------
+
+https://github.com/microsoft/LinuxTracepoints/blob/main/LICENSE
+
+Copyright (c) Microsoft Corporation.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE
+
+License notice for Mono
+-------------------------------
+
+http://www.mono-project.com/docs/about-mono/
+
+Copyright (c) .NET Foundation Contributors
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software  and associated documentation files (the Software), to deal
+in the Software without restriction,  including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense,  and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so,  subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License notice for International Organization for Standardization
+-----------------------------------------------------------------
+
+Portions (C) International Organization for Standardization 1986:
+     Permission to copy in any form is granted for use with
+     conforming SGML systems and applications as defined in
+     ISO 8879, provided this notice is included in all copies.
+
+License notice for Intel
+------------------------
+
+"Copyright (c) 2004-2006 Intel Corporation - All Rights Reserved
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation
+and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for Xamarin and Novell
+-------------------------------------
+
+Copyright (c) 2015 Xamarin, Inc (http://www.xamarin.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Copyright (c) 2011 Novell, Inc (http://www.novell.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Third party notice for W3C
+--------------------------
+
+"W3C SOFTWARE AND DOCUMENT NOTICE AND LICENSE
+Status: This license takes effect 13 May, 2015.
+This work is being provided by the copyright holders under the following license.
+License
+By obtaining and/or copying this work, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions.
+Permission to copy, modify, and distribute this work, with or without modification, for any purpose and without fee or royalty is hereby granted, provided that you include the following on ALL copies of the work or portions thereof, including modifications:
+The full text of this NOTICE in a location viewable to users of the redistributed or derivative work.
+Any pre-existing intellectual property disclaimers, notices, or terms and conditions. If none exist, the W3C Software and Document Short Notice should be included.
+Notice of any changes or modifications, through a copyright statement on the new code or document such as "This software or document includes material copied from or derived from [title and URI of the W3C document]. Copyright © [YEAR] W3C® (MIT, ERCIM, Keio, Beihang)."
+Disclaimers
+THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
+The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to the work without specific, written prior permission. Title to copyright in this work will at all times remain with copyright holders."
+
+License notice for Bit Twiddling Hacks
+--------------------------------------
+
+Bit Twiddling Hacks
+
+By Sean Eron Anderson
+seander@cs.stanford.edu
+
+Individually, the code snippets here are in the public domain (unless otherwise
+noted) — feel free to use them however you please. The aggregate collection and
+descriptions are © 1997-2005 Sean Eron Anderson. The code and descriptions are
+distributed in the hope that they will be useful, but WITHOUT ANY WARRANTY and
+without even the implied warranty of merchantability or fitness for a particular
+purpose.
+
+License notice for Brotli
+--------------------------------------
+
+Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+compress_fragment.c:
+Copyright (c) 2011, Google Inc.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+    * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+""AS IS"" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+decode_fuzzer.c:
+Copyright (c) 2015 The Chromium Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+""AS IS"" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+
+License notice for Json.NET
+-------------------------------
+
+https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md
+
+The MIT License (MIT)
+
+Copyright (c) 2007 James Newton-King
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License notice for vectorized base64 encoding / decoding
+--------------------------------------------------------
+
+Copyright (c) 2005-2007, Nick Galbreath
+Copyright (c) 2013-2017, Alfred Klomp
+Copyright (c) 2015-2017, Wojciech Mula
+Copyright (c) 2016-2017, Matthieu Darbois
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+- Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+- Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in the
+  documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for vectorized hex parsing
+--------------------------------------------------------
+
+Copyright (c) 2022, Geoff Langdale
+Copyright (c) 2022, Wojciech Mula
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+- Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+- Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in the
+  documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for RFC 3492
+---------------------------
+
+The punycode implementation is based on the sample code in RFC 3492
+
+Copyright (C) The Internet Society (2003).  All Rights Reserved.
+
+This document and translations of it may be copied and furnished to
+others, and derivative works that comment on or otherwise explain it
+or assist in its implementation may be prepared, copied, published
+and distributed, in whole or in part, without restriction of any
+kind, provided that the above copyright notice and this paragraph are
+included on all such copies and derivative works.  However, this
+document itself may not be modified in any way, such as by removing
+the copyright notice or references to the Internet Society or other
+Internet organizations, except as needed for the purpose of
+developing Internet standards in which case the procedures for
+copyrights defined in the Internet Standards process must be
+followed, or as required to translate it into languages other than
+English.
+
+The limited permissions granted above are perpetual and will not be
+revoked by the Internet Society or its successors or assigns.
+
+This document and the information contained herein is provided on an
+"AS IS" basis and THE INTERNET SOCIETY AND THE INTERNET ENGINEERING
+TASK FORCE DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING
+BUT NOT LIMITED TO ANY WARRANTY THAT THE USE OF THE INFORMATION
+HEREIN WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF
+MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+Copyright(C) The Internet Society 1997. All Rights Reserved.
+
+This document and translations of it may be copied and furnished to others,
+and derivative works that comment on or otherwise explain it or assist in
+its implementation may be prepared, copied, published and distributed, in
+whole or in part, without restriction of any kind, provided that the above
+copyright notice and this paragraph are included on all such copies and
+derivative works.However, this document itself may not be modified in any
+way, such as by removing the copyright notice or references to the Internet
+Society or other Internet organizations, except as needed for the purpose of
+developing Internet standards in which case the procedures for copyrights
+defined in the Internet Standards process must be followed, or as required
+to translate it into languages other than English.
+
+The limited permissions granted above are perpetual and will not be revoked
+by the Internet Society or its successors or assigns.
+
+This document and the information contained herein is provided on an "AS IS"
+basis and THE INTERNET SOCIETY AND THE INTERNET ENGINEERING TASK FORCE
+DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+ANY WARRANTY THAT THE USE OF THE INFORMATION HEREIN WILL NOT INFRINGE ANY
+RIGHTS OR ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A
+PARTICULAR PURPOSE.
+
+License notice for Algorithm from RFC 4122 -
+A Universally Unique IDentifier (UUID) URN Namespace
+----------------------------------------------------
+
+Copyright (c) 1990- 1993, 1996 Open Software Foundation, Inc.
+Copyright (c) 1989 by Hewlett-Packard Company, Palo Alto, Ca. &amp;
+Digital Equipment Corporation, Maynard, Mass.
+Copyright (c) 1998 Microsoft.
+To anyone who acknowledges that this file is provided "AS IS"
+without any express or implied warranty: permission to use, copy,
+modify, and distribute this file for any purpose is hereby
+granted without fee, provided that the above copyright notices and
+this notice appears in all source code copies, and that none of
+the names of Open Software Foundation, Inc., Hewlett-Packard
+Company, Microsoft, or Digital Equipment Corporation be used in
+advertising or publicity pertaining to distribution of the software
+without specific, written prior permission. Neither Open Software
+Foundation, Inc., Hewlett-Packard Company, Microsoft, nor Digital
+Equipment Corporation makes any representations about the
+suitability of this software for any purpose."
+
+License notice for The LLVM Compiler Infrastructure
+---------------------------------------------------
+
+Developed by:
+
+    LLVM Team
+
+    University of Illinois at Urbana-Champaign
+
+    http://llvm.org
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal with
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimers.
+
+    * Redistributions in binary form must reproduce the above copyright notice,
+      this list of conditions and the following disclaimers in the
+      documentation and/or other materials provided with the distribution.
+
+    * Neither the names of the LLVM Team, University of Illinois at
+      Urbana-Champaign, nor the names of its contributors may be used to
+      endorse or promote products derived from this Software without specific
+      prior written permission.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE
+SOFTWARE.
+
+License notice for Bob Jenkins
+------------------------------
+
+By Bob Jenkins, 1996.  bob_jenkins@burtleburtle.net.  You may use this
+code any way you wish, private, educational, or commercial.  It's free.
+
+License notice for Greg Parker
+------------------------------
+
+Greg Parker     gparker@cs.stanford.edu     December 2000
+This code is in the public domain and may be copied or modified without
+permission.
+
+License notice for libunwind based code
+----------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License notice for Printing Floating-Point Numbers (Dragon4)
+------------------------------------------------------------
+
+/******************************************************************************
+  Copyright (c) 2014 Ryan Juckett
+  http://www.ryanjuckett.com/
+
+  This software is provided 'as-is', without any express or implied
+  warranty. In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+
+  3. This notice may not be removed or altered from any source
+     distribution.
+******************************************************************************/
+
+License notice for Printing Floating-point Numbers (Grisu3)
+-----------------------------------------------------------
+
+Copyright 2012 the V8 project authors. All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for xxHash
+-------------------------
+
+xxHash - Extremely Fast Hash algorithm
+Header File
+Copyright (C) 2012-2021 Yann Collet
+
+BSD 2-Clause License (https://www.opensource.org/licenses/bsd-license.php)
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+     notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+     copyright notice, this list of conditions and the following disclaimer
+     in the documentation and/or other materials provided with the
+     distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+You can contact the author at:
+  - xxHash homepage: https://www.xxhash.com
+  - xxHash source repository: https://github.com/Cyan4973/xxHash
+
+License notice for Berkeley SoftFloat Release 3e
+------------------------------------------------
+
+https://github.com/ucb-bar/berkeley-softfloat-3
+https://github.com/ucb-bar/berkeley-softfloat-3/blob/master/COPYING.txt
+
+License for Berkeley SoftFloat Release 3e
+
+John R. Hauser
+2018 January 20
+
+The following applies to the whole of SoftFloat Release 3e as well as to
+each source file individually.
+
+Copyright 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018 The Regents of the
+University of California.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+ 1. Redistributions of source code must retain the above copyright notice,
+    this list of conditions, and the following disclaimer.
+
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions, and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+
+ 3. Neither the name of the University nor the names of its contributors
+    may be used to endorse or promote products derived from this software
+    without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS "AS IS", AND ANY
+EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, ARE
+DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for xoshiro RNGs
+--------------------------------
+
+Written in 2018 by David Blackman and Sebastiano Vigna (vigna@acm.org)
+
+To the extent possible under law, the author has dedicated all copyright
+and related and neighboring rights to this software to the public domain
+worldwide. This software is distributed without any warranty.
+
+See &lt;http://creativecommons.org/publicdomain/zero/1.0/&gt;.
+
+License for fastmod (https://github.com/lemire/fastmod), ibm-fpgen (https://github.com/nigeltao/parse-number-fxx-test-data) and fastrange (https://github.com/lemire/fastrange)
+--------------------------------------
+
+   Copyright 2018 Daniel Lemire
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+License for sse4-strstr (https://github.com/WojciechMula/sse4-strstr)
+--------------------------------------
+
+   Copyright (c) 2008-2016, Wojciech Mula
+   All rights reserved.
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are
+   met:
+
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+   IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+   TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+   PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+   TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for The C++ REST SDK
+-----------------------------------
+
+C++ REST SDK
+
+The MIT License (MIT)
+
+Copyright (c) Microsoft Corporation
+
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License notice for MessagePack-CSharp
+-------------------------------------
+
+MessagePack for C#
+
+MIT License
+
+Copyright (c) 2017 Yoshifumi Kawai
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License notice for lz4net
+-------------------------------------
+
+lz4net
+
+Copyright (c) 2013-2017, Milosz Krajewski
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for Nerdbank.Streams
+-----------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) Andrew Arnott
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License notice for RapidJSON
+----------------------------
+
+Tencent is pleased to support the open source community by making RapidJSON available.
+
+Copyright (C) 2015 THL A29 Limited, a Tencent company, and Milo Yip. All rights reserved.
+
+Licensed under the MIT License (the "License"); you may not use this file except
+in compliance with the License. You may obtain a copy of the License at
+
+http://opensource.org/licenses/MIT
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+License notice for DirectX Math Library
+---------------------------------------
+
+https://github.com/microsoft/DirectXMath/blob/master/LICENSE
+
+                               The MIT License (MIT)
+
+Copyright (c) 2011-2020 Microsoft Corp
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this
+software and associated documentation files (the "Software"), to deal in the Software
+without restriction, including without limitation the rights to use, copy, modify,
+merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be included in all copies
+or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License notice for ldap4net
+---------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2018 Alexander Chermyanin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License notice for vectorized sorting code
+------------------------------------------
+
+MIT License
+
+Copyright (c) 2020 Dan Shechter
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License notice for musl
+-----------------------
+
+musl as a whole is licensed under the following standard MIT license:
+
+Copyright © 2005-2020 Rich Felker, et al.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+License notice for "Faster Unsigned Division by Constants"
+------------------------------
+
+Reference implementations of computing and using the "magic number" approach to dividing
+by constants, including codegen instructions. The unsigned division incorporates the
+"round down" optimization per ridiculous_fish.
+
+This is free and unencumbered software. Any copyright is dedicated to the Public Domain.
+
+
+License notice for mimalloc
+-----------------------------------
+
+MIT License
+
+Copyright (c) 2019 Microsoft Corporation, Daan Leijen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License for remote stack unwind (https://github.com/llvm/llvm-project/blob/main/lldb/source/Symbol/CompactUnwindInfo.cpp)
+--------------------------------------
+
+Copyright 2019 LLVM Project
+
+Licensed under the Apache License, Version 2.0 (the "License") with LLVM Exceptions;
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+https://llvm.org/LICENSE.txt
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+License notice for Apple header files
+-------------------------------------
+
+Copyright (c) 1980, 1986, 1993
+   The Regents of the University of California.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. All advertising materials mentioning features or use of this software
+   must display the following acknowledgement:
+   This product includes software developed by the University of
+   California, Berkeley and its contributors.
+4. Neither the name of the University nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+
+License notice for JavaScript queues
+-------------------------------------
+
+CREATIVE COMMONS CORPORATION IS NOT A LAW FIRM AND DOES NOT PROVIDE LEGAL SERVICES. DISTRIBUTION OF THIS DOCUMENT DOES NOT CREATE AN ATTORNEY-CLIENT RELATIONSHIP. CREATIVE COMMONS PROVIDES THIS INFORMATION ON AN "AS-IS" BASIS. CREATIVE COMMONS MAKES NO WARRANTIES REGARDING THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS PROVIDED HEREUNDER, AND DISCLAIMS LIABILITY FOR DAMAGES RESULTING FROM THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS PROVIDED HEREUNDER.
+
+Statement of Purpose
+The laws of most jurisdictions throughout the world automatically confer exclusive Copyright and Related Rights (defined below) upon the creator and subsequent owner(s) (each and all, an "owner") of an original work of authorship and/or a database (each, a "Work").
+Certain owners wish to permanently relinquish those rights to a Work for the purpose of contributing to a commons of creative, cultural and scientific works ("Commons") that the public can reliably and without fear of later claims of infringement build upon, modify, incorporate in other works, reuse and redistribute as freely as possible in any form whatsoever and for any purposes, including without limitation commercial purposes. These owners may contribute to the Commons to promote the ideal of a free culture and the further production of creative, cultural and scientific works, or to gain reputation or greater distribution for their Work in part through the use and efforts of others.
+For these and/or other purposes and motivations, and without any expectation of additional consideration or compensation, the person associating CC0 with a Work (the "Affirmer"), to the extent that he or she is an owner of Copyright and Related Rights in the Work, voluntarily elects to apply CC0 to the Work and publicly distribute the Work under its terms, with knowledge of his or her Copyright and Related Rights in the Work and the meaning and intended legal effect of CC0 on those rights.
+
+1. Copyright and Related Rights. A Work made available under CC0 may be protected by copyright and related or neighboring rights ("Copyright and Related Rights"). Copyright and Related Rights include, but are not limited to, the following:
+the right to reproduce, adapt, distribute, perform, display, communicate, and translate a Work;
+moral rights retained by the original author(s) and/or performer(s);
+publicity and privacy rights pertaining to a person's image or likeness depicted in a Work;
+rights protecting against unfair competition in regards to a Work, subject to the limitations in paragraph 4(a), below;
+rights protecting the extraction, dissemination, use and reuse of data in a Work;
+database rights (such as those arising under Directive 96/9/EC of the European Parliament and of the Council of 11 March 1996 on the legal protection of databases, and under any national implementation thereof, including any amended or successor version of such directive); and
+other similar, equivalent or corresponding rights throughout the world based on applicable law or treaty, and any national implementations thereof.
+2. Waiver. To the greatest extent permitted by, but not in contravention of, applicable law, Affirmer hereby overtly, fully, permanently, irrevocably and unconditionally waives, abandons, and surrenders all of Affirmer's Copyright and Related Rights and associated claims and causes of action, whether now known or unknown (including existing as well as future claims and causes of action), in the Work (i) in all territories worldwide, (ii) for the maximum duration provided by applicable law or treaty (including future time extensions), (iii) in any current or future medium and for any number of copies, and (iv) for any purpose whatsoever, including without limitation commercial, advertising or promotional purposes (the "Waiver"). Affirmer makes the Waiver for the benefit of each member of the public at large and to the detriment of Affirmer's heirs and successors, fully intending that such Waiver shall not be subject to revocation, rescission, cancellation, termination, or any other legal or equitable action to disrupt the quiet enjoyment of the Work by the public as contemplated by Affirmer's express Statement of Purpose.
+3. Public License Fallback. Should any part of the Waiver for any reason be judged legally invalid or ineffective under applicable law, then the Waiver shall be preserved to the maximum extent permitted taking into account Affirmer's express Statement of Purpose. In addition, to the extent the Waiver is so judged Affirmer hereby grants to each affected person a royalty-free, non transferable, non sublicensable, non exclusive, irrevocable and unconditional license to exercise Affirmer's Copyright and Related Rights in the Work (i) in all territories worldwide, (ii) for the maximum duration provided by applicable law or treaty (including future time extensions), (iii) in any current or future medium and for any number of copies, and (iv) for any purpose whatsoever, including without limitation commercial, advertising or promotional purposes (the "License"). The License shall be deemed effective as of the date CC0 was applied by Affirmer to the Work. Should any part of the License for any reason be judged legally invalid or ineffective under applicable law, such partial invalidity or ineffectiveness shall not invalidate the remainder of the License, and in such case Affirmer hereby affirms that he or she will not (i) exercise any of his or her remaining Copyright and Related Rights in the Work or (ii) assert any associated claims and causes of action with respect to the Work, in either case contrary to Affirmer's express Statement of Purpose.
+4. Limitations and Disclaimers.
+a. No trademark or patent rights held by Affirmer are waived, abandoned, surrendered, licensed or otherwise affected by this document.
+b. Affirmer offers the Work as-is and makes no representations or warranties of any kind concerning the Work, express, implied, statutory or otherwise, including without limitation warranties of title, merchantability, fitness for a particular purpose, non infringement, or the absence of latent or other defects, accuracy, or the present or absence of errors, whether or not discoverable, all to the greatest extent permissible under applicable law.
+c. Affirmer disclaims responsibility for clearing rights of other persons that may apply to the Work or any use thereof, including without limitation any person's Copyright and Related Rights in the Work. Further, Affirmer disclaims responsibility for obtaining any necessary consents, permissions or other rights required for any use of the Work.
+d. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
+
+
+License notice for FastFloat algorithm
+-------------------------------------
+MIT License
+Copyright (c) 2021 csFastFloat authors
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License notice for MsQuic
+--------------------------------------
+
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+
+Available at
+https://github.com/microsoft/msquic/blob/main/LICENSE
+
+License notice for m-ou-se/floatconv
+-------------------------------
+
+Copyright (c) 2020 Mara Bos &lt;m-ou.se@m-ou.se&gt;
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License notice for code from The Practice of Programming
+-------------------------------
+
+Copyright (C) 1999 Lucent Technologies
+
+Excerpted from 'The Practice of Programming
+by Brian W. Kernighan and Rob Pike
+
+You may use this code for any purpose, as long as you leave the copyright notice and book citation attached.
+
+Notice for Euclidean Affine Functions and Applications to Calendar
+Algorithms
+-------------------------------
+
+Aspects of Date/Time processing based on algorithm described in "Euclidean Affine Functions and Applications to Calendar
+Algorithms", Cassio Neri and Lorenz Schneider. https://arxiv.org/pdf/2102.06959.pdf
+
+License notice for amd/aocl-libm-ose
+-------------------------------
+
+Copyright (C) 2008-2020 Advanced Micro Devices, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+License notice for fmtlib/fmt
+-------------------------------
+
+Formatting library for C++
+
+Copyright (c) 2012 - present, Victor Zverovich
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License for Jb Evain
+---------------------
+
+Copyright (c) 2006 Jb Evain (jbevain@gmail.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+--- Optional exception to the license ---
+
+As an exception, if, as a result of your compiling your source code, portions
+of this Software are embedded into a machine-executable object form of such
+source code, you may redistribute such embedded portions in such object form
+without including the above copyright and permission notices.
+
+
+License for MurmurHash3
+--------------------------------------
+
+https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp
+
+MurmurHash3 was written by Austin Appleby, and is placed in the public
+domain. The author hereby disclaims copyright to this source
+
+License for Fast CRC Computation
+--------------------------------------
+
+https://github.com/intel/isa-l/blob/33a2d9484595c2d6516c920ce39a694c144ddf69/crc/crc32_ieee_by4.asm
+https://github.com/intel/isa-l/blob/33a2d9484595c2d6516c920ce39a694c144ddf69/crc/crc64_ecma_norm_by8.asm
+
+Copyright(c) 2011-2015 Intel Corporation All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+  * Neither the name of Intel Corporation nor the names of its
+    contributors may be used to endorse or promote products derived
+    from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License for C# Implementation of Fast CRC Computation
+-----------------------------------------------------
+
+https://github.com/SixLabors/ImageSharp/blob/f4f689ce67ecbcc35cebddba5aacb603e6d1068a/src/ImageSharp/Formats/Png/Zlib/Crc32.cs
+
+Copyright (c) Six Labors.
+Licensed under the Apache License, Version 2.0.
+
+Available at
+https://github.com/SixLabors/ImageSharp/blob/f4f689ce67ecbcc35cebddba5aacb603e6d1068a/LICENSE
+
+License for the Teddy multi-substring searching implementation
+--------------------------------------
+
+https://github.com/BurntSushi/aho-corasick
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+License notice for Avx512Vbmi base64 encoding / decoding
+--------------------------------------------------------
+
+Copyright (c) 2015-2018, Wojciech Muła
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------
+
+Aspects of base64 encoding / decoding are based on algorithm described in "Base64 encoding and decoding at almost the speed of a memory
+copy", Wojciech Muła and Daniel Lemire. https://arxiv.org/pdf/1910.05109.pdf
+
+License for FormatJS Intl.Segmenter grapheme segmentation algorithm
+--------------------------------------------------------------------------
+Available at https://github.com/formatjs/formatjs/blob/58d6a7b398d776ca3d2726d72ae1573b65cc3bef/packages/intl-segmenter/LICENSE.md
+
+MIT License
+
+Copyright (c) 2022 FormatJS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License for SharpFuzz and related samples
+--------------------------------------
+
+https://github.com/Metalnem/sharpfuzz
+https://github.com/Metalnem/dotnet-fuzzers
+https://github.com/Metalnem/libfuzzer-dotnet
+
+MIT License
+
+Copyright (c) 2018 Nemanja Mijailovic
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License for National Institute of Standards and Technology ACVP Data
+--------------------------------------------------------------------
+Available at https://github.com/usnistgov/ACVP-Server/blob/85f8742965b2691862079172982683757d8d91db/README.md#License
+
+NIST-developed software is provided by NIST as a public service. You may use, copy, and distribute copies of the software in any medium, provided that you keep intact this entire notice. You may improve, modify, and create derivative works of the software or any portion of the software, and you may copy and distribute such modifications or works. Modified works should carry a notice stating that you changed the software and should note the date and nature of any such change. Please explicitly acknowledge the National Institute of Standards and Technology as the source of the software.
+
+NIST-developed software is expressly provided "AS IS." NIST MAKES NO WARRANTY OF ANY KIND, EXPRESS, IMPLIED, IN FACT, OR ARISING BY OPERATION OF LAW, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTY OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND DATA ACCURACY. NIST NEITHER REPRESENTS NOR WARRANTS THAT THE OPERATION OF THE SOFTWARE WILL BE UNINTERRUPTED OR ERROR-FREE, OR THAT ANY DEFECTS WILL BE CORRECTED. NIST DOES NOT WARRANT OR MAKE ANY REPRESENTATIONS REGARDING THE USE OF THE SOFTWARE OR THE RESULTS THEREOF, INCLUDING BUT NOT LIMITED TO THE CORRECTNESS, ACCURACY, RELIABILITY, OR USEFULNESS OF THE SOFTWARE.
+
+You are solely responsible for determining the appropriateness of using and distributing the software and you assume all risks associated with its use, including but not limited to the risks and costs of program errors, compliance with applicable laws, damage to or loss of data, programs or equipment, and the unavailability or interruption of operation. This software is not intended to be used in any situation where a failure could cause risk of injury or damage to property. The software developed by NIST employees is not subject to copyright protection within the United States.
+
+</pre>
+
+<h4>5. SIL Open Font License 1.1 — Fusion Pixel Font 字体本体</h4>
+<pre>Fusion Pixel Font
+https://github.com/TakWolf/fusion-pixel-font
+
+Copyright (c) 2022, TakWolf (https://takwolf.com).
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+https://openfontlicense.org
+
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION &amp; CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
+</pre>
+
+<h4>6. The MIT License — Fusion Pixel Font 工具链</h4>
+<pre>MIT License
+
+Copyright (c) 2022 TakWolf
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre>
+
+</details>
+</section>
+
+<script>
+function toggleCollapse(toggleBtn) {
+    const collapsible = toggleBtn.closest('.toc-collapsible');
+    const content = collapsible.querySelector('.toc-collapsible-content');
+
+    if (collapsible.classList.contains('toc-collapsed')) {
+        collapsible.classList.remove('toc-collapsed');
+        content.style.maxHeight = content.scrollHeight + 'px';
+    } else {
+        collapsible.classList.add('toc-collapsed');
+        content.style.maxHeight = content.scrollHeight + 'px';
+        requestAnimationFrame(() => {
+            content.style.maxHeight = '0';
+        });
+    }
+}
+
+// 初始化折叠区域（默认折叠）
+function initCollapsible() {
+    document.querySelectorAll('.toc-collapsible').forEach(collapsible => {
+        const content = collapsible.querySelector('.toc-collapsible-content');
+        collapsible.classList.add('toc-collapsed');
+        content.style.maxHeight = '0';
+    });
+}
+
+// 目录点击跳转（黄金分割比位置）
+function initTocLinks() {
+    document.querySelectorAll('.toc a').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const targetId = this.getAttribute('href').substring(1);
+            const targetElement = document.getElementById(targetId);
+            if (targetElement) {
+                const windowHeight = window.innerHeight;
+                const goldenRatio = 0.382;
+                const offset = windowHeight * goldenRatio;
+                const elementRect = targetElement.getBoundingClientRect();
+                const scrollTop = window.pageYOffset + elementRect.top - offset;
+
+                window.scrollTo({
+                    top: Math.max(0, scrollTop),
+                    behavior: 'smooth'
+                });
+
+                targetElement.classList.remove('highlight');
+                void targetElement.offsetWidth;
+                targetElement.classList.add('highlight');
+            }
+        });
+    });
+}
+
+// 切换语言
+function switchLanguage(lang) {
+    document.querySelectorAll('.content-section').forEach(section => {
+        section.classList.remove('active');
+    });
+    const targetSection = document.getElementById('content-' + lang);
+    if (targetSection) {
+        targetSection.classList.add('active');
+    }
+    initCollapsible();
+    initTocLinks();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    localStorage.setItem('flydisk-help-lang', lang);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // 首次打开跟随系统语言（中文 → zh，其余 → en）；用户手动切过之后以记录为准
+    const saved = localStorage.getItem('flydisk-help-lang');
+    const lang = saved || ((navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+    document.getElementById('langSelect').value = lang;
+    switchLanguage(lang);
+});
+</script>
+</body>
+</html>

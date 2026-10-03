@@ -1,0 +1,14 @@
+.vs/
+*.suo
+*.user
+
+[Bb]in/
+[Oo]bj/
+[Pp]ublish/
+TestResults/
+packages/
+
+Thumbs.db
+Desktop.ini
+
+废/
