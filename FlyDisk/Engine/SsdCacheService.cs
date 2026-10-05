@@ -156,6 +156,9 @@ namespace FlyDisk.Engine
 
         /// <summary>停服序列一旦置位，本层不再准入 / 不再失效（保证账本是一致快照，见 <see cref="Freeze"/>）</summary>
         private volatile bool _frozen;
+        private volatile bool _failed;            // 运行期 IO 故障后停用整层，避免读取部分写入的数据
+        private bool _persistLedger = true;
+        public bool IsEnabled => _container != null && !_failed;
 
         // ===== 计数（供每秒统计快照跨线程读取：只读计数器，不遍历集合）=====
         private long _usedSlots;
@@ -199,86 +202,95 @@ namespace FlyDisk.Engine
             _lockFile = new FileStream(Path.Combine(_dir, LockFileName), FileMode.OpenOrCreate,
                 FileAccess.ReadWrite, FileShare.None);
 
-            _slotCount = ComputeSlotCount(_dir, config.SsdCacheMaxBytes);
-
-            double ghostFraction = Clamp(config.SsdCacheGhostFraction, 0.0, 4.0);
-            if (Math.Abs(config.SsdCacheGhostFraction - ghostFraction) > 1e-9)
+            try
             {
+                _slotCount = ComputeSlotCount(_dir, config.SsdCacheMaxBytes);
+
+                double ghostFraction = Clamp(config.SsdCacheGhostFraction, 0.0, 4.0);
+                if (Math.Abs(config.SsdCacheGhostFraction - ghostFraction) > 1e-9)
+                {
+                    LogService.DebugFile(
+                        $"SSD 二级缓存：ghost 倍率越界已夹取 {config.SsdCacheGhostFraction} → {ghostFraction}");
+                }
+                _mLimit = Math.Max(1, _slotCount);          // S 删掉后整条环都归 M
+                _ghostLimit = (int)(_mLimit * ghostFraction);
+
+                // 保守线（占用率）→ 保留量：占用 80% 与可用 20% 是同一个约束的两种说法。
+                // 夹到 [0.50, 0.99]：低于 50% 会让 L2 几乎一直保守（学不动），等于 1.0 则退化成"永不保守"。
+                double occupancy = Clamp(config.SsdConservativeThreshold, 0.50, 0.99);
+                if (Math.Abs(config.SsdConservativeThreshold - occupancy) > 1e-9)
+                {
+                    LogService.DebugFile(
+                        $"SSD 二级缓存：保守线越界已夹取 {config.SsdConservativeThreshold} → {occupancy}");
+                }
+                _conservativeOccupancy = occupancy;
+                _fillingReserve = Math.Max(1, (int)(_slotCount * (1.0 - occupancy)));
+
+                _slotBlockIndex = new long[_slotCount];
+                _slotFlags = new byte[_slotCount];
+                Array.Fill(_slotBlockIndex, -1);
+                _freeStack = new int[_slotCount];
+                _mRing = new int[_mLimit + RING_SLACK];
+                _ghostRing = new long[Math.Max(1, _ghostLimit)];
+
+                long t0 = Environment.TickCount64;
+
+                // **"盘/参数不匹配"必须在打开容器之前判**：容器随后会以 FileShare.None 打开，
+                // 到那时同进程的第二次只读打开也会失败，探测就永远读不到东西了。
+                // 顺序也顺理成章：先知道"要不要问用户"，再去碰任何文件。
+                string mismatch = DetectLedgerMismatch(config, source);
+                if (mismatch.Length > 0 && !allowLedgerReset)
+                {
+                    throw new L2LedgerMismatchException(mismatch);
+                }
+
+                _container = new FileStream(Path.Combine(_dir, ContainerFileName), FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
+
+                long required = (long)(_slotCount + 1) * BLOCK_SIZE;   // +1 是容器头部
+                long previousId = 0;
+                bool containerReady = _container.Length >= required && TryReadContainerHeader(out previousId);
+                if (!containerReady)
+                {
+                    // 容器不存在 / 尺寸不符 / 不是我们的容器（例如用户只删了 cache.dat）/ 换了另一块盘
+                    // ⇒ 尺寸校正到应有值，头部随后由 RotateContainerId 覆写；旧索引的戳反正对不上，不会误信
+                    EnsureContainerLength(required);
+                }
+
+                // **账本可信判据**（见类注释第 6 条）：只有当"打开这块盘时它原本就是脱机"时，
+                // 才可能有人打包票说"上次运行之后没人写过它"。盘若是联机的（用户手动联机过、或它去过别的机器），
+                // 一律不载入——宁可丢整层缓存，也不能把陈旧块当数据返回。
+                bool ledgerTrusted = !source.WasOnline;
+                bool loaded = ledgerTrusted && containerReady && TryLoadIndex(previousId);
+                if (!loaded)
+                {
+                    string reason = mismatch.Length > 0
+                        ? $"用户确认清空重建（{mismatch}）"
+                        : (!ledgerTrusted
+                            ? "该盘启动时是联机状态（上次运行之后它可能被别的程序写过），账本一律作废"
+                            : (containerReady ? "索引缺失/校验失败，或上次未正常关服" : "容器已重建"));
+                    ResetToEmpty(reason);
+                }
+
+                // **开机留痕**（整个方案里唯一一处运行期落盘）：把身份戳换成新的并 FlushFileBuffers。
+                // 从此盘上那份旧索引的戳永远对不上 ⇒ 本次运行无论怎么改容器、无论怎么死，下次开机都不会误信它。
+                RotateContainerId();
+
+                _loadMs = Environment.TickCount64 - t0;
+                _loadedFromDisk = loaded;
+
                 LogService.DebugFile(
-                    $"SSD 二级缓存：ghost 倍率越界已夹取 {config.SsdCacheGhostFraction} → {ghostFraction}");
+                    $"SSD 二级缓存 {(loaded ? "已载入" : "已新建")}：{_slotCount} 槽位（{(long)_slotCount * BLOCK_SIZE / 1024 / 1024} MB）" +
+                    $" / M={_mLimit} G={_ghostLimit}（保守门槛 {_fillingReserve} 空闲槽 / 保守线 {_conservativeOccupancy:P0}）/ 占用 {UsedSlots} 槽、空洞 {HoleSlots}" +
+                    $" / 用时 {_loadMs} ms / 身份戳 0x{_containerId:X16}" +
+                    (ledgerTrusted ? "（异常终止会使整层缓存作废）" : "（该盘原本联机，本次空缓存起步）"));
             }
-            _mLimit = Math.Max(1, _slotCount);          // S 删掉后整条环都归 M
-            _ghostLimit = (int)(_mLimit * ghostFraction);
-
-            // 保守线（占用率）→ 保留量：占用 80% 与可用 20% 是同一个约束的两种说法。
-            // 夹到 [0.50, 0.99]：低于 50% 会让 L2 几乎一直保守（学不动），等于 1.0 则退化成"永不保守"。
-            double occupancy = Clamp(config.SsdConservativeThreshold, 0.50, 0.99);
-            if (Math.Abs(config.SsdConservativeThreshold - occupancy) > 1e-9)
+            catch
             {
-                LogService.DebugFile(
-                    $"SSD 二级缓存：保守线越界已夹取 {config.SsdConservativeThreshold} → {occupancy}");
+                // 构造失败时对象不会交给 CacheService，必须当场释放容器和锁，允许用户立即重试。
+                Close(persistLedger: false);
+                throw;
             }
-            _conservativeOccupancy = occupancy;
-            _fillingReserve = Math.Max(1, (int)(_slotCount * (1.0 - occupancy)));
-
-            _slotBlockIndex = new long[_slotCount];
-            _slotFlags = new byte[_slotCount];
-            Array.Fill(_slotBlockIndex, -1);
-            _freeStack = new int[_slotCount];
-            _mRing = new int[_mLimit + RING_SLACK];
-            _ghostRing = new long[Math.Max(1, _ghostLimit)];
-
-            long t0 = Environment.TickCount64;
-
-            // **"盘/参数不匹配"必须在打开容器之前判**：容器随后会以 FileShare.None 打开，
-            // 到那时同进程的第二次只读打开也会失败，探测就永远读不到东西了。
-            // 顺序也顺理成章：先知道"要不要问用户"，再去碰任何文件。
-            string mismatch = DetectLedgerMismatch(config, source);
-            if (mismatch.Length > 0 && !allowLedgerReset)
-            {
-                throw new L2LedgerMismatchException(mismatch);
-            }
-
-            _container = new FileStream(Path.Combine(_dir, ContainerFileName), FileMode.OpenOrCreate,
-                FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
-
-            long required = (long)(_slotCount + 1) * BLOCK_SIZE;   // +1 是容器头部
-            long previousId = 0;
-            bool containerReady = _container.Length >= required && TryReadContainerHeader(out previousId);
-            if (!containerReady)
-            {
-                // 容器不存在 / 尺寸不符 / 不是我们的容器（例如用户只删了 cache.dat）/ 换了另一块盘
-                // ⇒ 尺寸校正到应有值，头部随后由 RotateContainerId 覆写；旧索引的戳反正对不上，不会误信
-                EnsureContainerLength(required);
-            }
-
-            // **账本可信判据**（见类注释第 6 条）：只有当"打开这块盘时它原本就是脱机"时，
-            // 才可能有人打包票说"上次运行之后没人写过它"。盘若是联机的（用户手动联机过、或它去过别的机器），
-            // 一律不载入——宁可丢整层缓存，也不能把陈旧块当数据返回。
-            bool ledgerTrusted = !source.WasOnline;
-            bool loaded = ledgerTrusted && containerReady && TryLoadIndex(previousId);
-            if (!loaded)
-            {
-                string reason = mismatch.Length > 0
-                    ? $"用户确认清空重建（{mismatch}）"
-                    : (!ledgerTrusted
-                        ? "该盘启动时是联机状态（上次运行之后它可能被别的程序写过），账本一律作废"
-                        : (containerReady ? "索引缺失/校验失败，或上次未正常关服" : "容器已重建"));
-                ResetToEmpty(reason);
-            }
-
-            // **开机留痕**（整个方案里唯一一处运行期落盘）：把身份戳换成新的并 FlushFileBuffers。
-            // 从此盘上那份旧索引的戳永远对不上 ⇒ 本次运行无论怎么改容器、无论怎么死，下次开机都不会误信它。
-            RotateContainerId();
-
-            _loadMs = Environment.TickCount64 - t0;
-            _loadedFromDisk = loaded;
-
-            LogService.DebugFile(
-                $"SSD 二级缓存 {(loaded ? "已载入" : "已新建")}：{_slotCount} 槽位（{(long)_slotCount * BLOCK_SIZE / 1024 / 1024} MB）" +
-                $" / M={_mLimit} G={_ghostLimit}（保守门槛 {_fillingReserve} 空闲槽 / 保守线 {_conservativeOccupancy:P0}）/ 占用 {UsedSlots} 槽、空洞 {HoleSlots}" +
-                $" / 用时 {_loadMs} ms / 身份戳 0x{_containerId:X16}" +
-                (ledgerTrusted ? "（异常终止会使整层缓存作废）" : "（该盘原本联机，本次空缓存起步）"));
         }
 
         private static double Clamp(double value, double min, double max) => value < min ? min : (value > max ? max : value);
@@ -559,8 +571,17 @@ namespace FlyDisk.Engine
                 return false;
             }
 
+            try
+            {
+                ReadSlot(slot, buffer, offset);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                DisableAfterIoFailure(ex);
+                Interlocked.Increment(ref _missBlocks);
+                return false;   // L2 是旁路：读取失败让调用方回源
+            }
             NoteAccessSlot(slot);
-            ReadSlot(slot, buffer, offset);
             Interlocked.Increment(ref _hitBlocks);
             return true;
         }
@@ -572,7 +593,7 @@ namespace FlyDisk.Engine
         private bool TryFindInL2(long blockIndex, out int slot)
         {
             slot = -1;
-            if (_container == null) return false;
+            if (!IsEnabled) return false;
             if (blockIndex < 0) return false;
 
             if (!_blocksByIndex.TryGetValue(blockIndex, out slot)) return false;
@@ -606,11 +627,15 @@ namespace FlyDisk.Engine
         /// </summary>
         public void Insert(long blockIndex, byte[] buffer, int offset)
         {
-            if (_frozen) return;
+            if (_frozen || !IsEnabled) return;
             if (TryFindInL2(blockIndex, out int slot))
             {
                 // 已在 M：刷新数据（从盘上读到的才是最新的）并加计数，**不重复入队**（否则队列顺序会被打乱）
-                WriteSlotFrom(slot, buffer, offset);
+                if (!WriteSlotFrom(slot, buffer, offset))
+                {
+                    InvalidateRange(blockIndex, 1);
+                    return;
+                }
                 NoteAccessSlot(slot);
                 Interlocked.Increment(ref _writeBlocks);
                 return;
@@ -665,7 +690,11 @@ namespace FlyDisk.Engine
             }
 
             // 定序：**先写数据块，再登记索引**
-            WriteSlotFrom(slot, buffer, offset);
+            if (!WriteSlotFrom(slot, buffer, offset))
+            {
+                PushFree(slot);   // 尚未登记索引/入环，失败时直接退回空闲槽
+                return;
+            }
             _slotBlockIndex[slot] = blockIndex;
             _slotFlags[slot] = 0;
             _blocksByIndex[blockIndex] = slot;
@@ -681,10 +710,27 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>写一个槽的数据（数据源只有托管缓冲：准入的唯一来源就是回源读到的整块）</summary>
-        private void WriteSlotFrom(int slot, byte[] buffer, int offset)
+        private bool WriteSlotFrom(int slot, byte[] buffer, int offset)
         {
-            _container!.Position = (long)(slot + 1) * BLOCK_SIZE;
-            _container.Write(buffer, offset, BLOCK_SIZE);
+            try
+            {
+                _container!.Position = (long)(slot + 1) * BLOCK_SIZE;
+                _container.Write(buffer, offset, BLOCK_SIZE);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                DisableAfterIoFailure(ex);
+                return false;
+            }
+        }
+
+        private void DisableAfterIoFailure(Exception ex)
+        {
+            _failed = true;
+            _persistLedger = false;
+            // 不提交本次身份戳对应的账本；下次启动仍要求校验或清空。
+            LogService.DebugFile($"SSD 二级缓存运行期 IO 失败，已停用 L2 并跳过账本提交：{ex.Message}");
         }
 
         #endregion
@@ -707,7 +753,11 @@ namespace FlyDisk.Engine
             if (_frozen) return;
             if (!TryFindInL2(blockIndex, out int slot)) return;
 
-            WriteSlotFrom(slot, buffer, offset);
+            if (!WriteSlotFrom(slot, buffer, offset))
+            {
+                InvalidateRange(blockIndex, 1);
+                return;
+            }
             Interlocked.Increment(ref _writeUpdateBlocks);
         }
 
@@ -1027,7 +1077,7 @@ namespace FlyDisk.Engine
         /// </summary>
         public void Flush()
         {
-            if (_container == null) return;
+            if (_container == null || !_persistLedger) return;
 
             try
             {
@@ -1328,24 +1378,37 @@ namespace FlyDisk.Engine
 
         #region 释放
 
-        public void Dispose()
+        public void Dispose() => Close(persistLedger: true);
+
+        /// <summary>仅有序且无故障的停止提交账本；异常停止保留不匹配的身份戳</summary>
+        public void Close(bool persistLedger)
         {
             try
             {
-                if (_container != null)
-                {
-                    Flush();
-                    _container.Dispose();
-                    _container = null;
-                }
+                if (persistLedger) Flush();
             }
             catch (Exception ex)
             {
                 LogService.DebugFile($"SSD 二级缓存关闭时刷盘/关闭失败：{ex.Message}");
             }
-
-            _lockFile?.Dispose();
-            _lockFile = null;
+            finally
+            {
+                try { _container?.Dispose(); }
+                catch (Exception ex)
+                {
+                    LogService.DebugFile($"SSD 二级缓存：关闭容器失败：{ex.Message}");
+                }
+                finally
+                {
+                    _container = null;
+                    try { _lockFile?.Dispose(); }
+                    catch (Exception ex)
+                    {
+                        LogService.DebugFile($"SSD 二级缓存：关闭目录锁失败：{ex.Message}");
+                    }
+                    finally { _lockFile = null; }
+                }
+            }
         }
 
         #endregion

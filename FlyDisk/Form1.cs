@@ -40,6 +40,9 @@ namespace FlyDisk
     {
         private readonly DiskConfig _config;
         private readonly TargetService _target;
+        private bool _targetOperationPending;
+        private bool _targetOperationStarting;
+        private bool HasTargetWork => _targetOperationPending || _target.IsStopping;
 
         private Inspector? _inspector;
         private readonly Timer _statusTimer;
@@ -217,7 +220,7 @@ namespace FlyDisk
 
         private void 设置ToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            if (_target.IsRunning)
+            if (_target.IsRunning || HasTargetWork)
             {
                 MessageBox.Show(Locale.T("main.msg.runningCannotEdit"),
                     Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -260,7 +263,7 @@ namespace FlyDisk
         /// </summary>
         private void 校验L2ToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            if (_target.IsRunning)
+            if (_target.IsRunning || HasTargetWork)
             {
                 MessageBox.Show(Locale.T("main.msg.verifyRunningCannot"),
                     Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -324,7 +327,7 @@ namespace FlyDisk
         /// </summary>
         private void 重新联机源盘ToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            if (_target.IsRunning)
+            if (_target.IsRunning || HasTargetWork)
             {
                 MessageBox.Show(Locale.T("main.msg.reonlineRunningCannot"),
                     Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -376,13 +379,14 @@ namespace FlyDisk
         /// </summary>
         private void 远程ToolStripMenuItem_Click(object? sender, EventArgs e)
         {
+            if (HasTargetWork) return;
             if (!ConfirmExperimentalRemote()) return;
 
             using var dialog = new RemoteForm(
                 _config,
                 isActive: () => _peer != null || _remoteListener != null,
                 statusText: () => _remoteStatus,
-                canDisconnect: () => !_target.IsRunning && !_remoteStartPending,
+                canDisconnect: () => !_target.IsRunning && !HasTargetWork && !_remoteStartPending,
                 onOpenServer: OpenRemoteServer,
                 onPair: PairRemoteClient,
                 onDisconnect: DisconnectRemote);
@@ -560,6 +564,8 @@ namespace FlyDisk
                 return (bool)Invoke(new Func<PhysicalDiskInfo, string, bool>(AuthorizeRemoteDisk), target, client);
             }
 
+            if (_target.IsRunning || HasTargetWork) return false;
+
             DialogResult answer = MessageBox.Show(
                 Locale.T("main.msg.authorizeRemote", target.DiskNumber, target.Model,
                     target.SizeText, target.BytesPerSector, client),
@@ -660,7 +666,7 @@ namespace FlyDisk
         /// <summary>【已配对】断开配对（**只在加速停止时可用**——不能从正在跑的数据层脚下抽走连接）</summary>
         private void DisconnectRemote()
         {
-            if (_target.IsRunning)
+            if (_target.IsRunning || HasTargetWork)
             {
                 MessageBox.Show(Locale.T("main.msg.stopBeforeDisconnect"), Locale.T("dialog.tip"),
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -744,18 +750,39 @@ namespace FlyDisk
                 try
                 {
                     BlockSourceInfo info = peer.BeginService(chosen.Identity);
-                    BeginInvoke(new Action(() =>
+                    BeginInvoke(new Action(async () =>
                     {
+                        bool stillRequested = _remoteStartPending;
                         _remoteStartPending = false;
                         _remoteDiskIdentity = chosen.Identity;
-
-                        if (StartWithRemotePrompt(peer, info))
+                        // 选盘等授权期间仍可取消；起本地 target 后进入不可重入的启停阶段。
+                        if (HasTargetWork || _target.IsRunning) return;
+                        if (!stillRequested || !ReferenceEquals(_peer, peer))
                         {
-                            _remoteStatus = Locale.T("main.remote.accelerating", info.Model);
-                            Log(Locale.T("main.log.remoteDiskReady", info.Model, ((double)info.SizeBytes / 1024 / 1024 / 1024).ToString("F1")));
-                            LogAutoMountResult(Locale.T("main.log.iscsiConnectRemoteHint"));
+                            await Task.Run(peer.EndService);
+                            return;
                         }
+                        _targetOperationPending = true;
+                        _targetOperationStarting = true;
                         RefreshStatus();
+                        try
+                        {
+                            if (await StartWithRemotePrompt(peer, info))
+                            {
+                                _remoteStatus = Locale.T("main.remote.accelerating", info.Model);
+                                Log(Locale.T("main.log.remoteDiskReady", info.Model, ((double)info.SizeBytes / 1024 / 1024 / 1024).ToString("F1")));
+                                LogAutoMountResult(Locale.T("main.log.iscsiConnectRemoteHint"));
+                            }
+                            else
+                            {
+                                await Task.Run(peer.EndService);
+                            }
+                        }
+                        finally
+                        {
+                            _targetOperationPending = false;
+                            RefreshStatus();
+                        }
                     }));
                 }
                 catch (OperationCanceledException)
@@ -782,11 +809,11 @@ namespace FlyDisk
         }
 
         /// <summary>远程形态的启动（含 L2 账本的两种"不确定"情形，处理口径见 后续待办.md 第一节）</summary>
-        private bool StartWithRemotePrompt(RemotePeer peer, BlockSourceInfo info)
+        private async Task<bool> StartWithRemotePrompt(RemotePeer peer, BlockSourceInfo info)
         {
             try
             {
-                _target.StartRemote(peer, info);
+                await Task.Run(() => _target.StartRemote(peer, info));
                 return true;
             }
             catch (L2LedgerMismatchException ex)
@@ -800,7 +827,7 @@ namespace FlyDisk
                     return false;
                 }
 
-                return StartRemoteWithReset(peer, info, Locale.T("main.reason.mismatchUserReset"));
+                return await StartRemoteWithReset(peer, info, Locale.T("main.reason.mismatchUserReset"));
             }
             catch (L2NeedsVerifyException ex)
             {
@@ -815,7 +842,7 @@ namespace FlyDisk
                     return false;
                 }
 
-                return StartRemoteWithReset(peer, info, Locale.T("main.reason.userClearRemoteL2", ex.Reason));
+                return await StartRemoteWithReset(peer, info, Locale.T("main.reason.userClearRemoteL2", ex.Reason));
             }
             catch (Exception ex)
             {
@@ -825,11 +852,11 @@ namespace FlyDisk
             }
         }
 
-        private bool StartRemoteWithReset(RemotePeer peer, BlockSourceInfo info, string why)
+        private async Task<bool> StartRemoteWithReset(RemotePeer peer, BlockSourceInfo info, string why)
         {
             try
             {
-                _target.StartRemote(peer, info, allowL2Reset: true);
+                await Task.Run(() => _target.StartRemote(peer, info, allowL2Reset: true));
                 Log(Locale.T("main.log.l2Cleared", why));
                 return true;
             }
@@ -842,7 +869,7 @@ namespace FlyDisk
         }
 
         /// <summary>对端宣告"我没法继续提供了"（盘被拔等）：**停掉本地 target**，让上层干净地看到设备消失</summary>
-        private void OnRemoteServiceEnded(string reason)
+        private async void OnRemoteServiceEnded(string reason)
         {
             if (InvokeRequired)
             {
@@ -851,14 +878,24 @@ namespace FlyDisk
             }
 
             Log(Locale.T("main.log.peerStoppedServing", reason));
+            // 启动期间的结束通知延后到当前操作完成，不能并发驱动同一个生命周期。
+            while (_targetOperationPending)
+            {
+                await Task.Delay(100);
+                if (IsDisposed) return;
+            }
+            _targetOperationPending = true;
+            _targetOperationStarting = false;
+            RefreshStatus();
             try
             {
-                if (_target.IsRunning) _target.Stop();
+                if (_target.IsRunning) await Task.Run(_target.Stop);
             }
             catch (Exception ex)
             {
                 Log(Locale.T("main.log.stopLocalFailed", ex.Message));
             }
+            finally { _targetOperationPending = false; }
 
             _remoteStartPending = false;
             _remoteStatus = Locale.T("main.remote.pairedWith", _peer?.PeerName);
@@ -894,6 +931,7 @@ namespace FlyDisk
         /// </summary>
         private void btnStartStop_Click(object? sender, EventArgs e)
         {
+            if (HasTargetWork) return;
             // ① 已配对：**两端对等**——本端能点「启动加速」去用对方的盘
             if (_peer != null)
             {
@@ -917,7 +955,7 @@ namespace FlyDisk
             else StartTarget();
         }
 
-        private void StartTarget()
+        private async void StartTarget()
         {
             // **每次启动都要选盘**（见 后续待办.md 第一节的"选盘时机"）：
             // 用户改过配置后可能隔几天才点启动，很容易忘了当时选的是哪块；把选择放在启动的同一刻，做到所见即所选。
@@ -942,15 +980,13 @@ namespace FlyDisk
                 return;
             }
 
-            btnStartStop.Enabled = false;
-            btnStartStop.Text = Locale.T("main.button.starting");
-            // 启动是同步的（脱机切换要几百毫秒），先把这一帧画出来再干活
-            statusStrip1.Refresh();
-            btnStartStop.Refresh();
+            _targetOperationPending = true;
+            _targetOperationStarting = true;
+            RefreshStatus();
 
             try
             {
-                if (StartWithL2MismatchPrompt(target))
+                if (await StartWithL2MismatchPrompt(target))
                 {
                     // 记住这次的选择：**仅用于下次在选盘对话框里默认选中**，绝不作为启动依据
                     _config.PhysicalDiskIdentity = PhysicalDiskHandle.DescribeIdentity(target);
@@ -962,7 +998,7 @@ namespace FlyDisk
             }
             finally
             {
-                btnStartStop.Enabled = true;
+                _targetOperationPending = false;
                 RefreshStatus();
             }
         }
@@ -976,11 +1012,11 @@ namespace FlyDisk
         /// 没干净就**中止启动、不做任何补救动作**。
         /// </summary>
         /// <returns>是否已经启动</returns>
-        private bool StartWithL2MismatchPrompt(PhysicalDiskInfo target)
+        private async Task<bool> StartWithL2MismatchPrompt(PhysicalDiskInfo target)
         {
             try
             {
-                _target.Start(target);
+                await Task.Run(() => _target.Start(target));
                 return true;
             }
             catch (L2LedgerMismatchException ex)
@@ -995,7 +1031,7 @@ namespace FlyDisk
                     return false;
                 }
 
-                return StartWithLedgerReset(target, Locale.T("main.reason.mismatchUserReset"));
+                return await StartWithLedgerReset(target, Locale.T("main.reason.mismatchUserReset"));
             }
             catch (L2NeedsVerifyException ex)
             {
@@ -1005,7 +1041,7 @@ namespace FlyDisk
 
                 if (answer != DialogResult.Yes)
                 {
-                    return StartWithLedgerReset(target, Locale.T("main.reason.userDeclinedVerify", ex.Reason));
+                    return await StartWithLedgerReset(target, Locale.T("main.reason.userDeclinedVerify", ex.Reason));
                 }
 
                 // 校验窗口是模态的：它自己脱机 + 独占源盘、并抢 cache.lock（此刻引擎还没打开盘），跑完保持脱机
@@ -1021,14 +1057,12 @@ namespace FlyDisk
                     // 校验没跑干净（取消 / 中止 / 有没修完的不一致）⇒ **中止启动，不做任何补救动作**：
                     // 不动盘的状态、不动配置、不动缓存文件（MVP 口径：用户没点的事，程序不替他做）。
                     //
-                    // ⚠ 后果要知道：校验器为了比对已经把源盘**脱机并保持**，所以下次启动引擎会看到
-                    //    "该盘原本就脱机" ⇒ 会**直接采信**这份没验完的账本。要拦住它，只能靠用户自己
-                    //    重跑一次校验（或清空缓存目录）。
+                    // 校验器已轮换容器身份戳；未验完时不恢复戳，下次启动仍要求校验。
                     Log(Locale.T("main.log.abortedL2Verify"));
                     return false;
                 }
 
-                return StartKeepingLedger(target);
+                return await StartKeepingLedger(target);
             }
             catch (Exception ex)
             {
@@ -1039,11 +1073,11 @@ namespace FlyDisk
         }
 
         /// <summary>清空 L2 之后重试启动（用户已经确认"不要这份缓存"）</summary>
-        private bool StartWithLedgerReset(PhysicalDiskInfo target, string why)
+        private async Task<bool> StartWithLedgerReset(PhysicalDiskInfo target, string why)
         {
             try
             {
-                _target.Start(target, allowL2Reset: true);
+                await Task.Run(() => _target.Start(target, allowL2Reset: true));
                 Log(Locale.T("main.log.l2Cleared", why));
                 return true;
             }
@@ -1056,11 +1090,11 @@ namespace FlyDisk
         }
 
         /// <summary>带着现有 L2 重试启动（用于"刚刚校验干净"之后：此时源盘已被校验器脱机，引擎会自然采信账本）</summary>
-        private bool StartKeepingLedger(PhysicalDiskInfo target)
+        private async Task<bool> StartKeepingLedger(PhysicalDiskInfo target)
         {
             try
             {
-                _target.Start(target);
+                await Task.Run(() => _target.Start(target));
                 Log(Locale.T("main.log.l2VerifyPassed"));
                 return true;
             }
@@ -1072,27 +1106,26 @@ namespace FlyDisk
             }
         }
 
-        private void StopTarget()
+        private async void StopTarget()
         {
-            btnStartStop.Enabled = false;
-            btnStartStop.Text = Locale.T("main.button.stopping");
-            statusStrip1.Refresh();
-            btnStartStop.Refresh();
+            _targetOperationPending = true;
+            _targetOperationStarting = false;
+            RefreshStatus();
 
             try
             {
                 int diskNumber = _target.LocalDiskNumber;
-                bool wasRemote = _peer != null;
+                RemotePeer? peer = _peer;
 
-                _target.Stop();
+                await Task.Run(_target.Stop);
 
-                if (wasRemote)
+                if (peer != null)
                 {
                     // **必须通知对端"我不再用这块盘了"**：它会关掉盘句柄（盘保持脱机）。
                     // 不发的话对端会一直以为你还在用，那块盘就一直被它独占着。
                     // 注意**配对与连接保留**——用户可以立刻再选一块盘，不必重新配对。
-                    _peer!.EndService();
-                    _remoteStatus = Locale.T("main.remote.pairedWith", _peer.PeerName);
+                    await Task.Run(peer.EndService);
+                    _remoteStatus = Locale.T("main.remote.pairedWith", peer.PeerName);
                     Log(Locale.T("main.log.remoteStopped"));
                 }
                 else if (diskNumber >= 0)
@@ -1110,7 +1143,7 @@ namespace FlyDisk
             }
             finally
             {
-                btnStartStop.Enabled = true;
+                _targetOperationPending = false;
                 RefreshStatus();
             }
         }
@@ -1164,13 +1197,23 @@ namespace FlyDisk
             }
 
             // 校验要独占 L2 容器与源盘 ⇒ 目标运行中把入口置灰（弹出对话框前还会再兜一次）
-            _verifyL2MenuItem.Enabled = !stats.IsRunning;
+            设置ToolStripMenuItem.Enabled = !stats.IsRunning && !HasTargetWork;
+            _verifyL2MenuItem.Enabled = !stats.IsRunning && !HasTargetWork;
 
             // 「重新联机源盘」同样只在非运行时可点：运行中那块盘是本程序的块源，联机 = 同签名双盘 + 双写
-            _reonlineMenuItem.Enabled = !stats.IsRunning;
+            _reonlineMenuItem.Enabled = !stats.IsRunning && !HasTargetWork;
 
             // 「远程」只在**本地加速运行中**置灰；远程形态下要能打开（查看状态、断开）
-            _remoteMenuItem.Enabled = !(stats.IsRunning && _peer == null);
+            _remoteMenuItem.Enabled = !HasTargetWork && !(stats.IsRunning && _peer == null);
+
+            if (HasTargetWork)
+            {
+                btnStartStop.Enabled = false;
+                btnStartStop.Text = Locale.T(_targetOperationPending && _targetOperationStarting
+                    ? "main.button.starting" : "main.button.stopping");
+                lblTargetStatus.Text = _target.IsStopping ? Locale.T("engine.stop.pending") : btnStartStop.Text;
+                return;
+            }
 
             // ① **已配对**：两端共用同一套文案（身份对等），差别只体现在"本端是被用还是用别人"
             if (_peer != null)
@@ -1285,7 +1328,7 @@ namespace FlyDisk
             // 加速期间**关闭主窗口 = 缩到托盘**（不退出）：程序与加速都继续跑，窗口只是藏起来，
             // 这样"手滑关掉"再也不会把盘留在脱机状态。
             // 真正退出的路径只有一条：**先点「停止加速」，再关窗口**（那时 IsRunning 为假，走下面的正常关闭）。
-            if (e.CloseReason == CloseReason.UserClosing && _target.IsRunning)
+            if (e.CloseReason == CloseReason.UserClosing && (_target.IsRunning || HasTargetWork))
             {
                 e.Cancel = true;
                 _tray.Visible = true;   // 窗口藏起来了，通知区补一个入口（窗口在屏幕上时它是隐藏的）
@@ -1296,8 +1339,8 @@ namespace FlyDisk
             _statusTimer.Stop();   // 先停状态节拍，避免收尾途中排队的刷新读到已释放的引擎对象
 
             // 关机 / 重启 / 注销：用户走不到"先点停止加速、再关窗口"那条路（Windows 直接关窗口），
-            // 这里补一次收尾——**必须把 L2 账本落盘**（那正是 L2 的全部价值）。发起程序登不出去时，
-            // 内部会中止 iSCSI 服务、掐断会话后照常落账本（代价见 TargetService.TryStopForShutdown）。
+            // 这里补一次收尾。发起程序登不出去时仍中止服务；只有在途 IO 已结束且 L2 无故障才提交账本，
+            // 否则保留待校验状态（代价见 TargetService.TryStopForShutdown）。
             // 界面此刻正在关闭，故不写日志框；过程细节由引擎落 debug-security.log。
             if (e.CloseReason == CloseReason.WindowsShutDown)
                 _target.TryStopForShutdown();

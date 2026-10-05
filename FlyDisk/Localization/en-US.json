@@ -419,5 +419,7 @@
   "engine.remote.ioMediaError": "The peer failed to read/write its source disk (media error)",
   "engine.remote.ioRange": "The peer reported an out-of-range offset/length",
   "engine.remote.ioUnsupported": "The peer does not support this operation",
-  "engine.remote.ioErrorCode": "The peer returned error code {0}"
+  "engine.remote.ioErrorCode": "The peer returned error code {0}",
+  "engine.remote.invalidPayloadLength": "Remote message length {0} is outside the allowed range",
+  "engine.stop.pending": "Waiting for disk I/O to finish. Please wait."
 }

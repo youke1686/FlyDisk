@@ -419,5 +419,7 @@
   "engine.remote.ioMediaError": "对端读写源盘失败（介质错误）",
   "engine.remote.ioRange": "对端报告偏移/长度越界",
   "engine.remote.ioUnsupported": "对端不支持该操作",
-  "engine.remote.ioErrorCode": "对端返回错误码 {0}"
+  "engine.remote.ioErrorCode": "对端返回错误码 {0}",
+  "engine.remote.invalidPayloadLength": "远程消息长度 {0} 不在允许范围内",
+  "engine.stop.pending": "正在等待硬盘读写结束，请稍候。"
 }

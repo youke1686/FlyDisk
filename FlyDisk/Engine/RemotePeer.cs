@@ -258,8 +258,9 @@ namespace FlyDisk.Engine
             {
                 try
                 {
-                    BlockSourceInfo restored = BeginService(_usingIdentity);
-                    if (!SameDevice(restored, _servingFrom))
+                    BlockSourceInfo expected = _servingFrom;
+                    BlockSourceInfo restored = RequestService(_usingIdentity);
+                    if (!SameDevice(restored, expected))
                     {
                         _closing = true;
                         OnServiceEnded?.Invoke(Locale.T("engine.remote.peerDiskChanged"));
@@ -378,10 +379,18 @@ namespace FlyDisk.Engine
                 ushort type = channel.ReadUInt16();
                 version = channel.ReadUInt16();
                 int length = channel.ReadInt32();
-                payload = new byte[Math.Max(0, length)];
-                if (length > 0) channel.ReadExactly(payload, 0, length);
+                payload = ReadSessionPayload(channel, length);
                 return type;
             }
+        }
+
+        private static byte[] ReadSessionPayload(RemoteChannel channel, int length)
+        {
+            if (length < 0 || length > RemoteProtocol.MaxPayloadBytes)
+                throw new RemoteLinkException(Locale.T("engine.remote.invalidPayloadLength", length));
+            byte[] payload = new byte[length];
+            if (length > 0) channel.ReadExactly(payload, 0, length);
+            return payload;
         }
 
         #endregion
@@ -402,6 +411,15 @@ namespace FlyDisk.Engine
         /// <exception cref="InvalidOperationException">对端拒绝（含原因）</exception>
         public BlockSourceInfo BeginService(string diskIdentity)
         {
+            BlockSourceInfo info = RequestService(diskIdentity);
+            _servingFrom = info;
+            _usingIdentity = diskIdentity;
+            return info;
+        }
+
+        /// <summary>协商结果先返回给调用方；重连必须验证通过后才发布新的块源描述</summary>
+        private BlockSourceInfo RequestService(string diskIdentity)
+        {
             _selectCancelled = false;
             byte[] name = Encoding.UTF8.GetBytes(diskIdentity);
             byte[] payload = new byte[4 + name.Length];
@@ -418,7 +436,7 @@ namespace FlyDisk.Engine
                 throw new InvalidOperationException(Locale.T("engine.remote.peerRejected", reason));
             }
 
-            _servingFrom = new BlockSourceInfo
+            return new BlockSourceInfo
             {
                 Model = ReadString(reply, ref offset),
                 SerialNumber = ReadString(reply, ref offset),
@@ -429,8 +447,6 @@ namespace FlyDisk.Engine
                 BytesPerSector = BinaryPrimitives.ReadInt32BigEndian(reply.AsSpan(offset + 8)),
                 WasOnline = reply[offset + 12] != 0,
             };
-            _usingIdentity = diskIdentity;
-            return _servingFrom;
         }
 
         /// <summary>
@@ -481,10 +497,28 @@ namespace FlyDisk.Engine
         public BlockSourceInfo UsingInfo => _servingFrom;
 
         public void Read(long byteOffset, byte[] buffer, int bufferOffset, int count)
-            => Transfer(RemoteProtocol.CmdRead, byteOffset, null, 0, count, buffer, bufferOffset);
+            => TransferChunks(RemoteProtocol.CmdRead, byteOffset, buffer, bufferOffset, count);
 
         public void Write(long byteOffset, byte[] data, int dataOffset, int count)
-            => Transfer(RemoteProtocol.CmdWrite, byteOffset, data, dataOffset, count, null, 0);
+            => TransferChunks(RemoteProtocol.CmdWrite, byteOffset, data, dataOffset, count);
+
+        /// <summary>块源接受大请求，协议帧仍保持最多 1 MiB；每一段都等确认再发下一段</summary>
+        private void TransferChunks(ushort cmd, long byteOffset, byte[] buffer, int bufferOffset, int count)
+        {
+            if (byteOffset < 0 || count < 0 || byteOffset > SizeBytes - count ||
+                bufferOffset < 0 || bufferOffset > buffer.Length - count)
+                throw new ArgumentOutOfRangeException(nameof(count));
+            int done = 0;
+            while (done < count)
+            {
+                int chunk = Math.Min(count - done, RemoteProtocol.MaxPayloadBytes);
+                if (cmd == RemoteProtocol.CmdWrite)
+                    Transfer(cmd, byteOffset + done, buffer, bufferOffset + done, chunk, null, 0);
+                else
+                    Transfer(cmd, byteOffset + done, null, 0, chunk, buffer, bufferOffset + done);
+                done += chunk;
+            }
+        }
 
         /// <summary>
         /// 传输的公共路径：发请求 → 等回复 → 链路失败就（重连后）整条重来。
@@ -606,12 +640,14 @@ namespace FlyDisk.Engine
             // 本端在用对方的盘：按同一块盘重新起服务。对端记得"我正在提供这块盘"，会直接放行、不弹第二次授权
             if (_usingIdentity.Length > 0)
             {
-                BlockSourceInfo restored = BeginService(_usingIdentity);
-                if (!SameDevice(restored, _servingFrom))
+                BlockSourceInfo expected = _servingFrom;
+                BlockSourceInfo restored = RequestService(_usingIdentity);
+                if (!SameDevice(restored, expected))
                 {
                     _closing = true;
+                    OnServiceEnded?.Invoke(Locale.T("engine.remote.peerDiskChanged"));
                     throw new RemoteDeviceChangedException(
-                        Locale.T("engine.remote.deviceChanged", _servingFrom.Model, restored.Model));
+                        Locale.T("engine.remote.deviceChanged", expected.Model, restored.Model));
                 }
                 _servingFrom = restored;
             }
@@ -704,8 +740,7 @@ namespace FlyDisk.Engine
             ushort type = channel.ReadUInt16();
             channel.ReadUInt16();
             int length = channel.ReadInt32();
-            byte[] payload = new byte[Math.Max(0, length)];
-            if (length > 0) channel.ReadExactly(payload, 0, length);
+            byte[] payload = ReadSessionPayload(channel, length);
 
             switch (type)
             {
@@ -782,8 +817,8 @@ namespace FlyDisk.Engine
             {
                 if (length <= 0 || length > RemoteProtocol.MaxPayloadBytes)
                 {
-                    channel.SendReply(cookie, RemoteProtocol.ErrRange, null, 0, 0);
-                    return;
+                    // 无法安全跳过一个超限写负载：继续解析会把剩余数据误认成下一帧。
+                    throw new RemoteLinkException(Locale.T("engine.remote.invalidPayloadLength", length));
                 }
                 data = new byte[length];
                 channel.ReadExactly(data, 0, length);

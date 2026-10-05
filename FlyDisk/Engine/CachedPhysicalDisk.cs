@@ -73,6 +73,8 @@ namespace FlyDisk.Engine
         private long _writeSectors;
         private long _inFlight;
         private volatile bool _closed;
+        private readonly object _lifecycleLock = new();
+        private readonly ManualResetEventSlim _idle = new(true);
 
         public CachedPhysicalDisk(IBlockSource raw, CacheService cache)
         {
@@ -105,7 +107,28 @@ namespace FlyDisk.Engine
         /// 别的异常（例如盘句柄已释放时的 ObjectDisposedException）会直接顺着那条线程把进程带走。
         /// 这一步防的是"target 停了但命令还在队列里"的尾巴：那些命令会在盘句柄关闭之后才被执行。
         /// </summary>
-        public void Close() => _closed = true;
+        public void Close()
+        {
+            lock (_lifecycleLock) _closed = true;
+        }
+
+        private void EnterCommand()
+        {
+            lock (_lifecycleLock)
+            {
+                if (_closed) throw new IOException(Locale.T("engine.disk.stopped"));
+                _idle.Reset();
+                Interlocked.Increment(ref _inFlight);
+            }
+        }
+
+        private void ExitCommand()
+        {
+            lock (_lifecycleLock)
+            {
+                if (Interlocked.Decrement(ref _inFlight) == 0) _idle.Set();
+            }
+        }
 
         /// <summary>
         /// 等所有在途命令跑完（停服序列用）。停 target 之后要靠它确认"没有命令正在跑"，
@@ -113,12 +136,7 @@ namespace FlyDisk.Engine
         /// </summary>
         public bool WaitForIdle(int timeoutMs)
         {
-            long deadline = Environment.TickCount64 + timeoutMs;
-            while (Interlocked.Read(ref _inFlight) > 0 && Environment.TickCount64 < deadline)
-            {
-                Thread.Sleep(5);
-            }
-            return IsIdle;
+            return _idle.Wait(timeoutMs);
         }
 
         #endregion
@@ -127,8 +145,7 @@ namespace FlyDisk.Engine
 
         public override byte[] ReadSectors(long lba, int sectorCount)
         {
-            if (_closed) throw new IOException(Locale.T("engine.disk.stopped"));
-            Interlocked.Increment(ref _inFlight);
+            EnterCommand();
             try
             {
                 int bytesPerSector = BytesPerSector;
@@ -189,7 +206,7 @@ namespace FlyDisk.Engine
             }
             finally
             {
-                Interlocked.Decrement(ref _inFlight);
+                ExitCommand();
             }
         }
 
@@ -266,8 +283,7 @@ namespace FlyDisk.Engine
 
         public override void WriteSectors(long lba, byte[] data)
         {
-            if (_closed) throw new IOException(Locale.T("engine.disk.stopped"));
-            Interlocked.Increment(ref _inFlight);
+            EnterCommand();
             try
             {
                 int bytesPerSector = BytesPerSector;
@@ -283,9 +299,21 @@ namespace FlyDisk.Engine
                     throw new ArgumentOutOfRangeException(nameof(data), $"单条写请求 {data.Length} 字节超出上限");
 
                 long offset = lba * bytesPerSector;
+                long firstBlock = offset / BlockSize;
+                long lastBlock = (offset + data.Length - 1) / BlockSize;
 
                 // ① 先落盘（写透传，不经缓存）
-                _raw.Write(offset, data, 0, data.Length);
+                try
+                {
+                    _raw.Write(offset, data, 0, data.Length);
+                }
+                catch
+                {
+                    // 源写失败也可能已完成部分扇区（分段写/远程回复丢失）。
+                    // 无法确认哪些字节变过，整个请求范围都必须作废，然后报告原错误。
+                    _cache.InvalidateRange(firstBlock, lastBlock - firstBlock + 1);
+                    throw;
+                }
 
                 // ② 逐块处置被覆盖到的块。**必须在写盘之后**：刷新以"源盘已是新数据"为前提；
                 //    若反过来，中间这段窗口里别的读可能把"写之前的旧块"又读回来。
@@ -293,8 +321,6 @@ namespace FlyDisk.Engine
                 //    · 整块被完整覆盖 ⇒ 写数据就是盘上这一块的新值，直接刷进缓存（W1，省掉下次读的回源）；
                 //    · 只被覆盖一部分（写请求未必块对齐，MBR 那 512 字节就是）⇒ 块内其余字节还是盘上旧值，
                 //      拿写数据当整块填进去就是脏数据，因此退回作废。
-                long firstBlock = offset / BlockSize;
-                long lastBlock = (offset + data.Length - 1) / BlockSize;
                 for (long blockIndex = firstBlock; blockIndex <= lastBlock; blockIndex++)
                 {
                     long blockStart = blockIndex * BlockSize;
@@ -315,7 +341,7 @@ namespace FlyDisk.Engine
             }
             finally
             {
-                Interlocked.Decrement(ref _inFlight);
+                ExitCommand();
             }
         }
 

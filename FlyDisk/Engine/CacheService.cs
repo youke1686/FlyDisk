@@ -42,10 +42,9 @@ namespace FlyDisk.Engine
     ///    是"开始淘汰"这道线）与按需补齐（<see cref="AcquireSlot"/> 里空闲链空时顺手摘一批，O(K)）。
     ///    **前者是主路径**——只有它能让"全程命中"时缓存也照样回收（§6.10 的订正）；
     /// 2. 数据面只有一个执行者：库里每个 target 起一个后台线程串行执行 SCSI 命令 ⇒ 缓存读写天然串行。
-    ///    但**水位节拍是第二个线程**：它只碰"至少老了 `EvictionGraceSeconds` 秒"的块、只改换引用不释放，
+    ///    但**水位节拍是第二个线程**：它淘汰冷块并释放整块空闲 Slab，
     ///    与数据面共享的池状态全部经 `_poolLock`/`_wheelLock` 串行化（锁序见字段区注释）；UI 线程只读计数器；
-    /// 3. 淘汰只碰"至少老了 `EvictionGraceSeconds` 秒"的块，而命中时**先 Touch 再拷贝数据** ⇒
-    ///    正在被读的块必然不落在可淘汰区 ⇒ 热路径上不必为"在途裸指针"加锁；
+    /// 3. L1 查找、提升与数据拷贝共用 `_wheelLock`，避免查到槽位后被后台淘汰或复用；
     /// 4. **内存真还给系统的唯一办法是归还 Slab**（整块空闲才可 `free`；只回收块不改提交量，
     ///    所以 `dwMemoryLoad` 不会因为"淘汰"而下降）——见 §6.9/§6.10。
     /// </summary>
@@ -101,6 +100,10 @@ namespace FlyDisk.Engine
         private long _releasedSlabs;                      // 累计归还给系统的 Slab 数
         private long _watermarkEvictions;                 // 水位（主动）淘汰触发的次数
         private Timer? _levelTimer;                       // 水位节拍：越过 EvictionThreshold 就主动淘汰 + 归还空闲 Slab
+        private int _shutdown;
+        private readonly object _memoryStatusLock = new();
+        private long _memoryStatusUntilTicks;
+        private double _memoryLoad = 1.0;
 
         // ===== 块索引：全局块号 → （槽位 + 时间轮节点）=====
         private readonly ConcurrentDictionary<long, SlotRef> _blocks = new();
@@ -172,8 +175,7 @@ namespace FlyDisk.Engine
             _config = config;
 
             _windowSeconds = Clamp(config.EvictionWindowSeconds, MIN_WINDOW_SECONDS, MAX_WINDOW_SECONDS);
-            // 宽限下限是 1（不是 0）：**当前桶必须永远排除在可淘汰区之外**——命中时先 Touch 到当前桶、
-            // 再拷贝数据，若允许淘汰当前桶，拷贝期间的块就可能被摘掉并复用（use-after-free）。
+            // 保留当前桶与宽限期的热块；裸指针生命周期另外由 _wheelLock 保护。
             _graceSeconds = Clamp(config.EvictionGraceSeconds, 1, _windowSeconds - 1);
             _batchBlocks = Clamp(config.EvictionBatchBlocks, 1, MAX_BATCH_BLOCKS);
 
@@ -286,7 +288,7 @@ namespace FlyDisk.Engine
             stats.ReleasedSlabsTotal = Interlocked.Read(ref _releasedSlabs);
             stats.WatermarkEvictionsTotal = Interlocked.Read(ref _watermarkEvictions);
 
-            stats.SsdCacheEnabled = _ssd != null;
+            stats.SsdCacheEnabled = _ssd?.IsEnabled ?? false;
             stats.SsdTotalSlots = _ssd?.TotalSlots ?? 0;
             stats.SsdUsedSlots = _ssd?.UsedSlots ?? 0;
             stats.SsdFreeSlots = _ssd?.FreeSlots ?? 0;
@@ -311,12 +313,47 @@ namespace FlyDisk.Engine
         /// 停止时调用：把 L2 索引落盘并关闭容器——这是**整个运行期唯一一次**账本落盘。
         /// **必须在下线 target 之后调用**（否则还有命令在跑，会在账本序列化的同时改内存表）。
         /// </summary>
-        public void Shutdown()
+        public void Shutdown(bool persistLedger = true)
         {
-            // 先停水位节拍：它只碰 L1，但必须在"冻结 L2 / 写账本"之前停掉，免得节拍在停服序列里插一脚
-            _levelTimer?.Dispose();
-            _levelTimer = null;
-            _ssd?.Dispose();
+            if (Interlocked.Exchange(ref _shutdown, 1) != 0) return;
+            // 调用方已关闭命令入口并等在途命令结束；节拍也必须完全退出才可释放裸指针。
+            Timer? timer = Interlocked.Exchange(ref _levelTimer, null);
+            if (timer != null)
+            {
+                using var done = new ManualResetEvent(false);
+                if (timer.Dispose(done)) done.WaitOne();
+            }
+            try
+            {
+                _ssd?.Close(persistLedger);
+            }
+            finally
+            {
+                lock (_wheelLock)
+                {
+                    _blocks.Clear();
+                    _nodeChunks.Clear();
+                    Array.Fill(_bucketHead, -1);
+                    Array.Fill(_bucketTail, -1);
+                    _coldHead = _coldTail = _freeNodeHead = -1;
+                    _nodeHighWater = 0;
+                    lock (_poolLock)
+                    {
+                        foreach (Slab slab in _slabs)
+                        {
+                            NativeMemory.Free((void*)slab.Base);
+                            GC.RemoveMemoryPressure(SLAB_SIZE);
+                            Interlocked.Increment(ref _releasedSlabs);
+                        }
+                        _slabs.Clear();
+                        _currentSlab = null;
+                        Interlocked.Exchange(ref _totalSlots, 0);
+                        Interlocked.Exchange(ref _usedSlots, 0);
+                    }
+                    Interlocked.Exchange(ref _chainedNodes, 0);
+                    Interlocked.Exchange(ref _cachedBlocks, 0);
+                }
+            }
         }
 
         /// <summary>
@@ -350,7 +387,7 @@ namespace FlyDisk.Engine
         /// **只从"当前分配 Slab"取**——这条不变量是"整 Slab 可安全归还"的前提：
         /// 非当前 Slab 不可能被并发 pop，于是只要它整块空闲，就没人持有它的指针。
         /// </summary>
-        private bool TakeFreeSlot(out IntPtr slot)
+        private bool TakeFreeSlot(out SlotRef slot)
         {
             lock (_poolLock)
             {
@@ -367,49 +404,32 @@ namespace FlyDisk.Engine
 
                 if (slab is null)
                 {
-                    slot = IntPtr.Zero;
+                    slot = default;
                     return false;
                 }
 
                 if (slab.FreeTop == SLOTS_PER_SLAB) slab.WholeFreeSinceTicks = 0;  // 不再整块空闲 ⇒ 撤销空闲计时
-                slot = SlotAddress(slab, slab.FreeIdx[--slab.FreeTop]);
+                slot = new SlotRef(slab, slab.FreeIdx[--slab.FreeTop], -1);
                 Interlocked.Increment(ref _usedSlots);
                 return true;
             }
         }
 
         /// <summary>把槽位还回它所属 Slab 的空闲链（占用计数 -1）。**每个槽位只能归还一次**——唯一性由调用方保证</summary>
-        private void ReturnFreeSlot(IntPtr slot)
+        private void ReturnFreeSlot(SlotRef slot)
         {
             lock (_poolLock) ReturnFreeSlotLocked(slot);
             Interlocked.Decrement(ref _usedSlots);
         }
 
-        /// <summary>批量归还（水位淘汰一次摘一批时用，只取一次锁、只改一次计数）</summary>
-        private void ReturnFreeSlots(List<IntPtr> slots)
-        {
-            if (slots.Count == 0) return;
-            lock (_poolLock)
-            {
-                foreach (IntPtr slot in slots) ReturnFreeSlotLocked(slot);
-            }
-            Interlocked.Add(ref _usedSlots, -slots.Count);
-        }
-
         /// <summary>归还的公共部分（调用者必须持有 _poolLock）</summary>
-        private void ReturnFreeSlotLocked(IntPtr slot)
+        private void ReturnFreeSlotLocked(SlotRef slot)
         {
-            foreach (Slab s in _slabs)
-            {
-                long offset = (long)slot - (long)s.Base;
-                if (offset < 0 || offset >= SLAB_SIZE) continue;
-
-                s.FreeIdx[s.FreeTop++] = (int)(offset / BLOCK_SIZE);
-                if (s.FreeTop == SLOTS_PER_SLAB)
-                    s.WholeFreeSinceTicks = Environment.TickCount64;   // 整块空闲：开始计时（归还前先观察一段）
-                return;
-            }
-            // 找不到所属 Slab：不该发生（槽位必属于某个存活 Slab）；静默忽略比抛异常好
+            // 引用直接带所属 Slab，归还为 O(1)，不再为每个淘汰块遍历全部 Slab。
+            Slab slab = slot.Owner;
+            slab.FreeIdx[slab.FreeTop++] = slot.SlotIndex;
+            if (slab.FreeTop == SLOTS_PER_SLAB)
+                slab.WholeFreeSinceTicks = Environment.TickCount64;
         }
 
         /// <summary>
@@ -418,9 +438,9 @@ namespace FlyDisk.Engine
         /// 这正是设计文档 §2.2 的原意：系统内存占用达到 EvictionThreshold 就触发 LRU。
         /// 注意这只是"按需"的补充路径；让 `EvictionThreshold` 名实相符的是 WaterLevelTick 的节拍。
         /// </summary>
-        private IntPtr AcquireSlot()
+        private SlotRef? AcquireSlot()
         {
-            if (TakeFreeSlot(out IntPtr slot))
+            if (TakeFreeSlot(out SlotRef slot))
             {
                 return slot;
             }
@@ -445,18 +465,20 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>分配一个新 Slab，除第 0 个槽位外的全部槽位入空闲链（调用者必须持有 _allocationLock）</summary>
-        private IntPtr AllocateSlabLocked()
+        private SlotRef? AllocateSlabLocked()
         {
             // 冷却期内不再向系统重试：上次分配失败后的 ALLOC_FAIL_COOLDOWN_MS 里直接返回失败，
             // 调用方按"取不到槽位"处理（本块不进 L1）。这样扩池必然失败时，最多 1 秒才重试/落一次日志。
             if (Volatile.Read(ref _allocFailCooldownUntilTicks) > Environment.TickCount64)
             {
-                return IntPtr.Zero;
+                return null;
             }
 
+            IntPtr basePtr = IntPtr.Zero;
+            bool pressureAdded = false;
             try
             {
-                IntPtr basePtr = (IntPtr)NativeMemory.Alloc((nuint)SLAB_SIZE);
+                basePtr = (IntPtr)NativeMemory.Alloc((nuint)SLAB_SIZE);
                 // 少数分配器/平台以"返回空指针"而非抛异常表示失败，一并当作失败处理
                 if (basePtr == IntPtr.Zero)
                 {
@@ -469,6 +491,8 @@ namespace FlyDisk.Engine
                     slab.FreeIdx[slab.FreeTop++] = i;
                 }
 
+                GC.AddMemoryPressure(SLAB_SIZE);
+                pressureAdded = true;
                 lock (_poolLock)
                 {
                     _slabs.Add(slab);
@@ -476,17 +500,18 @@ namespace FlyDisk.Engine
                     Interlocked.Add(ref _totalSlots, SLOTS_PER_SLAB);
                 }
 
-                GC.AddMemoryPressure(SLAB_SIZE);
                 Interlocked.Increment(ref _usedSlots);   // 第 0 块直接返回给调用者，计入占用
-                return basePtr;
+                return new SlotRef(slab, 0, -1);
             }
             catch (Exception ex)   // 任何形式的失败都进入冷却（不只 OOM），避免逐块重试 + 逐块刷日志
             {
+                if (basePtr != IntPtr.Zero) NativeMemory.Free((void*)basePtr);
+                if (pressureAdded) GC.RemoveMemoryPressure(SLAB_SIZE);
                 Volatile.Write(ref _allocFailCooldownUntilTicks, Environment.TickCount64 + ALLOC_FAIL_COOLDOWN_MS);
                 LogService.DebugFile(
                     $"CacheService：无法分配新的 Slab（{ex.GetType().Name}: {ex.Message}），" +
                     $"进入 {ALLOC_FAIL_COOLDOWN_MS} ms 冷却");
-                return IntPtr.Zero;
+                return null;
             }
         }
 
@@ -499,7 +524,7 @@ namespace FlyDisk.Engine
         {
             try
             {
-                if (!_evictionEnabled) return;
+                if (!_evictionEnabled || Volatile.Read(ref _shutdown) != 0) return;
                 if (!SystemMemory.TryRead(out MemoryStatus mem)) return;
 
                 double load = mem.MemoryLoadPercent / 100.0;
@@ -641,18 +666,17 @@ namespace FlyDisk.Engine
 
         private bool InternalTryGetBlock(long blockIndex, byte[] buffer, int offset)
         {
-            if (_blocks.TryGetValue(blockIndex, out SlotRef slotRef))
+            lock (_wheelLock)
             {
-                // 命中即"使用"：先提升（本身是惰性的，同一秒内不会重复搬链），再拷贝数据。
-                // 这个顺序是淘汰安全性的前提：紧接着的拷贝期间，本块必然处于"当前桶"，不可能被淘汰选中。
-                Touch(slotRef.NodeIndex, NowSeconds());
+                // 查找也在锁内：查到之后才加锁仍可能持有已经归还的旧槽位。
+                if (!_blocks.TryGetValue(blockIndex, out SlotRef slotRef)) return false;
+                TouchLocked(slotRef.NodeIndex, NowSeconds());
                 // **不再通知 L2**（2026-09-30）：L1 服务得了的块，L2 既不必留它、也不必记它的频次。
                 // 旧版在这里调 _ssd.Touch，把"L1 命中的块"持续灌进 L2 —— 正是 L2 的 S 长期满溢、
                 // M 饿死的成因（见 后续待办.md 第五节）。准入的唯一入口现在是"回源读到整块"。
                 Marshal.Copy(slotRef.Slot, buffer, offset, BLOCK_SIZE);
                 return true;
             }
-            return false;
         }
 
         /// <summary>
@@ -671,44 +695,57 @@ namespace FlyDisk.Engine
         private void InternalSetBlock(long blockIndex, byte[] buffer, int offset)
         {
             // 如果该块已经缓存，直接覆盖（回填不是"命中"，故不提升）
-            if (_blocks.TryGetValue(blockIndex, out SlotRef existing))
+            lock (_wheelLock)
             {
-                // L2 侧由调用方 SetBlock 里的 _ssd.Insert 统一处理（准入的唯一入口就在那里）
-                Marshal.Copy(buffer, offset, existing.Slot, BLOCK_SIZE);
-                return;
+                if (_blocks.TryGetValue(blockIndex, out SlotRef existing))
+                {
+                    Marshal.Copy(buffer, offset, existing.Slot, BLOCK_SIZE);
+                    return;
+                }
             }
 
             // 分配新槽位。
             // **注意这个在途窗口**：从"认领槽位"（_usedSlots+1）到"挂进时间轮"（_chainedNodes+1）之间，
             // 两个计数天然差 1；水位节拍线程此时可能正在跑自检，所以要用 _inFlightSlotOps 标出来。
             Interlocked.Increment(ref _inFlightSlotOps);
-            IntPtr slot = AcquireSlot();
-            if (slot == IntPtr.Zero)
+            SlotRef? acquired = null;
+            bool published = false;
+            try
             {
+                acquired = AcquireSlot();
+                if (!acquired.HasValue) return;
+                SlotRef slot = acquired.Value;
+                Marshal.Copy(buffer, offset, slot.Slot, BLOCK_SIZE);
+                int now = NowSeconds();
+                lock (_wheelLock)
+                {
+                    AdvanceTo(now);
+                    int nodeIndex = AllocNode(blockIndex, now);
+                    try
+                    {
+                        if (_blocks.TryAdd(blockIndex, new SlotRef(slot.Owner, slot.SlotIndex, nodeIndex)))
+                        {
+                            LinkToBucket(nodeIndex, NormalizeBucket(now), now);
+                            Interlocked.Increment(ref _cachedBlocks);
+                            published = true;
+                        }
+                    }
+                    finally
+                    {
+                        if (!published) FreeNode(nodeIndex);
+                    }
+                }
+            }
+            catch (OutOfMemoryException)
+            {
+                // 缓存元数据分配失败不影响已经从源盘/L2 读到的数据。
+                Volatile.Write(ref _allocFailCooldownUntilTicks, Environment.TickCount64 + ALLOC_FAIL_COOLDOWN_MS);
+            }
+            finally
+            {
+                if (acquired.HasValue && !published) ReturnFreeSlot(acquired.Value);
                 Interlocked.Decrement(ref _inFlightSlotOps);
-                return;
             }
-            Marshal.Copy(buffer, offset, slot, BLOCK_SIZE);
-
-            int now = NowSeconds();
-            lock (_wheelLock)
-            {
-                AdvanceTo(now);
-                int nodeIndex = AllocNode(blockIndex, now);
-                if (_blocks.TryAdd(blockIndex, new SlotRef(slot, nodeIndex)))
-                {
-                    // 先挂进块表、再挂链：淘汰是按链走的，挂链后它才参与 LRU
-                    LinkToBucket(nodeIndex, NormalizeBucket(now), now);
-                    Interlocked.Increment(ref _cachedBlocks);
-                }
-                else
-                {
-                    // 并发写入时，如果别人先占了坑，就把自己申请的节点与槽位还回去
-                    FreeNode(nodeIndex);
-                    ReturnFreeSlot(slot);
-                }
-            }
-            Interlocked.Decrement(ref _inFlightSlotOps);
         }
 
         /// <summary>
@@ -726,12 +763,14 @@ namespace FlyDisk.Engine
         {
             // 两层各自判断"有没有副本"，互不牵连：块可能同时在两层，L2 那一份同样要刷。
             // 顺序与读路径的 L1 → L2 一致，先内存后磁盘。
-            if (_blocks.TryGetValue(blockIndex, out SlotRef slotRef))
+            lock (_wheelLock)
             {
-                // 写也是"使用"：保持它在时间轮上的热度，免得刚写过、马上要被读的块先被淘汰
-                Touch(slotRef.NodeIndex, NowSeconds());
-                Marshal.Copy(buffer, offset, slotRef.Slot, BLOCK_SIZE);
-                Interlocked.Increment(ref _writeUpdateBlocks);
+                if (_blocks.TryGetValue(blockIndex, out SlotRef slotRef))
+                {
+                    TouchLocked(slotRef.NodeIndex, NowSeconds());
+                    Marshal.Copy(buffer, offset, slotRef.Slot, BLOCK_SIZE);
+                    Interlocked.Increment(ref _writeUpdateBlocks);
+                }
             }
 
             _ssd?.UpdateExisting(blockIndex, buffer, offset);
@@ -746,7 +785,17 @@ namespace FlyDisk.Engine
         /// </summary>
         public double GetSystemMemoryLoad()
         {
-            return SystemMemory.TryRead(out MemoryStatus mem) ? mem.MemoryLoadPercent / 100.0 : 1.0;
+            // 同一短周期内复用读数，避免 1 MiB 回填逐块做 256 次 P/Invoke 和对象分配。
+            lock (_memoryStatusLock)
+            {
+                long now = Environment.TickCount64;
+                if (now >= _memoryStatusUntilTicks)
+                {
+                    _memoryLoad = SystemMemory.TryRead(out MemoryStatus mem) ? mem.MemoryLoadPercent / 100.0 : 1.0;
+                    _memoryStatusUntilTicks = now + 100;
+                }
+                return _memoryLoad;
+            }
         }
 
         public bool CanCache()
@@ -778,10 +827,13 @@ namespace FlyDisk.Engine
             for (long offset = 0; offset < blockCount; offset++)
             {
                 long blockIndex = firstBlock + offset;
-                if (_blocks.TryRemove(blockIndex, out SlotRef slotRef))
+                lock (_wheelLock)
                 {
-                    Interlocked.Decrement(ref _cachedBlocks);
-                    UnlinkAndReturnSlot(slotRef);
+                    if (_blocks.TryRemove(blockIndex, out SlotRef slotRef))
+                    {
+                        Interlocked.Decrement(ref _cachedBlocks);
+                        UnlinkAndReturnSlot(slotRef);
+                    }
                 }
             }
         }
@@ -799,7 +851,7 @@ namespace FlyDisk.Engine
                 Unlink(slotRef.NodeIndex);
                 FreeNode(slotRef.NodeIndex);
             }
-            ReturnFreeSlot(slotRef.Slot);
+            ReturnFreeSlot(slotRef);
             Interlocked.Decrement(ref _inFlightSlotOps);
         }
 
@@ -831,8 +883,9 @@ namespace FlyDisk.Engine
             }
             else
             {
-                index = _nodeHighWater++;
+                index = _nodeHighWater;
                 EnsureNodeChunk(index);
+                _nodeHighWater++;
             }
 
             ref CacheNode node = ref NodeAt(index);
@@ -933,21 +986,18 @@ namespace FlyDisk.Engine
             _bucketTail[bucket] = -1;
         }
 
-        /// <summary>命中提升：同一秒内不重复搬（惰性），因此每个块每秒最多一次链表操作</summary>
-        private void Touch(int index, int now)
+        /// <summary>命中提升（调用方持有 _wheelLock）：每个块每秒最多一次链表操作</summary>
+        private void TouchLocked(int index, int now)
         {
             if (index < 0) return;
 
-            lock (_wheelLock)
-            {
-                AdvanceTo(now);
-                ref CacheNode node = ref NodeAt(index);
-                if (node.BlockIndex < 0) return;   // 已被摘除（正常情况下不会走到）
-                if (node.Epoch == now) return;     // 本秒已提升过
+            AdvanceTo(now);
+            ref CacheNode node = ref NodeAt(index);
+            if (node.BlockIndex < 0) return;
+            if (node.Epoch == now) return;
 
-                Unlink(index);
-                LinkToBucket(index, NormalizeBucket(now), now);
-            }
+            Unlink(index);
+            LinkToBucket(index, NormalizeBucket(now), now);
         }
 
         /// <summary>
@@ -970,8 +1020,7 @@ namespace FlyDisk.Engine
                     if (EvictNode(_coldHead)) removed++;
                 }
 
-                // 2) 窗口内最老 → 较新。跳过当前桶与宽限桶：命中时先 Touch 再拷贝，
-                //    所以正在被读的块一定在较新的桶里，这样等于给在途读零成本的保护。
+                // 2) 窗口内最老 → 较新，跳过当前桶与宽限桶；读取另由同一把轮锁保护。
                 int oldest = _coldBaseEpoch + 1;
                 int newest = now - _graceSeconds;
                 for (int epoch = oldest; epoch <= newest && removed < budget; epoch++)
@@ -1017,7 +1066,7 @@ namespace FlyDisk.Engine
                 // 那就只把它从链上摘掉，绝不去归还别人正在用的槽位（否则两个块共用一块 4KB ⇒ 静默错数据）
                 if (slotRef.NodeIndex == index)
                 {
-                    ReturnFreeSlot(slotRef.Slot);
+                    ReturnFreeSlot(slotRef);
                     Interlocked.Decrement(ref _cachedBlocks);
                     freed = true;
                 }
@@ -1129,15 +1178,18 @@ namespace FlyDisk.Engine
             public Slab(IntPtr basePtr) { Base = basePtr; }
         }
 
-        /// <summary>一个已缓存块的引用：非托管槽位地址 + 它在时间轮上的节点索引</summary>
+        /// <summary>所属 Slab + 槽号 + 时间轮节点索引，归还槽位无需搜索池</summary>
         private readonly struct SlotRef
         {
-            public readonly IntPtr Slot;
+            public readonly Slab Owner;
+            public readonly int SlotIndex;
             public readonly int NodeIndex;
+            public IntPtr Slot => SlotAddress(Owner, SlotIndex);
 
-            public SlotRef(IntPtr slot, int nodeIndex)
+            public SlotRef(Slab owner, int slotIndex, int nodeIndex)
             {
-                Slot = slot;
+                Owner = owner;
+                SlotIndex = slotIndex;
                 NodeIndex = nodeIndex;
             }
         }

@@ -63,6 +63,8 @@ namespace FlyDisk.Engine
         private CachedPhysicalDisk? _disk;
         private ISCSITarget? _target;
         private ISCSIServer? _server;
+        private readonly object _lifecycleLock = new();
+        private int _cleanupPending;
 
         /// <summary>
         /// 发起端：target 起来之后自动把盘挂回系统视野、停止时自动摘除（见 后续待办.md 待办 3）。
@@ -76,7 +78,10 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>target 是否正在提供块设备</summary>
-        public bool IsRunning => _server != null;
+        public bool IsRunning => Volatile.Read(ref _server) != null;
+
+        /// <summary>停服超时后仍有命令在途，后台持有资源直到命令退出；期间禁止重启或联机</summary>
+        public bool IsStopping => Volatile.Read(ref _cleanupPending) != 0;
 
         /// <summary>
         /// 本次启动是否**自动挂载成功**（发起端会话由本程序建立）。失败时启动流程照常继续，
@@ -167,6 +172,20 @@ namespace FlyDisk.Engine
         /// </param>
         public void Start(PhysicalDiskInfo target, bool allowL2Reset = false)
         {
+            lock (_lifecycleLock)
+            {
+                EnsureCleanupComplete();
+                StartLocalCore(target, allowL2Reset);
+            }
+        }
+
+        private void EnsureCleanupComplete()
+        {
+            if (IsStopping) throw new InvalidOperationException(Locale.T("engine.stop.pending"));
+        }
+
+        private void StartLocalCore(PhysicalDiskInfo target, bool allowL2Reset)
+        {
             if (IsRunning) return;
 
             Validate(target, allowL2Reset);
@@ -201,6 +220,15 @@ namespace FlyDisk.Engine
         /// 见 后续待办.md 第一节的"客户端形态特有的分流"。
         /// </summary>
         public void StartRemote(IBlockSource remoteSource, BlockSourceInfo remoteInfo, bool allowL2Reset = false)
+        {
+            lock (_lifecycleLock)
+            {
+                EnsureCleanupComplete();
+                StartRemoteCore(remoteSource, remoteInfo, allowL2Reset);
+            }
+        }
+
+        private void StartRemoteCore(IBlockSource remoteSource, BlockSourceInfo remoteInfo, bool allowL2Reset)
         {
             if (IsRunning) return;
 
@@ -242,12 +270,12 @@ namespace FlyDisk.Engine
             target.OnSessionTermination += Target_OnSessionTermination;
 
             var server = new ISCSIServer();
+            // 先登记所有者：Start 部分成功后抛异常时，StopCore 也能关闭监听器。
+            _target = target;
+            _server = server;
             server.OnLogEntry += Server_OnLogEntry;
             server.AddTarget(target);
             server.Start(new IPEndPoint(IPAddress.Parse(_config.ListenAddress), _config.ListenPort));
-
-            _target = target;
-            _server = server;
 
             // 目标已经 listen，立刻用发起端 API 把它挂回系统视野（"目标启动成功即自动挂载"）。
             // **失败不硬失败**：只记下英文诊断，界面据此提示用户手动去「iSCSI 发起程序」挂，启动照常继续。
@@ -265,6 +293,11 @@ namespace FlyDisk.Engine
         /// （后两者会让跨重启的 L2 缓存被判为过期而作废）。
         /// </summary>
         public void Stop()
+        {
+            lock (_lifecycleLock) StopRunningCore();
+        }
+
+        private void StopRunningCore()
         {
             if (!IsRunning) return;
 
@@ -292,8 +325,8 @@ namespace FlyDisk.Engine
         /// **关机 / 重启 / 注销**时的有序收尾（由界面层在 <c>CloseReason.WindowsShutDown</c> 分支调用）。
         ///
         /// 与 <see cref="Stop"/> 的**唯一区别**：这里**不做"有连接就拒绝停止"的守卫**。理由是——关机时
-        /// L2 账本**必须落盘**（那份账本正是 L2 的全部价值所在），而落盘要求先停 target 让缓存表静止；
-        /// 所以即便发起程序登不出去（盘仍被占用），也照样**中止 iSCSI 服务、掐断会话**，然后落账本。
+        /// L2 账本应尽量落盘，但前提是缓存表已经静止；因此即便发起程序登不出去，
+        /// 也中止 iSCSI 服务、掐断会话。若在途 IO 未能结束则跳过提交，让下次启动要求校验。
         ///
         /// 代价（已知且接受）：那块盘会在关机流程里被"意外移除"，挂着的 NTFS 可能丢掉尚未下发的写。
         /// 依据是：Windows 本来就会在关机时拆掉这块盘，这里只是把这一刻提前；而运行中点「停止加速」
@@ -304,7 +337,12 @@ namespace FlyDisk.Engine
         /// <returns>是否完成了收尾（<c>false</c> = 收尾过程出错，进程照常退出）</returns>
         public bool TryStopForShutdown()
         {
-            if (!IsRunning) return true;
+            lock (_lifecycleLock) return StopForShutdownCore();
+        }
+
+        private bool StopForShutdownCore()
+        {
+            if (!IsRunning) return !IsStopping;
 
             try
             {
@@ -316,9 +354,14 @@ namespace FlyDisk.Engine
                 // 等在途命令跑完 → 冻结并落 L2 账本 → 关句柄（盘保持脱机）。
                 StopCore(restoreDeviceState: false);
 
+                if (IsStopping)
+                {
+                    LogService.DebugFile("shutdown stop: in-flight IO did not finish; L2 ledger not committed");
+                    return false;
+                }
                 LogService.DebugFile(orderlyUnmount
-                    ? "shutdown stop: orderly stop done, L2 ledger flushed"
-                    : "shutdown stop: forced stop (initiator logout failed), L2 ledger flushed");
+                    ? "shutdown stop: orderly stop done; healthy L2 ledger commit attempted"
+                    : "shutdown stop: forced stop (initiator logout failed); healthy L2 ledger commit attempted");
                 return true;
             }
             catch (Exception ex)
@@ -345,6 +388,16 @@ namespace FlyDisk.Engine
         /// <returns>成功 <c>true</c>；失败 <c>false</c> 且 <paramref name="error"/> 给出可读原因（不抛，供界面直接展示）</returns>
         public bool TryReonlineDisk(int diskNumber, out string error)
         {
+            lock (_lifecycleLock) return TryReonlineDiskCore(diskNumber, out error);
+        }
+
+        private bool TryReonlineDiskCore(int diskNumber, out string error)
+        {
+            if (IsStopping)
+            {
+                error = Locale.T("engine.stop.pending");
+                return false;
+            }
             // ① 正在提供块设备时**绝对不能**联机：那块盘此刻是本程序的块源，联机等于让宿主 NTFS 与
             //    iSCSI 上的克隆盘同时管一批扇区（同签名双盘 + 双写），必然损坏数据。
             //    界面已把菜单项置灰，这里是兜底。
@@ -392,26 +445,15 @@ namespace FlyDisk.Engine
             //     比让它们碰到已释放的句柄（ObjectDisposedException 会把工作线程带走）安全得多。
             _disk?.Close();
 
-            // ② 等在途命令跑完，再把 L2 账本写出去——账本必须在缓存表不再变化的那一刻序列化
-            if (_disk != null && !_disk.WaitForIdle(2000))
-            {
-                LogService.DebugFile("等待在途 SCSI 命令超时（2 秒）；账本仍会写出，但下次启动时缓存可能被重建");
-            }
+            CachedPhysicalDisk? disk = _disk;
+            CacheService? cache = _cache;
+            PhysicalDiskHandle? device = _device;
+            bool idle = disk == null || disk.WaitForIdle(2000);
 
             _server = null;
             _target = null;
             _disk = null;
 
-            // ③ 冻结 + 落盘 + 关闭 L2（内部会做"只在正常关服落盘一次"的那一次写）
-            try
-            {
-                _cache?.FreezeForShutdown();
-                _cache?.Shutdown();
-            }
-            catch (Exception ex)
-            {
-                LogService.DebugFile($"关闭缓存引擎时出错：{ex.Message}");
-            }
             _cache = null;
 
             // ④ 最后放块源。
@@ -421,12 +463,49 @@ namespace FlyDisk.Engine
             // （见 Form1.DisconnectRemote）；顺手 `EndService()` 通知对端收回盘也由 Form1 负责。
             _source = null;
             _sourceInfo = null;
+            _device = null;
 
-            if (_device != null)
+            if (!idle)
             {
-                if (restoreDeviceState) _device.RestoreAndClose();
-                else _device.Dispose();
-                _device = null;
+                // 既不能写可信账本，也不能释放正在被命令使用的内存/句柄。
+                // 后台等待不改变远程的沉默等待语义；真正结束后才回收，期间挡住新启动。
+                Volatile.Write(ref _cleanupPending, 1);
+                LogService.DebugFile("等待在途 SCSI 命令超时（2 秒）；跳过 L2 账本提交，等待命令退出后释放资源");
+                new Thread(() =>
+                {
+                    try
+                    {
+                        disk!.WaitForIdle(Timeout.Infinite);
+                        ReleaseStoppedResources(cache, device, restoreDeviceState, persistLedger: false);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogService.DebugFile($"停服后台收尾失败：{ex.Message}");
+                    }
+                    finally { Volatile.Write(ref _cleanupPending, 0); }
+                }) { IsBackground = true, Name = "FlyDisk.StopCleanup" }.Start();
+                return;
+            }
+
+            ReleaseStoppedResources(cache, device, restoreDeviceState, persistLedger: true);
+        }
+
+        private static void ReleaseStoppedResources(CacheService? cache, PhysicalDiskHandle? device,
+            bool restoreDeviceState, bool persistLedger)
+        {
+            try
+            {
+                cache?.FreezeForShutdown();
+                cache?.Shutdown(persistLedger);
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"关闭缓存引擎时出错：{ex.Message}");
+            }
+            finally
+            {
+                if (restoreDeviceState) device?.RestoreAndClose();
+                else device?.Dispose();
             }
         }
 
