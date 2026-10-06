@@ -804,7 +804,13 @@ namespace FlyDisk.Engine
             if (_config.EvictionThreshold >= _config.StopCachingThreshold) return false;
 
             double currentLoad = GetSystemMemoryLoad();
-            return currentLoad < _config.StopCachingThreshold;
+            if (currentLoad >= _config.StopCachingThreshold) return false;
+
+            // **L1 已经空了、水位却仍在淘汰线以上** ⇒ 越线不是缓存造成的（是别的进程占着内存）。
+            // 这时再收新块只会"刚收进来就被下一拍淘汰"，而且 AcquireSlot 会因空闲链空而**扩池**，
+            // 反倒把水位往上推。于是临时把 L1 关上：只要水位还在线上、缓存又是空的就不接纳——
+            // 不接纳 ⇒ 缓存持续为空 ⇒ 这条判断自洽地维持到水位回落到淘汰线以下再自动恢复。
+            return !(currentLoad >= _config.EvictionThreshold && UsedSlots == 0);
         }
 
         #endregion

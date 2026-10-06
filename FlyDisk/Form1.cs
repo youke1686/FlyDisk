@@ -17,10 +17,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing.Text;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using FlyDisk.Engine;
@@ -157,6 +159,13 @@ namespace FlyDisk
             _statusTimer = new Timer { Interval = 1000 };
             _statusTimer.Tick += (s, e) => RefreshStatus();
             _statusTimer.Start();
+
+            // 右下角那一行的位置是"算出来"的（见 PlaceBadgeRow）：最小化/恢复那一瞬 ClientSize 可能
+            // 给出怪值（与副标题那次踩的坑同源），这里在尺寸变化后重摆一次兜住——还没显示时不动。
+            ClientSizeChanged += (s, e) =>
+            {
+                if (lblStarHint.Visible) PlaceBadgeRow();
+            };
         }
 
         /// <summary>
@@ -195,6 +204,12 @@ namespace FlyDisk
             _tray.Text = Text;   // 通知区的悬停提示与窗口标题同源（切语言时一起刷）
             btnStartStop.Text = Locale.T("main.button.start");
             SetSubtitle(Locale.T("main.subtitle.local"));
+
+            // 右下角那一行：提示语 + "按钮"的默认文字，两者都随语言变、宽度也变
+            // ⇒ 若已显示就重摆一次（见 PlaceBadgeRow）
+            lblStarHint.Text = Locale.T("main.github.starHint");
+            lblBadgePlaceholder.Text = Locale.T("main.github.placeholder");
+            if (lblStarHint.Visible) PlaceBadgeRow();
 
             if (IsHandleCreated) RefreshStatus();
         }
@@ -759,7 +774,7 @@ namespace FlyDisk
                         if (HasTargetWork || _target.IsRunning) return;
                         if (!stillRequested || !ReferenceEquals(_peer, peer))
                         {
-                            await Task.Run(peer.EndService);
+                            await EndRemoteServiceQuietly(peer);
                             return;
                         }
                         _targetOperationPending = true;
@@ -775,7 +790,7 @@ namespace FlyDisk
                             }
                             else
                             {
-                                await Task.Run(peer.EndService);
+                                await EndRemoteServiceQuietly(peer);
                             }
                         }
                         finally
@@ -806,6 +821,16 @@ namespace FlyDisk
                     }));
                 }
             });
+        }
+
+        /// <summary>
+        /// 通知对端"我不再用这块盘了"。失败只落诊断日志——调用点处在 async void 的 UI 回调里，
+        /// 异常再往外抛会直接进 Application.ThreadException，而"通知失败"本身不影响本地收尾。
+        /// </summary>
+        private static async Task EndRemoteServiceQuietly(RemotePeer peer)
+        {
+            try { await Task.Run(peer.EndService); }
+            catch (Exception ex) { LogService.DebugFile($"通知对端收回盘失败（已忽略）：{ex.Message}"); }
         }
 
         /// <summary>远程形态的启动（含 L2 账本的两种"不确定"情形，处理口径见 后续待办.md 第一节）</summary>
@@ -923,6 +948,186 @@ namespace FlyDisk
             }
 
             RefreshStatus();
+
+            // 检查更新：后台拉一次仓库里的版本号，**只在它与当前版本号不同时**提一行（见 UpdateService）。
+            // 与启动日志同处一处，是为了让"提示"落在用户启动后正好能看到的位置。
+            CheckForUpdates();
+
+            // 右下角的 GitHub 徽标：同样后台下载，失败就保持隐藏（见 LoadGitHubBadge）。
+            LoadGitHubBadge();
+        }
+
+        /// <summary>
+        /// 启动时的静默检查更新：拉远端 csproj 里的版本号，**与当前版本号不同**才在日志区提一行；
+        /// 相同、取不到、网络异常都**不输出任何东西**（见 <see cref="UpdateService"/>）。
+        ///
+        /// 跑在后台线程、不阻塞启动；`await` 默认捕获 UI 上下文，故回来写日志框时已在 UI 线程。
+        /// </summary>
+        private async void CheckForUpdates()
+        {
+            string? remote = await UpdateService.FetchRemoteVersionAsync();
+            if (remote == null) return;   // 取不到：静默
+
+            string current = UpdateService.CurrentVersion;
+            if (string.Equals(remote, current, StringComparison.OrdinalIgnoreCase)) return;   // 版本一致：静默
+
+            // 只比"是否不同"，不比大小：本地比远端新（如从源码自己编译）时也会走到这里，这没问题。
+            Log(Locale.T("main.log.updateAvailable", current, remote, UpdateService.RepoUrl));
+        }
+
+        /// <summary>
+        /// 主页右下角那枚 GitHub 徽标（shields.io 的 star 数小图），点击跳到仓库。
+        /// **URL 末尾必须带 `.png`**：shields.io 默认回的是 SVG，WinForms 的 <see cref="PictureBox"/> 显示不了。
+        /// </summary>
+        private const string GitHubBadgeUrl =
+            "https://img.shields.io/github/stars/youke1686/FlyDisk.png?style=flat-square&logo=github&logoColor=white&color=blue";
+
+        /// <summary>徽标下载用的客户端（与 <see cref="UpdateService"/> 那只分开：用途不同、互不影响）</summary>
+        private static readonly HttpClient BadgeHttp = new() { Timeout = TimeSpan.FromSeconds(8) };
+
+        /// <summary>
+        /// 徽标的磁盘缓存（**与帮助文档同一处**：<see cref="ServiceConstants.DataDirectory"/>，
+        /// 即 `%ProgramData%\FlyDisk\`）：每次启动先用它把图显示出来（离线也有图），再联网取新的、
+        /// 成功就替换并覆盖写回。写不进去（目录受限等）也不影响使用，只是下次还得联网。
+        /// </summary>
+        private static readonly string BadgeCachePath =
+            Path.Combine(ServiceConstants.DataDirectory, "github-badge.png");
+
+        /// <summary>
+        /// 装好右下角那一行：**先摆默认态（提示语 + "（点击前往）"默认文字），读到卡片再换成图**
+        /// （见 <see cref="BadgeCachePath"/>）。卡片来源有两处——先本地缓存、再联网，谁先拿到用谁。
+        /// 两处都没拿到就停在默认文字上：它同样可点击，所以右下角任何时候都进得去仓库。
+        /// </summary>
+        private async void LoadGitHubBadge()
+        {
+            // ① 默认态：先把"按钮"的默认文字摆出来（此刻就能点进仓库）
+            ShowBadgePlaceholder();
+
+            // ② 本地缓存里有卡片就立刻换上（同步读盘，毫秒级，不联网也能看到图）
+            if (TryShowCachedBadge())
+            {
+                LogService.DebugFile("GitHub 徽标：已用本地缓存显示，正在联网刷新…");
+            }
+
+            // ③ 再联网取新的；成功了才替换（失败/无网就留下 ② 的缓存图或 ① 的默认文字）
+            try
+            {
+                byte[] bytes = await BadgeHttp.GetByteArrayAsync(GitHubBadgeUrl);
+                ShowBadgeImage(DecodeImage(bytes));
+                TrySaveBadgeCache(bytes);
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"GitHub 徽标下载失败，沿用缓存（没有则只留默认文字）：{ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 显示"按钮"的默认态：一行 = 提示语 + "（点击前往）"占位文字（占的就是卡片的位置）。
+        /// 卡片（本地缓存或联网图）一到就由 <see cref="ShowBadgeImage"/> 把它换掉。
+        /// </summary>
+        private void ShowBadgePlaceholder()
+        {
+            picGitHub.Visible = false;
+            lblBadgePlaceholder.Visible = true;
+            lblStarHint.Visible = true;
+            PlaceBadgeRow();
+        }
+
+        /// <summary>把缓存里的徽标显示出来；缓存不存在或读坏了就返回 false（只落诊断日志）。</summary>
+        private bool TryShowCachedBadge()
+        {
+            try
+            {
+                if (!File.Exists(BadgeCachePath)) return false;
+
+                ShowBadgeImage(DecodeImage(File.ReadAllBytes(BadgeCachePath)));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"GitHub 徽标缓存读取失败，已忽略：{ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>把刚下到的图覆盖写回缓存；失败只落日志（下次启动就没缓存可用，仅此而已）。</summary>
+        private static void TrySaveBadgeCache(byte[] bytes)
+        {
+            try
+            {
+                // 数据目录由帮助文档在启动时建过，这里再兜一次（万一它落盘失败）
+                Directory.CreateDirectory(ServiceConstants.DataDirectory);
+                File.WriteAllBytes(BadgeCachePath, bytes);
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"GitHub 徽标缓存写入失败：{ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 解码图片。<see cref="Image.FromStream"/> 要求流在图片的**整个生命周期**内保持打开，
+        /// 所以先克隆一份脱离流再放行 using——否则流一关，用它的图就废了。
+        /// </summary>
+        private static Image DecodeImage(byte[] bytes)
+        {
+            using var stream = new MemoryStream(bytes);
+            using Image raw = Image.FromStream(stream);
+            return new Bitmap(raw);
+        }
+
+        /// <summary>换上新图并摆位（旧的图要释放）；首次显示与联网刷新走过同一条路。</summary>
+        private void ShowBadgeImage(Image image)
+        {
+            Image? previous = picGitHub.Image;
+            picGitHub.Image = image;
+            previous?.Dispose();
+
+            // 卡片就位：把"（点击前往）"默认文字换掉（两者占同一个位置）
+            lblBadgePlaceholder.Visible = false;
+            picGitHub.Visible = true;
+            lblStarHint.Visible = true;
+            PlaceBadgeRow();
+        }
+
+        /// <summary>
+        /// 把"提示语 + 卡片"这一行贴到内容区右下角：**行尾右贴边、上贴状态栏**，提示紧挨其左
+        /// （"→"正好指向它）。行尾就是卡片图或它的默认文字"（点击前往）"——两者占同一位置。
+        ///
+        /// 尺寸要等图片下完 / 文字量好才知道，故位置不在 Designer 里定，而在这一行显示之后在这里算。
+        /// </summary>
+        private void PlaceBadgeRow()
+        {
+            const int margin = 10;
+            const int gap = 6;
+
+            // 行尾：有卡片图就用它，否则是"（点击前往）"默认文字
+            Control tail = picGitHub.Visible ? picGitHub : lblBadgePlaceholder;
+
+            tail.Location = new Point(
+                ClientSize.Width - tail.Width - margin,
+                statusStrip1.Top - tail.Height - margin);
+
+            // 提示贴在行尾左侧、与行尾垂直居中
+            lblStarHint.Location = new Point(
+                tail.Left - lblStarHint.Width - gap,
+                tail.Top + (tail.Height - lblStarHint.Height) / 2);
+        }
+
+        /// <summary>
+        /// 点"求 star 提示"或 GitHub 徽标：用系统默认浏览器打开仓库页。打不开不是大事，只落诊断日志。
+        /// </summary>
+        private void OpenGitHubRepo(object? sender, EventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(UpdateService.RepoUrl) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"打开 GitHub 仓库失败：{ex.Message}");
+            }
         }
 
         /// <summary>
@@ -994,6 +1199,11 @@ namespace FlyDisk
 
                     Log(Locale.T("main.log.targetReady", _target.ListenEndpoint, _config.TargetIqn));
                     LogAutoMountResult(Locale.T("main.log.iscsiConnectHint"));
+
+                    // 克隆盘被系统保持脱机 / 只读（多半是判成了源盘的「冗余路径」）：按既定流程**整套重来一次**
+                    // ——停止（摘 iSCSI、盘保持脱机）→ 等 1 秒 → 再启动（含同一套检查）。
+                    // 一轮仍不行就停在原地、如实告诉用户（见 RecoverFromCloneDiskProblem）。
+                    if (_target.CloneDiskWarning.Length > 0) await RecoverFromCloneDiskProblem(target);
                 }
             }
             finally
@@ -1103,6 +1313,137 @@ namespace FlyDisk
                 Log(Locale.T("main.log.startFailed", ex.Message));
                 MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return false;
+            }
+        }
+
+        /// <summary>自动恢复里各步骤之间等多久（毫秒）：既让刚建立的 iSCSI 会话稳定下来，也让系统把设备栈收拾干净</summary>
+        private const int CloneRetryDelayMs = 1000;
+
+        /// <summary>自动恢复里"停止加速"最多试几次（每次之间等 <see cref="CloneRetryDelayMs"/>）</summary>
+        private const int CloneRetryStopAttempts = 3;
+
+        /// <summary>
+        /// 提 issue 的落点：只在"无法加速"时由代码打开，**不把链接写进给用户看的文案**（文案里只说 GitHub 仓库）。
+        /// </summary>
+        private const string GitHubIssuesUrl = "https://github.com/youke1686/FlyDisk/issues/new";
+
+        /// <summary>
+        /// 克隆盘异常的**一轮自动恢复**：等 1 秒（让刚建立的 iSCSI 会话稳定）→ 停止加速全流程（摘 iSCSI、
+        /// 落 L2 账本、盘保持脱机，**最多试 3 次**）→ 再等 1 秒 → 重新走一遍启动加速（含同一套克隆盘检查，
+        /// 见 <see cref="TargetService.CloneDiskWarning"/>）。
+        ///
+        /// 成功（检查不再报）就继续加速；仍失败就停止加速、如实告知用户（见 <see cref="ReportCloneDiskUnfixable"/>）。
+        /// **只重试一轮**：同一台机器、同一套时序再来一次就是同样的结果，多试只会让用户干等。
+        /// 重试用**同一块盘**（不再弹选盘框）：用户刚选过，且这是程序自己发起的动作。
+        ///
+        /// ⚠ 为什么每处都要等 1 秒、停止还要试 3 次：刚建立起来的 iSCSI 会话**没法立刻登出**，实测第一次
+        /// Stop 会被"还有 iSCSI 连接挂着"拒掉（见 <see cref="TryStopForCloneRecovery"/>）。
+        /// ⚠ 全程 await 后台任务，不阻塞 UI 线程（启停已移到后台，见 <see cref="StartTarget"/>）。
+        /// </summary>
+        private async Task RecoverFromCloneDiskProblem(PhysicalDiskInfo target)
+        {
+            Log(Locale.T("main.log.cloneRetry"));
+
+            // ① 先等 1 秒：刚建立起来的 iSCSI 会话**没法立刻登出**（实测：第一次 Stop 会因"还有连接挂着"被拒），
+            //    等它稳定下来再动手。
+            await Task.Delay(CloneRetryDelayMs);
+
+            // ② 停止加速全流程（最多试 3 次）。一直停不下来就没法干净地重来，如实收尾、不再往下走。
+            (bool ok, string stopError) = await TryStopForCloneRecovery();
+            if (!ok)
+            {
+                Log(Locale.T("main.log.cloneRetryStopFailed", CloneRetryStopAttempts, stopError));
+                return;
+            }
+
+            // ③ 再等 1 秒（让系统把设备栈收拾干净），然后整装重来
+            await Task.Delay(CloneRetryDelayMs);
+
+            // ④ 重新启动（含同一套克隆盘检查）；L2 两种"不确定"情形仍走原有的弹窗口径
+            RefreshStatus();
+
+            bool started = await StartWithL2MismatchPrompt(target);
+            if (!started)
+            {
+                // 启动本身失败（L2 被取消 / 抛异常）：原有的日志与弹窗已经说清原因，这里只补一句结论
+                Log(Locale.T("main.log.cloneRetryStartFailed"));
+                return;
+            }
+
+            Log(Locale.T("main.log.targetReady", _target.ListenEndpoint, _config.TargetIqn));
+            LogAutoMountResult(Locale.T("main.log.iscsiConnectHint"));
+
+            if (_target.CloneDiskWarning.Length == 0)
+            {
+                Log(Locale.T("main.log.cloneRetryOk"));
+                return;
+            }
+
+            // ⑤ 仍不行：停止加速（盘保持脱机），向用户说明并询问是否去提 issue
+            Log(Locale.T("main.log.cloneRetryFailed"));
+
+            // 先等 1 秒再停（同 ① 的道理）：刚重新启动过，那条新会话立刻登出同样会被拒
+            await Task.Delay(CloneRetryDelayMs);
+            // 再走"带重试的停止"（同 ② 的道理）：那条新会话也可能一下摘不干净
+            (bool ok2, string finalStopError) = await TryStopForCloneRecovery();
+            if (!ok2)
+            {
+                // 停不下来就还处于"仍在加速"的状态：日志如实写出，别让用户以为已经停了
+                Log(Locale.T("main.log.stopFailed", finalStopError));
+            }
+
+            ReportCloneDiskUnfixable();
+        }
+
+        /// <summary>
+        /// 停止加速（自动恢复专用）：**最多试 <see cref="CloneRetryStopAttempts"/> 次**，每次之间等 1 秒。
+        ///
+        /// 为什么要试多次：刚建立起来的 iSCSI 会话**没法立刻登出**（实测第一次 Stop 会被"还有 iSCSI 连接挂着"
+        /// 拒掉）。<c>Disconnect</c> 本身是幂等的（登出没成功就留着会话，下次调用再试），所以这里只要按节拍
+        /// 把"再试一次"做够次数，登出通常在下一次就成功了。
+        /// </summary>
+        /// <returns>停下来了返回 (true, 空串)；否则 (false, 最后一次错误)</returns>
+        private async Task<(bool ok, string error)> TryStopForCloneRecovery()
+        {
+            string error = string.Empty;
+            for (int attempt = 1; attempt <= CloneRetryStopAttempts; attempt++)
+            {
+                try
+                {
+                    await Task.Run(_target.Stop);
+                    return (true, string.Empty);
+                }
+                catch (Exception ex)
+                {
+                    error = ex.Message;
+                    LogService.DebugFile($"克隆盘恢复：停止加速第 {attempt}/{CloneRetryStopAttempts} 次失败：{ex.Message}");
+                    if (attempt < CloneRetryStopAttempts) await Task.Delay(CloneRetryDelayMs);
+                }
+            }
+            return (false, error);
+        }
+
+        /// <summary>
+        /// "无法加速"的收尾告知：弹窗说明 + 询问是否打开 GitHub 提 issue。
+        /// 文案里给出恢复路径（菜单「重新联机硬盘」把盘还给系统）——此刻磁盘保持脱机，用户得知道怎么还回去。
+        /// </summary>
+        private void ReportCloneDiskUnfixable()
+        {
+            DialogResult answer = MessageBox.Show(
+                Locale.T("main.msg.cloneUnfixable"),
+                Locale.T("dialog.cloneUnfixable"),
+                MessageBoxButtons.YesNo, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1);
+
+            if (answer != DialogResult.Yes) return;
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(GitHubIssuesUrl) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                // 打不开浏览器不是大事：文案里已经让用户自己去仓库提
+                LogService.DebugFile($"打开 GitHub issue 页面失败：{ex.Message}");
             }
         }
 
@@ -1289,6 +1630,7 @@ namespace FlyDisk
         /// 目标起来后，按**自动挂载**的结果给用户一句话：成功就说盘已自动挂上；失败就报出英文诊断
         /// （含错误码与失败步骤），再补一句该形态的手动提示（<paramref name="manualHint"/>）让用户去
         /// 「iSCSI 发起程序」自己挂。失败不拦启动（见 后续待办.md 待办 3 §9）。
+        /// 最后统一补一句**位置说明**：盘不会出现在系统「网络」位置——用户常去那儿找盘，找不到会以为加速失败。
         /// </summary>
         private void LogAutoMountResult(string manualHint)
         {
@@ -1301,6 +1643,14 @@ namespace FlyDisk
                 Log(Locale.T("main.log.iscsiAutoMountFailed", _target.AutoMountError));
                 Log(manualHint);
             }
+
+            // 克隆盘检查的结论（引擎在登录后探测到"**新出现**的盘被判脱机/只读"时给出）：
+            // 这种状态意味着 iSCSI 盘没能正常挂回系统——必须让用户看见，而不是只报一句"已自动挂载"。
+            if (_target.CloneDiskWarning.Length > 0) Log(_target.CloneDiskWarning);
+
+            // 本地与远程两种形态共用这一句：盘不会"搬"到系统「网络」位置（本地走的是回环 iSCSI，
+            // 远程挂载后同样是一块普通本地盘），在那里找盘是找不到的。
+            Log(Locale.T("main.log.diskPlacementHint"));
         }
 
         private void Log(string message)

@@ -54,7 +54,11 @@ namespace FlyDisk
             检查器ToolStripMenuItem = new ToolStripMenuItem();
             labelTitle = new Label();
             labelSubtitle = new Label();
+            lblStarHint = new Label();
+            lblBadgePlaceholder = new Label();
+            picGitHub = new PictureBox();
             statusStrip1.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)picGitHub).BeginInit();
             menuStrip1.SuspendLayout();
             SuspendLayout();
             // 
@@ -136,17 +140,56 @@ namespace FlyDisk
             labelSubtitle.TabIndex = 6;
             labelSubtitle.Text = "—— 机械硬盘块级加速器";
             // 
+            // lblStarHint
+            // 
+            lblStarHint.AutoSize = true;
+            // 灰色 ⇒ 主题层按「次要文字」上色（见 ThemeManager.ResolveRole），深浅色下都是柔和的提示色。
+            lblStarHint.Cursor = Cursors.Hand;
+            lblStarHint.ForeColor = Color.Gray;
+            lblStarHint.Name = "lblStarHint";
+            lblStarHint.Text = "如果解决了你的问题，就随手给一颗star支持一下吧 →";
+            // 它本身就是"进仓库"的入口（点了同样开浏览器）：即使徽标图下不到，右下角也始终点得动。
+            lblStarHint.Click += OpenGitHubRepo;
+            // 位置跟着徽标走（见 Form1.PlaceBadgeRow）
+            lblStarHint.Visible = false;
+            // 
+            // lblBadgePlaceholder
+            // 
+            lblBadgePlaceholder.AutoSize = true;
+            // 这就是那个"按钮"的默认文字：卡片（徽标图）读到之前顶在卡片的位置上，读到就换成卡片。
+            // 与提示同为灰色，主题层会按「次要文字」上色。
+            lblBadgePlaceholder.Cursor = Cursors.Hand;
+            lblBadgePlaceholder.ForeColor = Color.Gray;
+            lblBadgePlaceholder.Name = "lblBadgePlaceholder";
+            lblBadgePlaceholder.Text = "（点击前往）";
+            lblBadgePlaceholder.Click += OpenGitHubRepo;
+            lblBadgePlaceholder.Visible = false;
+            // 
+            // picGitHub
+            // 
+            picGitHub.Cursor = Cursors.Hand;
+            picGitHub.Name = "picGitHub";
+            picGitHub.SizeMode = PictureBoxSizeMode.AutoSize;
+            picGitHub.TabStop = false;
+            // 图片是**运行时**从 shields.io 下的（见 Form1.LoadGitHubBadge）：下到之前先藏着，
+            // 免得先闪一个空框；尺寸也要等拿到图才知道，位置在图片就位后由 PlaceBadgeRow 算。
+            picGitHub.Visible = false;
+            picGitHub.Click += OpenGitHubRepo;
+            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(7F, 17F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(584, 372);
+            ClientSize = new Size(584, 402);
             Controls.Add(labelSubtitle);
             Controls.Add(labelTitle);
             Controls.Add(statusStrip1);
             Controls.Add(menuStrip1);
             Controls.Add(txtLog);
             Controls.Add(btnStartStop);
+            Controls.Add(picGitHub);
+            Controls.Add(lblBadgePlaceholder);
+            Controls.Add(lblStarHint);
             ForeColor = SystemColors.ControlText;
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MainMenuStrip = menuStrip1;
@@ -159,6 +202,7 @@ namespace FlyDisk
             statusStrip1.PerformLayout();
             menuStrip1.ResumeLayout(false);
             menuStrip1.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)picGitHub).EndInit();
             ResumeLayout(false);
             PerformLayout();
         }
@@ -174,5 +218,8 @@ namespace FlyDisk
         private ToolStripMenuItem 检查器ToolStripMenuItem;
         private Label labelTitle;
         private Label labelSubtitle;
+        private Label lblStarHint;
+        private Label lblBadgePlaceholder;
+        private System.Windows.Forms.PictureBox picGitHub;
     }
 }

@@ -67,6 +67,15 @@ namespace FlyDisk.Engine
         private int _cleanupPending;
 
         /// <summary>
+        /// 停服等待在途命令退出时，后台最多再等多久（毫秒）。
+        ///
+        /// 超时进后台之后**不能无限等**：只要有一条命令永不返回（盘挂死 / iSCSI 会话僵住），
+        /// <see cref="IsStopping"/> 就会永久为真，用户再也启动不了、也联不了盘，只能重启进程。
+        /// 给足这个上限是为了让"只是慢"的命令正常收尾，只有真挂死才走到强制释放。
+        /// </summary>
+        private const int CleanupWaitLimitMs = 60000;
+
+        /// <summary>
         /// 发起端：target 起来之后自动把盘挂回系统视野、停止时自动摘除（见 后续待办.md 待办 3）。
         /// 本程序同时是目标端与发起端，两条链各走各的（TalAloni 服务器 ↔ iscsidsc 客户端）。
         /// </summary>
@@ -259,6 +268,7 @@ namespace FlyDisk.Engine
             // 每次启动都重置挂载结果（重试路径上要拿到最新一次的状态）
             AutoMounted = false;
             AutoMountError = string.Empty;
+            CloneDiskWarning = string.Empty;
 
             _cache = new CacheService(_config, info, allowL2Reset);
             _disk = new CachedPhysicalDisk(source, _cache);
@@ -280,9 +290,26 @@ namespace FlyDisk.Engine
             // 目标已经 listen，立刻用发起端 API 把它挂回系统视野（"目标启动成功即自动挂载"）。
             // **失败不硬失败**：只记下英文诊断，界面据此提示用户手动去「iSCSI 发起程序」挂，启动照常继续。
             // 回环：目标端与发起端都在本机，门户就是本机监听地址。
+            // 诊断基线（见 TraceSourceDiskAttributes）：登录前先复核一次源盘属性，此刻它理应仍是脱机。
+            // 建立基线后，后续每次复核仅在读数**变化**时才落日志。
+            _lastSourceOffline = null;
+            _lastSourceReadOnly = null;
+            TraceSourceDiskAttributes();
+
+            // 记下"登录前系统视野里有哪几块盘"：登录后新出现的那块就是本程序的 iSCSI 克隆盘（见 CheckCloneDisk）。
+            HashSet<int> disksBeforeMount = ScanProbedDiskNumbers();
+
             AutoMounted = _initiator.Connect(_config.TargetIqn, _config.ListenAddress, _config.ListenPort,
                 out string mountError);
             AutoMountError = AutoMounted ? string.Empty : mountError;
+
+            // 登录完成后立刻复核：克隆盘从这一刻起进入系统视野；源盘的脱机若被系统回滚成联机，
+            // 这里（以及运行期随每秒快照的复核）会记下「脱机 是→否」的变化，作为"倒置"的现场证据。
+            TraceSourceDiskAttributes();
+
+            // 克隆盘进系统视野后检查它有没有被系统保持脱机 / 只读（"被判为源盘的冗余路径"就是这种表现）。
+            // 这是"加速完了盘却用不了"唯一的自动发现点：结论由界面打到主页面日志（见 CloneDiskWarning）。
+            if (AutoMounted) CheckCloneDisk(disksBeforeMount);
         }
 
         /// <summary>
@@ -300,6 +327,9 @@ namespace FlyDisk.Engine
         private void StopRunningCore()
         {
             if (!IsRunning) return;
+
+            // 停止前再复核一次源盘属性：把「按停止这一刻源盘到底是什么状态」钉进诊断时间线。
+            TraceSourceDiskAttributes();
 
             // ⓪ 先摘掉**本程序自己**自动挂载的那条会话（"停止加速即摘除"）。不摘的话，下面
             //    "有连接就拒绝停止"会把它数进去，用户就永远停不下来了；而且它正是"上层文件系统
@@ -475,7 +505,12 @@ namespace FlyDisk.Engine
                 {
                     try
                     {
-                        disk!.WaitForIdle(Timeout.Infinite);
+                        if (!disk!.WaitForIdle(CleanupWaitLimitMs))
+                        {
+                            // 强制释放的前提是"再等也不会好"：打到日志里，便于事后分辨这一次是正常收尾还是被放弃
+                            LogService.DebugFile(
+                                $"在途 SCSI 命令在 {CleanupWaitLimitMs} ms 内仍未退出，放弃等待并强制释放（可能有命令仍在途）");
+                        }
                         ReleaseStoppedResources(cache, device, restoreDeviceState, persistLedger: false);
                     }
                     catch (Exception ex)
@@ -665,7 +700,172 @@ namespace FlyDisk.Engine
             };
 
             _cache?.FillSnapshot(stats);
+
+            // 运行期复核源盘属性（只在变化时落盘，见 TraceSourceDiskAttributes）：
+            // 盯住「我们的脱机有没有被系统回滚成联机」——"倒置"现象的现场取证。
+            TraceSourceDiskAttributes();
             return stats;
+        }
+
+        #region 源盘属性复核（诊断）
+
+        /// <summary>上一次复核到的源盘属性；null = 本轮启动还没建立基线（见 <see cref="TraceSourceDiskAttributes"/>）</summary>
+        private bool? _lastSourceOffline;
+        private bool? _lastSourceReadOnly;
+
+        /// <summary>
+        /// 复核**源盘此刻的磁盘属性**（脱机 / 只读），只在**发生变化**时落一行诊断日志。
+        ///
+        /// 背景（2026-10 用户机排障）：有一类现象的链条是——启动前源盘联机 ⇒ 本程序把它脱机成功
+        /// （t0 有"已脱机并打开"日志）⇒ 约 2 秒后克隆盘登录进入系统视野 ⇒ **系统把源盘的脱机回滚成联机**，
+        /// 克隆盘反被系统当成"联机盘的冗余路径"而脱机（磁盘管理里显示"冗余路径"）。
+        /// "t0 脱机成功"一直有日志，但"之后它是否还保持脱机"此前没有任何记录，这条复核就是补这段的：
+        /// 调用点 = 登录前基线 / 登录完成后立刻 / 运行期随每秒快照 / 按停止前，各一次。
+        ///
+        /// 读数走我们持有的独占句柄（见 <see cref="PhysicalDiskHandle.TryGetCurrentAttributes"/>）；
+        /// 读不到只记一行，**不影响任何行为**（纯诊断，不是修复）。
+        /// </summary>
+        private void TraceSourceDiskAttributes()
+        {
+            try
+            {
+                PhysicalDiskHandle? device = _device;
+                if (device == null) return;   // 远程形态或未运行：没有源盘可复核
+                if (!device.TryGetCurrentAttributes(out bool offline, out bool readOnly)) return;
+                if (_lastSourceOffline == offline && _lastSourceReadOnly == readOnly) return;
+
+                string line = _lastSourceOffline == null
+                    ? $"源盘属性复核：脱机={(offline ? "是" : "否")}，只读={(readOnly ? "是" : "否")}"
+                    : $"源盘属性变化：脱机={(_lastSourceOffline.Value ? "是" : "否")}→{(offline ? "是" : "否")}，" +
+                      $"只读={(_lastSourceReadOnly!.Value ? "是" : "否")}→{(readOnly ? "是" : "否")}";
+                LogService.DebugFile(line);
+
+                _lastSourceOffline = offline;
+                _lastSourceReadOnly = readOnly;
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"源盘属性复核失败：{ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #endregion
+
+        #region 克隆盘检查（诊断）
+
+        /// <summary>
+        /// 克隆盘检查的结论（**已本地化**，由界面在主页面日志里原样打印）；未发现异常时为空串。
+        /// </summary>
+        public string CloneDiskWarning { get; private set; } = string.Empty;
+
+        /// <summary>探测盘号的扫描上限。盘号只是枚举顺序，实际机器极少超过 8；多扫几个的代价可以忽略</summary>
+        private const int MaxProbedDiskNumber = 32;
+
+        /// <summary>等克隆盘进系统视野的上限（毫秒）与轮询间隔</summary>
+        private const int CloneDiskWaitMs = 3000;
+        private const int CloneDiskPollMs = 250;
+
+        /// <summary>
+        /// 【克隆盘可见性检查】登录成功后盯住"系统视野里**新出现**的盘"，看它有没有被系统保持脱机 / 只读。
+        ///
+        /// 背景（2026-10 用户机现象，见 <c>废\iSCSI克隆盘被判冗余路径_排障记录.md</c>）：目标盘以**联机**状态启动时，
+        /// iSCSI 克隆盘虽然在系统里出现，却被判为源盘的「冗余路径」而**保持脱机**（磁盘管理里显示"冗余路径"），
+        /// 于是加速后的盘根本用不了、盘符也不出现——而界面此前只会打印一句"已自动挂载"。
+        ///
+        /// 判据是**登录前后的差集**（<see cref="ScanProbedDiskNumbers"/>）：只有在我们登录那一刻才出现的盘
+        /// 才算克隆盘，用户原有的脱机盘不会误报。刻意**不按容量或序列号筛选**——克隆盘这两项都与源盘相同，
+        /// 筛选只会引入"把真克隆盘筛掉"的静默失败。
+        ///
+        /// ⚠ 本方法**跑在 UI 线程上**（启动是同步的）：克隆盘通常在登录后几十毫秒内就进系统视野（日志里
+        /// 紧跟在后面的 INQUIRY 就是它），所以正常情况下只多花一次扫描的时间；只有"一直没等到新盘"才等满 3 秒。
+        /// ⚠ 已知盲区：上次崩溃残留的克隆盘在登录前就已在系统里，不落在差集里 ⇒ 本检查不报；
+        /// 那种情形由启动期的 <see cref="IscsiInitiator.CleanupStale"/> 负责清理。
+        /// </summary>
+        private void CheckCloneDisk(HashSet<int> diskNumbersBefore)
+        {
+            CloneDiskWarning = string.Empty;
+
+            long deadline = Environment.TickCount64 + CloneDiskWaitMs;
+            while (true)
+            {
+                var appeared = new List<int>();
+                foreach (int n in ScanProbedDiskNumbers())
+                {
+                    if (!diskNumbersBefore.Contains(n)) appeared.Add(n);
+                }
+
+                if (appeared.Count > 0)
+                {
+                    foreach (int n in appeared) InspectNewDisk(n);
+                    return;
+                }
+
+                if (Environment.TickCount64 >= deadline)
+                {
+                    LogService.DebugFile($"克隆盘检查：{CloneDiskWaitMs} 毫秒内没等到新出现的磁盘" +
+                                         "（自动挂载成功，但设备没进系统视野？）");
+                    return;
+                }
+
+                Thread.Sleep(CloneDiskPollMs);
+            }
+        }
+
+        /// <summary>探测一块新出现的盘并记录结论：正常只落诊断日志；被判脱机 / 只读时给出用户可见的告警文本</summary>
+        private void InspectNewDisk(int diskNumber)
+        {
+            PhysicalDiskInfo disk;
+            try
+            {
+                disk = PhysicalDiskHandle.Probe(diskNumber);
+            }
+            catch (Exception ex)
+            {
+                // 探不到就没法判断（连状态都读不出来）——只落诊断，不误报
+                LogService.DebugFile($"克隆盘检查：新出现的磁盘 {diskNumber} 探测失败（{ex.GetType().Name}）：{ex.Message}");
+                return;
+            }
+
+            LogService.DebugFile($"克隆盘检查：新出现的磁盘 {diskNumber}（{disk.Model}，{disk.SizeText}），" +
+                                 $"脱机={(disk.IsOnline ? "否" : "是")}，只读={(disk.IsReadOnly ? "是" : "否")}");
+
+            // 只读与"冗余路径"共现（实测），但理论上也可能单独出现，故分开判、分开说
+            if (!disk.IsOnline)
+            {
+                CloneDiskWarning = Locale.T("engine.start.cloneDiskOffline", diskNumber);
+            }
+            else if (disk.IsReadOnly)
+            {
+                CloneDiskWarning = Locale.T("engine.start.cloneDiskReadOnly", diskNumber);
+            }
+        }
+
+        /// <summary>
+        /// 扫描此刻**能被探测到**的物理盘号。
+        ///
+        /// **刻意不用 <see cref="PhysicalDiskHandle.Enumerate"/>**：它内部的 <c>GetPhysicalDiskIndexList</c>
+        /// 会给每块盘取一次设备号，而在本程序**独占持有源盘**期间那个句柄开不出来（共享冲突 ⇒ 取号抛异常），
+        /// 异常会掀翻整份清单——"登录前后各枚举一次"这条路就永远失败。这里逐号 Probe、失败即跳过：
+        /// 独占中的源盘自然落在两侧清单之外，不影响取差集（我们要的是"新出现的盘"，不是源盘）。
+        /// </summary>
+        private static HashSet<int> ScanProbedDiskNumbers()
+        {
+            var numbers = new HashSet<int>();
+            for (int n = 0; n < MaxProbedDiskNumber; n++)
+            {
+                try
+                {
+                    PhysicalDiskHandle.Probe(n);
+                    numbers.Add(n);
+                }
+                catch
+                {
+                    // 不存在 / 被本程序独占（源盘）/ 无介质：一律当作"不在视野里"
+                }
+            }
+            return numbers;
         }
 
         #endregion

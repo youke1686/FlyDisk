@@ -311,7 +311,9 @@ namespace FlyDisk.Engine
                 {
                     // 源写失败也可能已完成部分扇区（分段写/远程回复丢失）。
                     // 无法确认哪些字节变过，整个请求范围都必须作废，然后报告原错误。
-                    _cache.InvalidateRange(firstBlock, lastBlock - firstBlock + 1);
+                    // 作废自身若再抛（例如缓存已停服），绝不能把源写失败的原始异常盖掉——那才是上层要看到的错误码。
+                    try { _cache.InvalidateRange(firstBlock, lastBlock - firstBlock + 1); }
+                    catch (Exception ex) { LogService.DebugFile($"源写失败后作废缓存范围又出错（已忽略，保留源写错误）：{ex.Message}"); }
                     throw;
                 }
 

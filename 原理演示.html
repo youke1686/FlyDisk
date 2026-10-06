@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>原理演示 · FlyDisk</title>
+<style>
+    /* ===================================================================
+       字体
+       像素字体只用于主标题（与程序主界面口径一致：正文一律不用它）。
+       它来自本仓库，用 file:// 直接打开时可能被浏览器拦掉，
+       此时自动回落到系统黑体，版面不受影响。
+       =================================================================== */
+    @font-face {
+        font-family: 'FusionPixel';
+        src: url('../FlyDisk/fusion-pixel-12px-proportional-zh_hans.ttf') format('truetype');
+        font-display: swap;
+    }
+
+    :root {
+        --scale: 1;                 /* 舞台缩放系数，由脚本按窗口大小算 */
+        --ink: #172033;
+        --ink3: #5A6E88;
+        --navy: #4A5F82;
+        --line: #ADD6E8;
+        --line-soft: #CDE3F0;
+        --cyan: #1478FF;
+        --gold: #FF9F1C;
+
+        --font-pixel: 'FusionPixel', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+        --font-body: 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', system-ui, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body { height: 100%; overflow: hidden; background: #D8E5F0; }
+
+    body { font-family: var(--font-body); color: var(--ink); }
+
+    /* 舞台居中：固定 1920×1080，等比缩放到窗口。
+       注意：这里不能用 grid / flex 的居中——舞台比窗口大，那种"居中对超尺寸项"
+       不生效，盒子会从窗口左上角起摆，缩放后又绕自身中心收缩，结果整体偏右下。
+       改用绝对定位 + 负外边距，把舞台中心钉死在窗口中心，再绕中心缩放。 */
+    .viewport { position: fixed; inset: 0; overflow: hidden; }
+
+    .stage {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        margin-left: -960px;        /* 半个舞台宽 */
+        margin-top: -540px;         /* 半个舞台高 */
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        cursor: pointer;
+        user-select: none;
+        background: linear-gradient(135deg, #EDF4FA 0%, #E4EFF8 55%, #DCE9F4 100%);
+        transform: scale(var(--scale));
+        transform-origin: 50% 50%;
+    }
+
+    /* 背景点阵，中间实、四周虚 */
+    .bg-dots {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background-image: radial-gradient(rgba(74, 95, 130, .10) 1.7px, transparent 1.7px);
+        background-size: 34px 34px;
+        -webkit-mask-image: radial-gradient(ellipse 62% 58% at 50% 52%, #000 30%, transparent 100%);
+        mask-image: radial-gradient(ellipse 62% 58% at 50% 52%, #000 30%, transparent 100%);
+    }
+
+    /* ===================== 页眉 ===================== */
+    .head { position: absolute; left: 140px; top: 44px; z-index: 5; }
+    .kicker { font-size: 20px; letter-spacing: .42em; color: var(--navy); font-weight: 600; }
+    .title {
+        margin-top: 10px;
+        font-family: var(--font-pixel);
+        font-weight: 400;
+        font-size: 72px;
+        line-height: 1.12;
+        color: var(--ink);
+    }
+    .subtitle { margin-top: 14px; font-size: 26px; color: var(--ink3); }
+
+    /* 右上角状态徽标（点它才切状态） */
+    .state-badge {
+        position: absolute;
+        right: 140px;
+        top: 62px;
+        z-index: 6;
+        padding: 12px 30px;
+        border-radius: 999px;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        color: var(--navy);
+        background: rgba(255, 255, 255, .88);
+        border: 2px solid var(--line);
+        transition: background .35s, color .35s, border-color .35s, box-shadow .35s, transform .2s;
+    }
+    .state-badge:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 24px rgba(23, 32, 51, .16);
+    }
+    .stage.on .state-badge {
+        color: #fff;
+        background: var(--cyan);
+        border-color: var(--cyan);
+        box-shadow: 0 10px 26px rgba(20, 120, 255, .30);
+    }
+
+    /* ===================== 唯一的来源：原神 ===================== */
+    /* 三个节点摆成三角形：原神在顶、FlyDisk 在左下、机械盘在右下。 */
+    .source {
+        position: absolute;
+        left: 960px;
+        top: 300px;
+        z-index: 5;
+        width: 200px;
+        height: 70px;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 32px;
+        font-weight: 700;
+        letter-spacing: .06em;
+        color: var(--ink);
+        background: #fff;
+        border: 2px solid var(--line-soft);
+        border-radius: 18px;
+        box-shadow: 0 10px 26px rgba(23, 32, 51, .10);
+    }
+    .source::after {                    /* 底部的小缺口，暗示请求从这里出去 */
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: -9px;
+        width: 26px;
+        height: 8px;
+        transform: translateX(-50%);
+        border-radius: 0 0 8px 8px;
+        background: var(--line-soft);
+    }
+    .source-note {
+        position: absolute;
+        left: 1080px;
+        top: 240px;
+        z-index: 5;
+        font-size: 22px;
+        color: var(--ink3);
+    }
+
+    /* ===================== 飞行的元素 ===================== */
+    /* 「请求」由原神向下飞，文件由缓存层 / 机械盘向上飞回原神。
+       两者共用 offset-path 机制，且一律浮在最上层，不被任何节点压住。 */
+    .flyer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        z-index: 8;
+        opacity: 0;
+        offset-anchor: center;
+        offset-rotate: 0deg;
+        offset-path: var(--p);
+        /* 动画被摘掉（.gone）时靠这条落回它停住的位置，不会跳回起点 */
+        offset-distance: var(--stop, 100%);
+        animation-name: var(--anim, fly);
+        animation-duration: var(--dur, 800ms);
+        animation-timing-function: cubic-bezier(.42, 0, .58, 1);
+        animation-fill-mode: forwards;
+        transition: opacity .22s linear, offset-distance .32s ease;
+    }
+    /* 排进队里：摘掉动画，停在 --stop 指的那个位置上（靠上面的 transition 滑过去） */
+    .flyer.queued { animation: none; opacity: 1; }
+    /* 被服务掉、从队列里消失时淡出 */
+    .flyer.gone { animation: none; opacity: 0; }
+
+    /* 文件图标（从盘 / 缓存层返回） */
+    .file {
+        width: 56px;
+        height: 56px;
+        filter: drop-shadow(0 6px 14px rgba(23, 32, 51, .22));
+    }
+    .f-normal { color: #4A5F82; }       /* 从机械盘返回 */
+    .f-miss   { color: var(--gold); }   /* 回源那一次 */
+    .f-hit    { color: var(--cyan); }   /* 从缓存层返回 */
+
+    /* 编号（1 / 2 / …）：直接印在纸上，不挂在角上 */
+    .fnum {
+        position: absolute;
+        left: 50%;
+        top: 58%;
+        transform: translate(-50%, -50%);
+        font-size: 19px;
+        font-weight: 700;
+        line-height: 1;
+        color: #4A5F82;
+    }
+    .f-miss      .fnum { color: var(--gold); }
+    .f-hit       .fnum { color: var(--cyan); }
+    .cached-file .fnum { color: var(--gold); }
+
+    /* 「请求」两个小字（由原神发出） */
+    .req {
+        padding: 5px 15px;
+        font-size: 21px;
+        font-weight: 600;
+        white-space: nowrap;
+        border-radius: 999px;
+        border: 2px solid var(--line-soft);
+        background: rgba(255, 255, 255, .94);
+        color: var(--navy);
+        box-shadow: 0 4px 12px rgba(23, 32, 51, .10);
+    }
+    .r-miss { color: #8A5200; border-color: rgba(255, 159, 28, .45); }
+    .r-hit  { color: #0B4FA8; border-color: rgba(20, 120, 255, .40); }
+    /* 排队等候中：虚线边框，表示还没轮到它 */
+    .req.wait { border-style: dashed; color: var(--ink3); }
+
+    @keyframes fly {
+        0%   { offset-distance: 0%;   opacity: 0; }
+        8%   { opacity: 1; }
+        88%  { opacity: 1; }
+        100% { offset-distance: 100%; opacity: 0; }
+    }
+
+    /* 回源返回专用：文件从盘回来，在缓存层（反向路径 62% 处）同样停一下 */
+    @keyframes flyBendBack {
+        0%   { offset-distance: 0%;   opacity: 0; }
+        7%   { opacity: 1; }
+        36%  { offset-distance: 62%; }
+        62%  { offset-distance: 62%; }
+        92%  { opacity: 1; }
+        100% { offset-distance: 100%; opacity: 0; }
+    }
+
+    /* 排队等待用：飞到我们这层就停住、不消失；
+       后来者用 --stop 停在路径更早的位置，于是排成一列堆在软件面前 */
+    @keyframes flyWait {
+        0%   { offset-distance: 0%;                opacity: 0; }
+        8%   { opacity: 1; }
+        100% { offset-distance: var(--stop, 100%); opacity: 1; }
+    }
+
+    /* 回源请求专用：先在我们这层停一下，再飞到队尾停住等盘子伺候
+       （末尾同样要读 --stop，否则会先飞到盘面上再滑回队尾） */
+    @keyframes flyBendWait {
+        0%   { offset-distance: 0%;                opacity: 0; }
+        7%   { opacity: 1; }
+        38%  { offset-distance: 38%; }
+        56%  { offset-distance: 38%; }
+        100% { offset-distance: var(--stop, 100%); opacity: 1; }
+    }
+
+    /* ===================== 缓存框（摆在 FlyDisk 左边） ===================== */
+    .cache-box {
+        position: absolute;
+        left: 140px;
+        top: 620px;
+        width: 280px;
+        height: 220px;
+        z-index: 3;
+        display: flex;
+        flex-wrap: wrap;
+        align-content: center;
+        justify-content: center;
+        gap: 8px 10px;
+        padding: 44px 16px 16px;
+        border-radius: 22px;
+        border: 3px dashed var(--line);
+        background: rgba(255, 255, 255, .55);
+        transition: border-color .35s, background .35s;
+    }
+    .stage.on .cache-box {
+        border-color: rgba(20, 120, 255, .55);
+        background: rgba(56, 214, 255, .09);
+    }
+    .cache-box .cap {
+        position: absolute;
+        left: 18px;
+        top: 12px;
+        font-size: 20px;
+        letter-spacing: .10em;
+        color: var(--ink3);
+    }
+    /* 被取用时，框向外扩一圈涟漪 */
+    .cache-box.take { animation: takeFlash .55s ease-out 1; }
+    @keyframes takeFlash {
+        0%   { box-shadow: 0 0 0 0 rgba(20, 120, 255, .45); }
+        100% { box-shadow: 0 0 0 26px rgba(20, 120, 255, 0); }
+    }
+
+    /* 框里那些缓存副本（金色，落进去之后就留着）：按顺序自动换行排 */
+    .cached-file {
+        position: relative;
+        width: 40px;
+        height: 40px;
+        color: var(--gold);
+        opacity: 0;
+        transform: scale(.4);
+        transition: opacity .28s, transform .38s cubic-bezier(.2, 1.5, .5, 1);
+    }
+    .cached-file.has {
+        opacity: 1;
+        transform: scale(1);
+    }
+    .cached-file svg { display: block; width: 100%; height: 100%; }
+    .cached-file .fnum { top: 56%; font-size: 15px; }
+
+    /* ===================== 左下角：FlyDisk 图标（缓存层） ===================== */
+    .layer-glow {
+        position: absolute;
+        left: 620px;
+        top: 730px;
+        z-index: 2;
+        width: 420px;
+        height: 420px;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(56, 214, 255, .38) 0%, rgba(56, 214, 255, 0) 68%);
+        opacity: 0;
+        transition: opacity .5s;
+    }
+    .stage.on .layer-glow { opacity: 1; animation: glowflash 1.1s ease-out .45s 1; }
+    @keyframes glowflash {
+        0%   { opacity: 0; transform: translate(-50%, -50%) scale(.75); }
+        40%  { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+        100% { opacity: .85; transform: translate(-50%, -50%) scale(1); }
+    }
+
+    .layer-icon {
+        position: absolute;
+        left: 620px;
+        top: 730px;
+        z-index: 3;
+        width: 300px;
+        height: 300px;
+        transform: translate(-50%, -50%) scale(1);
+        opacity: .30;
+        filter: grayscale(.92);
+        transition: opacity .5s, filter .5s, transform .5s;
+    }
+    .stage.on .layer-icon {
+        opacity: 1;
+        filter: none;
+        transform: translate(-50%, -50%) scale(1.06);
+    }
+
+    /* 命中时在图标外圈闪一下 */
+    .ping {
+        position: absolute;
+        left: 620px;
+        top: 730px;
+        z-index: 3;
+        width: 300px;
+        height: 300px;
+        transform: translate(-50%, -50%);
+        border-radius: 70px;
+        border: 3px solid rgba(20, 120, 255, .70);
+        opacity: 0;
+        pointer-events: none;
+    }
+    .ping.go { animation: ping .6s ease-out 1; }
+    @keyframes ping {
+        0%   { opacity: .95; transform: translate(-50%, -50%) scale(1); }
+        100% { opacity: 0;   transform: translate(-50%, -50%) scale(1.16); }
+    }
+
+    /* ===================== 右下角：源机械盘 ===================== */
+    /* 几何照搬「大图标」里的机械硬盘：盘体 144×104（1.385:1），只整体放大 2.29 倍，
+       盘体实渲染尺寸 ≈ 330×238。viewBox 四周留 8 单位余量给投影。 */
+    .disk {
+        position: absolute;
+        left: 1300px;
+        top: 730px;
+        z-index: 3;
+        transform: translate(-50%, -50%);
+    }
+    .disk svg { overflow: visible; }
+    /* 磁头臂：平时静止；只有请求真的落到盘上时才摆这一次，
+       摆完自动归位。没有常驻循环，所以它绝不会自己动。 */
+    .disk .arm {
+        transform-box: view-box;
+        transform-origin: 132px 98px;       /* 轴心 (124,90) 减去 viewBox 原点 (-8,-8) */
+    }
+    .disk .arm.swing { animation: seekOnce .5s cubic-bezier(.3, 0, .4, 1) 1; }
+    @keyframes seekOnce {
+        0%   { transform: rotate(-9deg); }
+        45%  { transform: rotate(8deg); }
+        72%  { transform: rotate(-3deg); }
+        100% { transform: rotate(0deg); }
+    }
+
+    /* 盘片上的寻道痕迹：同样一次寻道闪一次，平时保持很淡 */
+    .disk .seekmarks { opacity: .28; }
+    .disk .seekmarks.flash { animation: marks .5s ease-out 1; }
+    @keyframes marks {
+        0%   { opacity: .28; }
+        35%  { opacity: 1; }
+        100% { opacity: .28; }
+    }
+
+    /* 两个下方节点的名称，同一基线 */
+    .node-label {
+        position: absolute;
+        top: 892px;
+        z-index: 5;
+        transform: translateX(-50%);
+        font-size: 22px;
+        color: var(--ink3);
+    }
+    .label-layer { left: 620px; }
+    .label-disk  { left: 1300px; }
+
+    /* ===================== 两侧说明标签 ===================== */
+    .note {
+        position: absolute;
+        z-index: 5;
+        font-size: 21px;
+        padding: 8px 18px;
+        border-radius: 999px;
+        white-space: nowrap;
+        border: 2px solid;
+        transition: color .35s, background .35s, border-color .35s;
+    }
+    /* 缓存层说明：挪到左下角这组的上方，别压着缓存框 */
+    .note-layer {
+        left: 410px;
+        top: 552px;
+        transform: translateX(-100%);
+        color: var(--ink3);
+        background: rgba(255, 255, 255, .80);
+        border-color: var(--line-soft);
+    }
+    .stage.on .note-layer {
+        color: #0B4FA8;
+        background: rgba(56, 214, 255, .16);
+        border-color: rgba(20, 120, 255, .35);
+    }
+    /* 机械盘右侧 */
+    .note-disk {
+        left: 1530px;
+        top: 700px;
+        color: #8A3A3A;
+        background: rgba(220, 90, 90, .10);
+        border-color: rgba(200, 80, 80, .32);
+    }
+    .stage.on .note-disk {
+        color: #14674F;
+        background: rgba(35, 158, 130, .12);
+        border-color: rgba(35, 158, 130, .40);
+    }
+
+    /* ===================== 传送按钮（摆在原神右边） ===================== */
+    .teleport {
+        position: absolute;
+        left: 1080px;
+        top: 292px;
+        width: 244px;
+        height: 56px;
+        z-index: 7;
+    }
+    .tp-btn {
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        border: 2px solid var(--cyan);
+        background: #fff;
+        color: var(--cyan);
+        font-family: var(--font-body);
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: .02em;
+        cursor: pointer;
+        box-shadow: 0 6px 18px rgba(20, 120, 255, .16);
+        transition: background .25s, transform .2s, opacity .25s;
+    }
+    .tp-btn:hover { transform: translateY(-2px); background: rgba(56, 214, 255, .12); }
+    .teleport.busy .tp-btn { opacity: 0; pointer-events: none; }
+
+    /* 传送期间按钮换成横向一排灰点，文件回来一个就黑一个 */
+    .tp-dots {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        opacity: 0;
+        transition: opacity .25s;
+        pointer-events: none;
+    }
+    .teleport.busy .tp-dots { opacity: 1; }
+    .tp-dot {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #C6D4E3;
+        box-shadow: inset 0 0 0 2px rgba(74, 95, 130, .16);
+        transition: background .25s, transform .25s;
+    }
+    .tp-dot.done {
+        background: var(--ink);
+        transform: scale(1.12);
+    }
+
+    /* ===================== 页脚 ===================== */
+    .hint {
+        position: absolute;
+        left: 960px;
+        top: 1008px;
+        z-index: 5;
+        transform: translateX(-50%);
+        padding: 11px 30px;
+        border-radius: 999px;
+        font-size: 22px;
+        color: var(--navy);
+        background: rgba(255, 255, 255, .82);
+        border: 2px dashed var(--line);
+        animation: hintpulse 2.4s ease-in-out infinite;
+    }
+    @keyframes hintpulse {
+        0%, 100% { opacity: .72; }
+        50%      { opacity: 1; }
+    }
+
+    .watermark {
+        position: absolute;
+        right: 140px;
+        top: 1006px;
+        z-index: 5;
+        font-family: var(--font-pixel);
+        font-size: 26px;
+        letter-spacing: .04em;
+        color: rgba(74, 95, 130, .45);
+    }
+</style>
+</head>
+<body>
+<div class="viewport">
+    <div class="stage" id="stage">
+        <div class="bg-dots"></div>
+
+        <!-- 页眉 -->
+        <div class="head">
+            <div class="kicker">原理</div>
+            <h1 class="title">为什么加速后能变快</h1>
+            <div class="subtitle">同一个文件，被反复读取</div>
+        </div>
+
+        <div class="state-badge" id="stateBadge">加速前</div>
+
+        <!-- 唯一的来源 -->
+        <div class="source">原神</div>
+        <div class="source-note">游戏在反复读取文件</div>
+
+        <!-- 传送按钮：按场景批量请求一批文件 -->
+        <div class="teleport" id="teleport">
+            <button class="tp-btn" id="tpBtn">传送到蒙德城</button>
+            <div class="tp-dots" id="tpDots"></div>
+        </div>
+
+        <!-- 缓存框：FlyDisk 左边，缓存副本都放这儿（按编号顺序自动排） -->
+        <div class="cache-box" id="cacheBox">
+            <div class="cap">高速缓存</div>
+        </div>
+
+        <!-- 光晕 + 中间的 FlyDisk 图标（代表缓存层） -->
+        <div class="layer-glow"></div>
+
+        <div class="layer-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 224 224" width="300" height="300">
+                <defs>
+                    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#EDF4FA"/>
+                        <stop offset="0.55" stop-color="#CDE3F0"/>
+                        <stop offset="1" stop-color="#ADD6E8"/>
+                    </linearGradient>
+                    <linearGradient id="disk" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#4A5F82"/>
+                        <stop offset="0.5" stop-color="#2A3A55"/>
+                        <stop offset="1" stop-color="#172033"/>
+                    </linearGradient>
+                    <linearGradient id="platter" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#B9FBFF"/>
+                        <stop offset="0.45" stop-color="#38D6FF"/>
+                        <stop offset="1" stop-color="#1478FF"/>
+                    </linearGradient>
+                    <linearGradient id="cache" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0" stop-color="#5FD9BE"/>
+                        <stop offset="0.55" stop-color="#3EBFA3"/>
+                        <stop offset="1" stop-color="#239E82"/>
+                    </linearGradient>
+                    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#FFF3B0"/>
+                        <stop offset="0.45" stop-color="#FFD166"/>
+                        <stop offset="1" stop-color="#FF9F1C"/>
+                    </linearGradient>
+                    <linearGradient id="silver" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#E8EDF5"/>
+                        <stop offset="0.5" stop-color="#B8C2D4"/>
+                        <stop offset="1" stop-color="#8A96AA"/>
+                    </linearGradient>
+                    <filter id="iconShadow" x="-30%" y="-30%" width="160%" height="160%">
+                        <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+                        <feOffset dx="0" dy="10" result="offset"/>
+                        <feFlood flood-color="#000000" flood-opacity="0.45" result="color"/>
+                        <feComposite in="color" in2="offset" operator="in" result="shadow"/>
+                        <feMerge>
+                            <feMergeNode in="shadow"/>
+                            <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                    </filter>
+                    <filter id="iconGlow" x="-60%" y="-60%" width="220%" height="220%">
+                        <feGaussianBlur stdDeviation="5" result="blur"/>
+                        <feMerge>
+                            <feMergeNode in="blur"/>
+                            <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                    </filter>
+                </defs>
+
+                <!-- 底板 -->
+                <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#bg)"/>
+
+                <!-- 缓存层：M.2 固态 -->
+                <g>
+                    <rect x="58" y="66" width="6" height="18" rx="1.5" fill="#FFD166" opacity="0.95"/>
+                    <line x1="58" y1="79.5" x2="61" y2="79.5" stroke="#0A1020" stroke-width="1.2"/>
+                    <rect x="64" y="60" width="138" height="30" rx="6" fill="url(#cache)"/>
+                    <rect x="93" y="69" width="12" height="12" rx="2" fill="#0A1020" opacity="0.9"
+                          transform="rotate(45 99 75)"/>
+                    <rect x="134" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+                    <rect x="158" y="66" width="20" height="18" rx="2" fill="#172033" opacity="0.85"/>
+                    <circle cx="188" cy="75" r="4.5" fill="none" stroke="#0A1020" stroke-width="2" opacity="0.7"/>
+                    <circle cx="188" cy="75" r="1.5" fill="#0A1020" opacity="0.5"/>
+                </g>
+
+                <!-- 机械硬盘主体 -->
+                <g filter="url(#iconShadow)">
+                    <rect x="56" y="88" width="144" height="104" rx="20" fill="url(#disk)"/>
+                </g>
+
+                <circle cx="108" cy="141" r="40" fill="url(#platter)"/>
+                <circle cx="108" cy="141" r="13" fill="#0A1020" opacity="0.82"/>
+                <circle cx="108" cy="141" r="4.5" fill="#B9FBFF"/>
+
+                <g filter="url(#iconShadow)">
+                    <polygon points="173.5,163.7 156.1,149.6 149.1,158.2 166.5,172.3" fill="url(#silver)"/>
+                    <circle cx="170" cy="168" r="8" fill="url(#silver)"/>
+                    <circle cx="170" cy="168" r="3.5" fill="#0A1020"/>
+                    <polygon points="156.1,149.6 149.1,158.2 127,133" fill="url(#silver)"/>
+                </g>
+
+                <path d="M206 94 L176 154 H198 L172 216 L220 140 H198 L216 94 Z"
+                      fill="url(#bolt)" stroke="#FFF3B0" stroke-width="2"
+                      stroke-linejoin="round" filter="url(#iconGlow)"/>
+            </svg>
+        </div>
+
+        <div class="ping" id="ping"></div>
+
+        <!-- 源机械盘：几何与「大图标」逐项一致，仅整体放大 -->
+        <div class="disk">
+            <svg width="412" height="320" viewBox="-8 -8 180 140">
+                <defs>
+                    <linearGradient id="ddisk" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#4A5F82"/>
+                        <stop offset="0.5" stop-color="#2A3A55"/>
+                        <stop offset="1" stop-color="#172033"/>
+                    </linearGradient>
+                    <linearGradient id="dplatter" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#B9FBFF"/>
+                        <stop offset="0.45" stop-color="#38D6FF"/>
+                        <stop offset="1" stop-color="#1478FF"/>
+                    </linearGradient>
+                    <linearGradient id="dsilver" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#E8EDF5"/>
+                        <stop offset="0.5" stop-color="#B8C2D4"/>
+                        <stop offset="1" stop-color="#8A96AA"/>
+                    </linearGradient>
+                    <filter id="dshadow" x="-50%" y="-50%" width="200%" height="200%">
+                        <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+                        <feOffset dx="0" dy="10" result="offset"/>
+                        <feFlood flood-color="#000000" flood-opacity="0.45" result="color"/>
+                        <feComposite in="color" in2="offset" operator="in" result="shadow"/>
+                        <feMerge>
+                            <feMergeNode in="shadow"/>
+                            <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                    </filter>
+                </defs>
+
+                <!-- 盘体：144×104（1.385:1），照搬大图标 -->
+                <g filter="url(#dshadow)">
+                    <rect x="10" y="10" width="144" height="104" rx="20" fill="url(#ddisk)"/>
+                </g>
+
+                <!-- 盘片 -->
+                <circle cx="62" cy="63" r="40" fill="url(#dplatter)"/>
+
+                <!-- 寻道痕迹（自加，用来表现"来回寻道"） -->
+                <g class="seekmarks">
+                    <circle cx="62" cy="63" r="20" fill="none" stroke="#0A1020" stroke-opacity="0.22"
+                            stroke-width="3" stroke-dasharray="26 100"/>
+                    <circle cx="62" cy="63" r="27" fill="none" stroke="#0A1020" stroke-opacity="0.16"
+                            stroke-width="3" stroke-dasharray="20 150"/>
+                    <circle cx="62" cy="63" r="34" fill="none" stroke="#0A1020" stroke-opacity="0.12"
+                            stroke-width="3" stroke-dasharray="14 200"/>
+                </g>
+
+                <circle cx="62" cy="63" r="13" fill="#0A1020" opacity="0.82"/>
+                <circle cx="62" cy="63" r="4.5" fill="#B9FBFF"/>
+
+                <!-- 磁头臂：三点坐标逐项照搬大图标，整体平移 (-46,-78) -->
+                <g class="arm" id="arm">
+                    <polygon points="127.5,85.7 110.1,71.6 103.1,80.2 120.5,94.3" fill="url(#dsilver)"/>
+                    <circle cx="124" cy="90" r="8" fill="url(#dsilver)"/>
+                    <circle cx="124" cy="90" r="3.5" fill="#0A1020"/>
+                    <polygon points="110.1,71.6 103.1,80.2 81,55" fill="url(#dsilver)"/>
+                </g>
+            </svg>
+        </div>
+
+        <div class="node-label label-layer">FlyDisk</div>
+        <div class="node-label label-disk">源机械盘</div>
+
+        <!-- 两侧说明 -->
+        <div class="note note-layer" id="noteLayer">这一层还没启用 · 文件直接穿过</div>
+        <div class="note note-disk" id="noteDisk">反复寻道</div>
+
+        <!-- 页脚 -->
+        <div class="hint">左键 = 请求一号文件 · 右键 = 请求二号文件 · 右上角 = 切换状态</div>
+        <div class="watermark">FlyDisk</div>
+    </div>
+</div>
+
+<script>
+    /* ---------- 舞台缩放 ---------- */
+    function fitStage() {
+        var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+        document.documentElement.style.setProperty('--scale', s);
+    }
+    window.addEventListener('resize', fitStage);
+    fitStage();
+
+    /* ---------- 三套路线（stage 坐标系） ---------- */
+    /* 三角形：原神(960,300) 在顶、FlyDisk(620,730) 在左下、机械盘(1300,730) 在右下。 */
+    var PATHS = {
+        // 加速前：缓存层还没介入，请求直来直去地飞到盘上，不拐弯
+        before: {
+            anim: 'flyWait', reqDur: '1000ms',
+            fileAnim: 'fly', fileDur: '1500ms',
+            len: 459,
+            req:  'path("M 960 376 L 1240 740")',
+            file: 'path("M 1240 740 L 960 376")'
+        },
+        // 加速后·回源：先在我们这层停一下，再飞到盘面前排队等盘子伺候；
+        //             文件从盘回来时会在我们这层留一份副本进缓存框（dropAt 那一刻）
+        miss: {
+            anim: 'flyBendWait', reqDur: '1200ms',
+            fileAnim: 'flyBendBack', fileDur: '1500ms',
+            dropAt: 540,
+            len: 1059,
+            req:  'path("M 960 376 C 880 480, 760 520, 690 655 C 640 740, 940 800, 1265 792")',
+            file: 'path("M 1265 792 C 940 800, 640 740, 690 655 C 760 520, 880 480, 960 376")'
+        },
+        // 加速后·命中：到我们这层就停住，根本不碰机械盘；
+        //             文件从缓存框里取一份出来（原副本留在框里），起飞点见 hitFilePath()
+        hit: {
+            anim: 'fly', reqDur: '560ms',
+            fileAnim: 'fly', fileDur: '620ms',
+            wait: 170,
+            len: 399,
+            req: 'path("M 960 376 C 880 480, 760 520, 690 655")'
+        }
+    };
+
+    /* 排队时沿路径往后退的间距（像素）。
+       两条队 —— 堆在软件面前的、堆在盘面前的 —— 共用这一个间距，
+       再按各自路径的长度折算成百分比，所以两处的堆法看起来是一致的。
+       idx = 在队里的位次，0 就是最前面那个（正好停在目标上）。 */
+    var STEP_PX = 28;
+
+    function queueStop(mode, idx) {
+        var len = PATHS[mode].len || 400;
+        return Math.max(52, 100 - idx * STEP_PX / len * 100) + '%';
+    }
+
+    var FILE_SVG =
+        '<svg viewBox="0 0 48 48" width="56" height="56" fill="none">' +
+        '<path d="M13 5h15l9 9v26a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z" fill="#fff" ' +
+        'stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>' +
+        '<path d="M28 5v9h9" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>' +
+        '</svg>';
+
+    // 文件编号：一律用数字，直接写在纸上（纸面留白，不带条纹）
+    function fileMarkup(num) {
+        return FILE_SVG + '<span class="fnum">' + num + '</span>';
+    }
+
+    /* ---------- 状态 ---------- */
+    var stage = document.getElementById('stage');
+    var badge = document.getElementById('stateBadge');
+    var arm = document.getElementById('arm');
+    var marks = document.querySelector('.disk .seekmarks');
+    var cacheBox = document.getElementById('cacheBox');
+    var cachedSlot = {};            // 编号 → 框里那个副本元素（按需创建）
+    var teleport = document.getElementById('teleport');
+    var tpBtn = document.getElementById('tpBtn');
+    var tpDots = document.getElementById('tpDots');
+    var ping = document.getElementById('ping');
+    var noteLayer = document.getElementById('noteLayer');
+    var noteDisk = document.getElementById('noteDisk');
+
+    var accelerated = false;
+
+    var MAXNUM = 14;                            // 两趟传送一共用到 14 号
+
+    // 每一号文件各有一格缓存，三种状态：
+    //   slotReady —— 金色副本已经落进格子，之后的请求才算命中
+    //   filling   —— 这一号正在回源，副本还在路上
+    //   waiting   —— 副本还没到就又被点了，这些请求堆在软件面前等
+    var slotReady = {}, filling = {}, waiting = {};
+    for (var k = 1; k <= MAXNUM; k++) {
+        slotReady[k] = false;
+        filling[k] = false;
+        waiting[k] = [];
+    }
+
+    function render() {
+        stage.classList.toggle('on', accelerated);
+        badge.textContent = accelerated ? '加速后' : '加速前';
+        noteLayer.textContent = accelerated ? '命中 · 请求到此为止' : '这一层还没启用 · 请求直接落到盘上';
+        noteDisk.textContent = accelerated ? '不再寻道' : '反复寻道';
+        if (!accelerated) {                     // 没加速就没有缓存：框清空、队伍解散
+            clearCacheBox();
+            clearQueue();
+            clearDiskQueue();
+            for (var n = 1; n <= MAXNUM; n++) { slotReady[n] = false; filling[n] = false; }
+            cancelTeleport();
+        }
+    }
+
+    /* ---------- 缓存框：收一份进去 / 取一份出来 ---------- */
+    // 副本按需创建，落进去之后就留在框里（按编号顺序自动排）
+    function dropCache(num) {
+        if (!accelerated) { return; }               // 中途被切回「加速前」就别落了
+        var el = cachedSlot[num];
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'cached-file';
+            el.innerHTML = fileMarkup(num);
+            cacheBox.appendChild(el);
+            cachedSlot[num] = el;
+            void el.offsetWidth;                    // 强制回流，让落位动画生效
+        }
+        el.classList.add('has');
+        slotReady[num] = true;
+        filling[num] = false;
+        releaseQueue(num);                          // 副本到位了，前面堆着的请求可以放行
+    }
+    function clearCacheBox() {
+        Object.keys(cachedSlot).forEach(function (n) { cachedSlot[n].remove(); });
+        cachedSlot = {};
+    }
+    function takeCache() {
+        cacheBox.classList.remove('take');
+        void cacheBox.offsetWidth;                  // 强制回流，否则动画不会重启
+        cacheBox.classList.add('take');
+    }
+
+    /* ---------- 请求排队：副本还在路上时，堆在软件面前等 ---------- */
+    function enqueue(num) {
+        var q = waiting[num];
+        var el = document.createElement('div');
+
+        // 后来者停得比前一个更靠前一点，于是沿路径堆成一列
+        el.className = 'flyer req wait';
+        el.style.setProperty('--p', PATHS.hit.req);
+        el.style.setProperty('--anim', 'flyWait');
+        el.style.setProperty('--dur', '560ms');
+        el.style.setProperty('--stop', queueStop('hit', q.length));
+        el.textContent = '请求' + num + '号文件';
+
+        stage.appendChild(el);
+        q.push(el);
+    }
+
+    // 副本一到就放行：排队的请求一个个散掉，文件从缓存框里出来
+    function releaseQueue(num) {
+        var q = waiting[num];
+        waiting[num] = [];
+        q.forEach(function (el, i) {
+            setTimeout(function () {
+                fadeOut(el);
+                spawnFile('hit', num);
+            }, i * 140);
+        });
+    }
+
+    function clearQueue() {
+        for (var n = 1; n <= MAXNUM; n++) {
+            waiting[n].forEach(function (el) { el.remove(); });
+            waiting[n] = [];
+        }
+    }
+
+    function fadeOut(el) {
+        if (!el) { return; }
+        el.classList.add('gone');
+        setTimeout(function () { el.remove(); }, 240);
+    }
+
+    /* ---------- 硬盘：一次只伺候一个请求，每 0.5 秒吐一个文件 ---------- */
+    // 与磁头摆动同拍。请求到了盘面前若盘正忙，就堆在盘前排队等着。
+    var DISK_INTERVAL = 500;
+    var diskBusy = false;
+    var diskQueue = [];
+    var diskAhead = 0;          // 已经发出、还没被伺候完的请求数（用来预告队尾在哪）
+
+    function diskArrive(el, num, mode) {
+        if (!diskBusy) { diskServe(el, num, mode); return; }
+        diskQueue.push({ el: el, num: num, mode: mode });
+        layoutDiskQueue();
+    }
+
+    // 等在盘前的请求沿"进盘的那条路径"依次往后退，堆成一列
+    // （跟堆在软件面前的排法完全同一套：只改 --stop，靠 offset-distance 的过渡滑过去）
+    // 盘上正在伺候的那个占位次 0，所以队里第 i 个实际是 i + base
+    function layoutDiskQueue() {
+        var base = diskBusy ? 1 : 0;
+        diskQueue.forEach(function (item, i) {
+            if (!item.el) { return; }
+            item.el.style.setProperty('--stop', queueStop(item.mode, i + base));
+            item.el.classList.add('queued');
+        });
+    }
+
+    function diskServe(el, num, mode) {
+        diskBusy = true;
+        diskAhead = Math.max(0, diskAhead - 1);
+        fadeOut(el);                                // 轮到它了，请求散掉
+        seekDisk();                                 // 一次伺候 = 一次寻道
+        setTimeout(function () {
+            spawnFile(mode, num);                   // 0.5 秒才吐一个文件
+            var next = diskQueue.shift();
+            if (next) {
+                diskServe(next.el, next.num, next.mode);    // 它接位次 0
+            } else {
+                diskBusy = false;
+            }
+            layoutDiskQueue();                      // 剩下的整体往前挪一格
+        }, DISK_INTERVAL);
+    }
+
+    function clearDiskQueue() {
+        diskQueue = [];
+        diskBusy = false;
+        diskAhead = 0;
+    }
+
+    /* ---------- 一次寻道：磁头摆一次、盘片痕迹闪一次 ---------- */
+    // 严格一对一：每次请求真的落到盘上才调这里一次，没有别的来源会让盘动。
+    function seekDisk() {
+        arm.classList.remove('swing');
+        marks.classList.remove('flash');
+        void arm.getBoundingClientRect();       // 强制回流，否则动画不会重启
+        arm.classList.add('swing');
+        marks.classList.add('flash');
+    }
+    function pingIcon() {
+        ping.classList.remove('go');
+        void ping.offsetWidth;
+        ping.classList.add('go');
+    }
+
+    /* ---------- 放飞「请求」 ---------- */
+    // mode = 'before'：加速前，直接飞到盘
+    // mode = 'miss'  ：加速后回源，先到我们这层停一下，再转给盘
+    // mode = 'hit'   ：加速后命中，到我们这层就停
+    // num  = 1 / 2   ：请求的是哪一号文件
+    function spawnReq(mode, num) {
+        var p = PATHS[mode];
+        var el = document.createElement('div');
+        var toDisk = (mode !== 'hit');
+
+        el.className = 'flyer req' +
+            (mode === 'hit' ? ' r-hit' : (mode === 'miss' ? ' r-miss' : ''));
+        el.style.setProperty('--p', p.req);
+        el.style.setProperty('--anim', p.anim);
+        el.style.setProperty('--dur', p.reqDur);
+
+        // 要去盘的那几个：起飞时就把队尾位置算好，一路直接飞到队尾 ——
+        // 而不是先飞到队首、再滑到队尾（diskAhead 就是此刻排在前面的请求数）
+        if (toDisk) {
+            el.style.setProperty('--stop', queueStop(mode, diskAhead));
+            diskAhead++;
+        }
+
+        el.textContent = '请求' + num + '号文件';
+
+        el.addEventListener('animationend', function () {
+            if (mode === 'hit') {
+                el.remove();
+                pingIcon();                     // 命中：缓存层把请求接住，机械盘不动
+                // 隔一拍再让文件从缓存框里出来
+                setTimeout(function () { spawnFile('hit', num); }, p.wait);
+            } else {
+                // 回源 / 加速前：交给硬盘按 0.5 秒的节拍伺候（盘忙就先在盘前排队）
+                diskArrive(el, num, mode);
+            }
+        });
+
+        stage.appendChild(el);
+    }
+
+    /* ---------- 放飞返回的文件 ---------- */
+    // 命中的文件要从缓存框里那一格起飞 —— 格子是自动换行排的，
+    // 所以起飞点当场量出来换算回舞台坐标，这样加多少个编号都不会错位。
+    function hitFilePath(num) {
+        var slot = cachedSlot[num];
+        if (!slot) { return 'path("M 285 734 C 400 600, 760 450, 960 376")'; }
+        var s = stage.getBoundingClientRect();
+        var r = slot.getBoundingClientRect();
+        var k = s.width / 1920;                 // 舞台的缩放系数
+        var x = Math.round((r.left + r.width / 2 - s.left) / k);
+        var y = Math.round((r.top + r.height / 2 - s.top) / k);
+        return 'path("M ' + x + ' ' + y + ' C ' + (x + 120) + ' ' + (y - 140) +
+               ', 760 450, 960 376")';
+    }
+
+    function spawnFile(mode, num) {
+        var p = PATHS[mode];
+        var el = document.createElement('div');
+
+        el.className = 'flyer file ' +
+            (mode === 'hit' ? 'f-hit' : (mode === 'miss' ? 'f-miss' : 'f-normal'));
+        el.style.setProperty('--p', mode === 'hit' ? hitFilePath(num) : p.file);
+        el.style.setProperty('--anim', p.fileAnim);
+        el.style.setProperty('--dur', p.fileDur);
+        el.innerHTML = fileMarkup(num);
+
+        el.addEventListener('animationend', function () {
+            el.remove();
+            markDot(num);                   // 传送到位一个，黑一个点
+        });
+        stage.appendChild(el);
+
+        if (mode === 'miss') {
+            // 金色文件路过我们这层的那一刻，往缓存框对应格子里放一份副本
+            setTimeout(function () { dropCache(num); }, p.dropAt);
+        } else if (mode === 'hit') {
+            // 从缓存框里取一份出来（框里那份还在）
+            takeCache();
+        }
+    }
+
+    /* ---------- 发起一轮请求 → 返回文件 ---------- */
+    function spawnChain(num) {
+        if (!accelerated) {                     // 加速前：没有缓存层，请求直接落到盘上
+            spawnReq('before', num);
+            return;
+        }
+        if (slotReady[num]) {                   // 这一号已经在缓存里 —— 命中
+            spawnReq('hit', num);
+            return;
+        }
+        if (filling[num]) {                     // 副本还在路上 —— 先排队堆在软件面前
+            enqueue(num);
+            return;
+        }
+        filling[num] = true;                    // 这一号的第一次：回源，顺带把缓存填上
+        spawnReq('miss', num);
+    }
+
+    /* ---------- 一块实际的例子：传送到某地，一次性读一批文件 ---------- */
+    var STOPS = [
+        { name: '蒙德城', from: 1, to: 7  },
+        { name: '璃月港', from: 8, to: 14 }
+    ];
+    var stopIdx = 0;                // 下一次去哪个地方
+    var tpActive = false;
+    var tpLeft = 0;                 // 还剩几个文件没到位
+    var tpDotsByNum = {};           // 编号 → 那个灰点
+
+    function labelButton() {
+        tpBtn.textContent = '传送到' + STOPS[stopIdx].name;
+    }
+
+    function startTeleport() {
+        if (tpActive) { return; }
+        var s = STOPS[stopIdx];
+        var nums = [];
+        for (var n = s.from; n <= s.to; n++) { nums.push(n); }
+
+        tpActive = true;
+        tpLeft = nums.length;
+        tpDotsByNum = {};
+        teleport.classList.add('busy');             // 按钮隐去、换成一排灰点
+
+        tpDots.innerHTML = '';
+        nums.forEach(function (n) {
+            var d = document.createElement('span');
+            d.className = 'tp-dot';
+            tpDots.appendChild(d);
+            tpDotsByNum[n] = d;
+        });
+
+        // 一批请求稍微错开一点发出，别挤在同一帧
+        nums.forEach(function (n, i) {
+            setTimeout(function () { requestInBatch(n); }, i * 70);
+        });
+    }
+
+    // 传送场景里的一号请求：没缓存就走盘（请求会堆在盘面前），有缓存就直接命中
+    function requestInBatch(num) {
+        if (!tpActive) { return; }
+        if (!accelerated) { spawnReq('before', num); return; }
+        if (slotReady[num]) { spawnReq('hit', num); return; }
+        if (filling[num]) { enqueue(num); return; }
+        filling[num] = true;
+        spawnReq('miss', num);              // 走"飞到盘前停住排队"那条动画
+    }
+
+    // 文件回到原神 → 黑一个点
+    function markDot(num) {
+        var d = tpDotsByNum[num];
+        if (!d) { return; }
+        delete tpDotsByNum[num];
+        d.classList.add('done');
+        tpLeft--;
+        if (tpLeft <= 0) { setTimeout(finishTeleport, 350); }
+    }
+
+    function finishTeleport() {
+        tpActive = false;
+        stopIdx = (stopIdx + 1) % STOPS.length;     // 下次换另一个地方
+        labelButton();
+        teleport.classList.remove('busy');          // 圆点消失，按钮回来
+    }
+
+    function cancelTeleport() {
+        if (!tpActive) { return; }
+        tpActive = false;
+        tpLeft = 0;
+        tpDotsByNum = {};
+        teleport.classList.remove('busy');
+        labelButton();                              // 目的地不变，重新来过
+    }
+
+    /* ---------- 交互 ---------- */
+    // 左键点画面 = 请求一号文件
+    document.addEventListener('click', function () { spawnChain(1); });
+
+    // 右键 = 请求二号文件（顺手顶掉浏览器自带的右键菜单）
+    document.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        spawnChain(2);
+    });
+
+    // 只有点右上角那枚徽标才切换状态；stopPropagation 免得顺带又发一个请求
+    badge.addEventListener('click', function (e) {
+        e.stopPropagation();
+        accelerated = !accelerated;
+        render();
+    });
+
+    // 传送按钮：点一下按场景批量请求一批文件
+    tpBtn.addEventListener('click', function (e) {
+        e.stopPropagation();            // 别顺带触发画面的左键请求
+        startTeleport();
+    });
+    teleport.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        e.stopPropagation();            // 别顺带请求二号文件
+    });
+
+    document.addEventListener('keydown', function (e) {
+        if (e.code === 'Space') {                    // 同左键：请求一号文件
+            e.preventDefault();
+            spawnChain(1);
+        } else if (e.key === '2') {                  // 同右键：请求二号文件
+            spawnChain(2);
+        } else if (e.key === 's' || e.key === 'S') {  // 同点徽标：切状态
+            accelerated = !accelerated;
+            render();
+        } else if (e.key === 'r' || e.key === 'R') {  // 回到「加速前」
+            accelerated = false;
+            render();
+        }
+    });
+
+    labelButton();      // 按场景给按钮起个名
+    render();
+</script>
+</body>
+</html>
