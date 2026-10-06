@@ -168,36 +168,44 @@ namespace FlyDisk.Engine
         #region 启动与停止
 
         /// <summary>
-        /// 【本地形态】启动。校验失败或打开失败一律抛异常（由 UI 如实展示 + 记日志），
-        /// 并且**失败时不改变系统状态**：盘会在异常路径上恢复成打开前的样子。
+        /// 【本地形态】启动。
+        ///
+        /// **"预期内的失败"通过返回值上报，不抛异常**：校验不过（选错盘 / 参数不对）返回
+        /// <see cref="EngineOutcome.Rejected"/>；需要用户对 L2 账本拍板返回
+        /// <see cref="EngineOutcome.L2Mismatch"/> / <see cref="EngineOutcome.L2NeedsVerify"/>，由 UI 弹窗决定。
+        /// 异常只留给真出错（打开盘 / 建缓存 / 起 target 的意外），那时盘会恢复成打开前的样子。
         /// </summary>
         /// <param name="target">
         /// 用户刚刚在「选择硬盘」里选定的那块盘。**每次启动都要重新选**（见 后续待办.md 第一节的"选盘时机"）——
         /// 配置里只留一个"上次的选择"用于默认选中，绝不作为启动依据。
         /// </param>
         /// <param name="allowL2Reset">
-        /// 允许在"L2 账本与盘/参数不匹配"时清空重建。默认 false ⇒ 抛 <see cref="L2LedgerMismatchException"/>，
-        /// UI 弹窗问过用户之后再以 true 重试（见 <see cref="SsdCacheService.DetectLedgerMismatch"/>）。
+        /// 用户已对 L2 账本拍过板（确认"清空重建"）：跳过账本比对直接重建，并以 true 重试启动。
         /// </param>
-        public void Start(PhysicalDiskInfo target, bool allowL2Reset = false)
+        public EngineResult Start(PhysicalDiskInfo target, bool allowL2Reset = false)
         {
             lock (_lifecycleLock)
             {
-                EnsureCleanupComplete();
-                StartLocalCore(target, allowL2Reset);
+                EngineResult pending = EnsureCleanupComplete();
+                if (!pending.Ok) return pending;
+                return StartLocalCore(target, allowL2Reset);
             }
         }
 
-        private void EnsureCleanupComplete()
+        /// <summary>还在"停服收尾"里就不许启动（见 <see cref="IsStopping"/>）</summary>
+        private EngineResult EnsureCleanupComplete()
         {
-            if (IsStopping) throw new InvalidOperationException(Locale.T("engine.stop.pending"));
+            return IsStopping ? EngineResult.Reject(Locale.T("engine.stop.pending")) : EngineResult.Success;
         }
 
-        private void StartLocalCore(PhysicalDiskInfo target, bool allowL2Reset)
+        private EngineResult StartLocalCore(PhysicalDiskInfo target, bool allowL2Reset)
         {
-            if (IsRunning) return;
+            if (IsRunning) return EngineResult.Success;
 
-            Validate(target, allowL2Reset);
+            // 校验不通过（选错盘 / 参数不对 / 要用户对 L2 拍板）⇒ 直接把结果返回给 UI。
+            // **此刻还没脱机**，所以用户中止时系统状态一点没动。
+            EngineResult rejected = Validate(target, allowL2Reset);
+            if (!rejected.Ok) return rejected;
 
             // 诊断开关（逐笔高频痕迹是否落盘）必须在引擎起来之前设定
             LogService.TraceFileLoggingEnabled = _config.TraceFileLogging;
@@ -211,11 +219,12 @@ namespace FlyDisk.Engine
                                             $"原状态 {(target.IsOnline ? "联机" : "脱机（接管）")}，" +
                                             $"扇区 {target.BytesPerSector} B × {_config.SectorsPerBlock} = {target.BytesPerSector * _config.SectorsPerBlock} B/块");
 
-                RunWithSource(device, device.ToBlockSourceInfo(), allowL2Reset);
+                return RunWithSource(device, device.ToBlockSourceInfo(), allowL2Reset);
             }
             catch
             {
-                // 启动失败：把刚开出来的东西全退回，并把盘恢复成打开前的样子（不把用户的盘留在"看不见"的状态）
+                // 走到这里的才是**真异常**（打开盘 / 建缓存 / 起 target 的意外）：
+                // 把刚开出来的东西全退回，并把盘恢复成打开前的样子（不把用户的盘留在"看不见"的状态）
                 StopCore(restoreDeviceState: true);
                 throw;
             }
@@ -228,18 +237,19 @@ namespace FlyDisk.Engine
         /// 本地根本没有源盘。取而代之的校验（协议版本、远端身份 / 容量 / 扇区）已在配对与选盘阶段完成，
         /// 见 后续待办.md 第一节的"客户端形态特有的分流"。
         /// </summary>
-        public void StartRemote(IBlockSource remoteSource, BlockSourceInfo remoteInfo, bool allowL2Reset = false)
+        public EngineResult StartRemote(IBlockSource remoteSource, BlockSourceInfo remoteInfo, bool allowL2Reset = false)
         {
             lock (_lifecycleLock)
             {
-                EnsureCleanupComplete();
-                StartRemoteCore(remoteSource, remoteInfo, allowL2Reset);
+                EngineResult pending = EnsureCleanupComplete();
+                if (!pending.Ok) return pending;
+                return StartRemoteCore(remoteSource, remoteInfo, allowL2Reset);
             }
         }
 
-        private void StartRemoteCore(IBlockSource remoteSource, BlockSourceInfo remoteInfo, bool allowL2Reset)
+        private EngineResult StartRemoteCore(IBlockSource remoteSource, BlockSourceInfo remoteInfo, bool allowL2Reset)
         {
-            if (IsRunning) return;
+            if (IsRunning) return EngineResult.Success;
 
             LogService.TraceFileLoggingEnabled = _config.TraceFileLogging;
 
@@ -249,7 +259,7 @@ namespace FlyDisk.Engine
                                             $"{(double)remoteInfo.SizeBytes / 1024 / 1024 / 1024:F1} GiB，" +
                                             $"{remoteInfo.BytesPerSector} B/扇区 × {_config.SectorsPerBlock} 扇区/块");
 
-                RunWithSource(remoteSource, remoteInfo, allowL2Reset);
+                return RunWithSource(remoteSource, remoteInfo, allowL2Reset);
             }
             catch
             {
@@ -260,7 +270,7 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>两种形态**共同**的部分：建缓存 → 建 LUN 后端 → 起 target。它不碰块源的打开与关闭</summary>
-        private void RunWithSource(IBlockSource source, BlockSourceInfo info, bool allowL2Reset)
+        private EngineResult RunWithSource(IBlockSource source, BlockSourceInfo info, bool allowL2Reset)
         {
             _source = source;
             _sourceInfo = info;
@@ -310,6 +320,8 @@ namespace FlyDisk.Engine
             // 克隆盘进系统视野后检查它有没有被系统保持脱机 / 只读（"被判为源盘的冗余路径"就是这种表现）。
             // 这是"加速完了盘却用不了"唯一的自动发现点：结论由界面打到主页面日志（见 CloneDiskWarning）。
             if (AutoMounted) CheckCloneDisk(disksBeforeMount);
+
+            return EngineResult.Success;
         }
 
         /// <summary>
@@ -319,14 +331,16 @@ namespace FlyDisk.Engine
         /// 或调 <see cref="TryReonlineDisk"/>，或用「磁盘管理 → 联机」
         /// （后两者会让跨重启的 L2 缓存被判为过期而作废）。
         /// </summary>
-        public void Stop()
+        /// <returns>成功返回 <see cref="EngineResult.Success"/>；被拒（例如还有别的 iSCSI 连接挂着）
+        /// 返回 <see cref="EngineResult.Rejected"/>——**不再用异常表示"拒绝"**，好让调试器不被预期结果打断</returns>
+        public EngineResult Stop()
         {
-            lock (_lifecycleLock) StopRunningCore();
+            lock (_lifecycleLock) return StopRunningCore();
         }
 
-        private void StopRunningCore()
+        private EngineResult StopRunningCore()
         {
-            if (!IsRunning) return;
+            if (!IsRunning) return EngineResult.Success;
 
             // 停止前再复核一次源盘属性：把「按停止这一刻源盘到底是什么状态」钉进诊断时间线。
             TraceSourceDiskAttributes();
@@ -344,11 +358,11 @@ namespace FlyDisk.Engine
             int connections = GetActiveConnectionCount();
             if (connections > 0)
             {
-                throw new InvalidOperationException(
-                    Locale.T("main.msg.iscsiDisconnectFailed"));
+                return EngineResult.Reject(Locale.T("main.msg.iscsiDisconnectFailed"));
             }
 
             StopCore(restoreDeviceState: false);
+            return EngineResult.Success;
         }
 
         /// <summary>
@@ -548,20 +562,25 @@ namespace FlyDisk.Engine
 
         #region 启动校验（全部在脱机之前做）
 
-        private void Validate(PhysicalDiskInfo info, bool allowL2Reset)
+        /// <summary>
+        /// 启动前校验（全部在脱机之前做）。
+        ///
+        /// **所有"拒绝"都通过返回值上报，不再抛异常**：它们是预期内的业务结果（选错盘 / 参数不对 /
+        /// 需要用户对 L2 拍板），用异常上报会让调试器在抛出瞬间停下来，把真正该看的异常淹没掉。
+        /// </summary>
+        private EngineResult Validate(PhysicalDiskInfo info, bool allowL2Reset)
         {
             if (info.DiskNumber < 0)
-                throw new InvalidOperationException(Locale.T("engine.start.noDisk"));
+                return EngineResult.Reject(Locale.T("engine.start.noDisk"));
 
             // ① 块大小必须是 4096（见 阶段二-iSCSI块设备形态.md §3.5）：块 = 扇区 × SectorsPerBlock
             int blockBytes = info.BytesPerSector * Math.Max(0, _config.SectorsPerBlock);
             if (info.BytesPerSector <= 0 || _config.SectorsPerBlock <= 0 || blockBytes != ServiceConstants.BlockSize)
             {
                 int suggested = info.BytesPerSector > 0 ? ServiceConstants.BlockSize / info.BytesPerSector : 8;
-                throw new InvalidOperationException(
-                    Locale.T("engine.start.blockSize",
-                        info.BytesPerSector, _config.SectorsPerBlock, blockBytes,
-                        ServiceConstants.BlockSize, suggested));
+                return EngineResult.Reject(Locale.T("engine.start.blockSize",
+                    info.BytesPerSector, _config.SectorsPerBlock, blockBytes,
+                    ServiceConstants.BlockSize, suggested));
             }
 
             // ② 不得是系统盘，也不得是**本程序自己所在的那块盘**：
@@ -571,7 +590,7 @@ namespace FlyDisk.Engine
             string blockedTarget = PhysicalDiskHandle.DescribeTargetDiskBlockReason(info.DiskNumber);
             if (blockedTarget.Length > 0)
             {
-                throw new InvalidOperationException(
+                return EngineResult.Reject(
                     Locale.T("engine.start.blockedTarget", info.DiskNumber, blockedTarget));
             }
 
@@ -589,7 +608,7 @@ namespace FlyDisk.Engine
 
             // ④ 只读的盘没法做"写透传"
             if (info.IsReadOnly)
-                throw new InvalidOperationException(Locale.T("engine.start.readOnly", info.DiskNumber));
+                return EngineResult.Reject(Locale.T("engine.start.readOnly", info.DiskNumber));
 
             // ⑤ 机械盘检查：**只警告不拦**（2026-09-27 起）。
             //    本程序的收益来自机械盘：SSD 做块级缓存通常净亏（阶段一实测：加速 SSD 源盘只有真盘的 34%，
@@ -605,14 +624,14 @@ namespace FlyDisk.Engine
             {
                 if (string.IsNullOrWhiteSpace(_config.SsdCachePath))
                 {
-                    throw new InvalidOperationException(Locale.T("engine.start.noSsdPath"));
+                    return EngineResult.Reject(Locale.T("engine.start.noSsdPath"));
                 }
 
                 string root = Path.GetPathRoot(Path.GetFullPath(_config.SsdCachePath)) ?? string.Empty;
                 int cacheDisk = PhysicalDiskHandle.GetDiskNumberOfVolume(root);
                 if (cacheDisk == info.DiskNumber)
                 {
-                    throw new InvalidOperationException(
+                    return EngineResult.Reject(
                         Locale.T("engine.start.cacheOnTarget", _config.SsdCachePath, info.DiskNumber));
                 }
                 if (cacheDisk < 0)
@@ -621,7 +640,7 @@ namespace FlyDisk.Engine
                 }
 
                 // ⑥′ 上次留下的 L2 账本跟当前盘/配置对得上吗？对不上时**不静默清空**——那会让用户
-                //     莫名其妙丢掉整层缓存。抛给 UI，由它弹窗让用户决定（见 SsdCacheService.DetectLedgerMismatch）。
+                //     莫名其妙丢掉整层缓存。交给 UI 弹窗让用户决定（见 SsdCacheService.DetectLedgerMismatch）。
                 //     特意放在这里（脱机之前）：用户选"否"时，系统状态一点都没动。
                 if (!allowL2Reset)
                 {
@@ -634,28 +653,28 @@ namespace FlyDisk.Engine
                     string mismatch = SsdCacheService.DetectLedgerMismatch(_config, BlockSourceInfo.FromDisk(info, wasOnlineNow));
                     if (mismatch.Length > 0)
                     {
-                        throw new L2LedgerMismatchException(mismatch);
+                        return EngineResult.L2Mismatch(mismatch);
                     }
 
                     // ⑥″ 盘**原本联机**：上次运行之后它可能被别的程序（或另一台机器）改过，L2 里那份未必还对。
-                    //     不再像以前那样静默作废整层——抛给 UI 问用户："先校验再保留" 还是 "清空重建"。
+                    //     交由 UI 问用户："先校验再保留" 还是 "清空重建"。
                     //     用户选"校验"并跑完后，校验器会把身份戳写回自洽（且盘已被它脱机）⇒ 紧随其后的
                     //     重试里 wasOnlineNow 即为假，这条不再成立，引擎于是自然采信账本
                     //     （**不需要额外的"已校验"标志**）。
                     if (wasOnlineNow && SsdCacheService.LedgerExists(_config))
                     {
-                        throw new L2NeedsVerifyException(
+                        return EngineResult.L2NeedsVerify(
                             Locale.T("engine.start.l2OnlineNeedsVerify", info.DiskNumber),
                             Locale.T("engine.start.reason.online"));
                     }
 
                     // ⑥‴ 上次**没有正常关服**（掉电/强杀/崩溃）：容器头的身份戳与索引里的对不上。
-                    //     以前这里直接静默作废整层；现在也抛给 UI —— 索引结构仍然自洽，逐块校验能把它救回来
+                    //     以前这里直接静默作废整层；现在也交给 UI —— 索引结构仍然自洽，逐块校验能把它救回来
                     //     （校验干净时会把戳写回，引擎随后即可载入）。
                     string stampMismatch = SsdCacheService.LedgerStampMismatch(_config);
                     if (stampMismatch.Length > 0)
                     {
-                        throw new L2NeedsVerifyException(
+                        return EngineResult.L2NeedsVerify(
                             Locale.T("engine.start.l2StampNeedsVerify", stampMismatch),
                             Locale.T("engine.start.reason.abnormalShutdown"));
                     }
@@ -664,10 +683,12 @@ namespace FlyDisk.Engine
 
             // ⑦ 监听地址要能解析（否则下面 IPAddress.Parse 会抛一个看不出原因的异常）
             if (!IPAddress.TryParse(_config.ListenAddress, out _))
-                throw new InvalidOperationException(Locale.T("engine.start.badListenAddress", _config.ListenAddress));
+                return EngineResult.Reject(Locale.T("engine.start.badListenAddress", _config.ListenAddress));
 
             if (string.IsNullOrWhiteSpace(_config.TargetIqn))
-                throw new InvalidOperationException(Locale.T("engine.start.emptyIqn"));
+                return EngineResult.Reject(Locale.T("engine.start.emptyIqn"));
+
+            return EngineResult.Success;
         }
 
         #endregion
@@ -926,5 +947,62 @@ namespace FlyDisk.Engine
             => value.Length <= maxLength ? value : value.Substring(0, maxLength);
 
         #endregion
+    }
+
+    /// <summary>引擎启动 / 停止的结果分类：决定 UI 怎么处理</summary>
+    public enum EngineOutcome
+    {
+        /// <summary>成功（含"本来就在跑 / 本来就没在跑"这类无操作）</summary>
+        Ok,
+        /// <summary>被拒：直接提示用户即可（选错盘 / 参数不对 / 有别的程序占用连接……）</summary>
+        Rejected,
+        /// <summary>L2 账本与当前盘或配置不匹配：UI 问"清空重建？"</summary>
+        L2Mismatch,
+        /// <summary>L2 账本需要校验（盘原本联机 / 上次异常关服）：UI 问"现在校验？"</summary>
+        L2NeedsVerify
+    }
+
+    /// <summary>
+    /// 引擎启动 / 停止的**返回值**。
+    ///
+    /// **为什么不抛异常**：这些是预期内的业务分支（用户选错盘、参数不对、需要他对 L2 拍板），
+    /// 不是"出错了"。用异常上报会让调试器在抛出瞬间停下来（VS 默认在 CLR 异常上中断），
+    /// 把真正该看的异常淹没掉；而且 <c>async void</c> 入口一旦漏 catch，还会直接进
+    /// <c>Application.ThreadException</c>。异常只留给"真出错"（IO 失败、内存不足、库抛错）。
+    /// </summary>
+    public sealed class EngineResult
+    {
+        private EngineResult(EngineOutcome outcome, string message, string reason)
+        {
+            Outcome = outcome;
+            Message = message;
+            Reason = reason;
+        }
+
+        /// <summary>结果分类（决定 UI 走哪个分支）</summary>
+        public EngineOutcome Outcome { get; }
+
+        /// <summary>给用户看的原因（已本地化）</summary>
+        public string Message { get; }
+
+        /// <summary>一句话原因；目前只有 <see cref="EngineOutcome.L2NeedsVerify"/> 用
+        /// （用户选"清空重建"时写日志）</summary>
+        public string Reason { get; }
+
+        /// <summary>是否成功</summary>
+        public bool Ok => Outcome == EngineOutcome.Ok;
+
+        /// <summary>成功（含"无需操作"）</summary>
+        public static readonly EngineResult Success = new(EngineOutcome.Ok, string.Empty, string.Empty);
+
+        /// <summary>被拒：直接提示用户</summary>
+        public static EngineResult Reject(string message) => new(EngineOutcome.Rejected, message, string.Empty);
+
+        /// <summary>L2 账本不匹配：UI 问"清空重建？"</summary>
+        public static EngineResult L2Mismatch(string message) => new(EngineOutcome.L2Mismatch, message, string.Empty);
+
+        /// <summary>L2 账本需要校验：UI 问"现在校验？"</summary>
+        public static EngineResult L2NeedsVerify(string message, string reason)
+            => new(EngineOutcome.L2NeedsVerify, message, reason);
     }
 }

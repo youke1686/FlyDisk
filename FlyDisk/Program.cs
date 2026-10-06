@@ -17,6 +17,7 @@
 
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using FlyDisk.Engine;
 using FlyDisk.Localization;
@@ -28,11 +29,54 @@ namespace FlyDisk
     internal static class Program
     {
         /// <summary>
+        /// 单实例互斥体名。**刻意是一个与 exe 路径无关的常量**——所以"把 exe 复制/下载成两份、
+        /// 分别双击"也会被认成同一个程序。这正是要的：两份各跑一份会撞 iSCSI 的 3260 端口、
+        /// L2 的 cache.lock 与目标盘独占，只会留下更难懂的报错。
+        ///
+        /// 不带 <c>Global\</c> 前缀 ⇒ 作用域是**当前登录会话**：同一台机器上另一个用户各跑一份是允许的
+        /// （两人各用各的盘，本就不该互相打断）。
+        /// </summary>
+        private const string SingleInstanceMutexName = "FlyDisk.SingleInstance";
+
+        /// <summary>
+        /// 自定义窗口消息：第二个实例用它请已有实例把主窗口叫到前台（见 <c>Form1.WndProc</c>）。
+        /// 用 <see cref="RegisterWindowMessage"/> 取 id，保证只有本程序认识这条消息。
+        /// </summary>
+        internal static readonly uint ActivateWindowMessage = RegisterWindowMessage("FlyDisk.ActivateMainWindow");
+
+        private static readonly IntPtr HWND_BROADCAST = new(0xFFFF);
+        /// <summary><c>AllowSetForegroundWindow</c> 的 <c>ASFW_ANY</c>：允许任何进程接下来抢前台</summary>
+        private const int ASFW_ANY = -1;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint RegisterWindowMessage(string message);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+        /// <summary>
         ///  The main entry point for the application.
         /// </summary>
         [STAThread]
         static void Main()
         {
+            // 单实例：已经有本程序在跑（**不管它是哪个路径下的 exe**）⇒ 请它把主窗口叫到前台，
+            // 本进程什么都不做直接退出。放在所有初始化之前——第二个实例不该碰配置、日志或任何盘。
+            using var singleInstance = new Mutex(initiallyOwned: false, SingleInstanceMutexName, out bool createdNew);
+            if (!createdNew)
+            {
+                // 先给"下一个抢前台的调用者"预授权：否则已有实例作为后台进程调 SetForegroundWindow
+                // 只会闪一下任务栏、窗口不会真到前面来（Windows 的前台抢占限制）。
+                AllowSetForegroundWindow(ASFW_ANY);
+                PostMessage(HWND_BROADCAST, ActivateWindowMessage, IntPtr.Zero, IntPtr.Zero);
+                return;
+            }
+
             ApplicationConfiguration.Initialize();
 
             // 启动版权/授权声明（GPL 建议交互式程序启动时给出提示；本程序不弹窗，改为写诊断日志，

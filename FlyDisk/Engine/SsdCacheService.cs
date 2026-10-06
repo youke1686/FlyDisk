@@ -425,6 +425,56 @@ namespace FlyDisk.Engine
             }
         }
 
+        /// <summary>
+        /// **把这份 L2 账本标记为失效**：只改容器头里的"身份戳"，索引原样不动 ⇒ 两者的戳不再一致，
+        /// 下次启用 L2 时 <see cref="LedgerStampMismatch"/> 会判"上次没有正常关服"，UI 从而要求**校验**
+        /// （而不是静默清空重来，也不是把它当正常账本直接采信）。
+        ///
+        /// **为什么不改头部的 VERSION**：版本不符会被判成"上一版格式"从而静默重建，那就丢掉了"让用户校验"的机会。
+        ///
+        /// 用于"本次不用 L2 加速这块盘、但缓存目录里还留着它的账本"：加速期间盘会被写透传改写，
+        /// 那份账本随即与盘不一致；若不让它失效，下次启用时它可能因为"盘是脱机打开的"而被直接采信 ⇒ 返回陈旧块。
+        /// </summary>
+        /// <returns>成功标记返回 true；没有可标记的账本（不存在 / 头部不合法 / 打不开 / 写失败）返回 false</returns>
+        public static bool InvalidateLedger(DiskConfig config)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return false;
+
+                string containerPath = Path.Combine(
+                    Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), ContainerFileName);
+                if (!File.Exists(containerPath)) return false;
+
+                using var fs = new FileStream(containerPath, FileMode.Open, FileAccess.ReadWrite,
+                    FileShare.None, bufferSize: 1, FileOptions.None);
+
+                byte[] header = new byte[BLOCK_SIZE];
+                fs.ReadExactly(header, 0, BLOCK_SIZE);
+
+                if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
+                    BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
+                    BitConverter.ToInt32(header, 4) != CONTAINER_VERSION)
+                {
+                    return false;   // 头部本来就不合法：它下次会被静默重建，没什么可标记的
+                }
+
+                // 换掉身份戳（与 RotateContainerId 改的是同一个位置），再重算头部校验和写回。
+                BitConverter.GetBytes(Random.Shared.NextInt64()).CopyTo(header, 8);
+                BitConverter.GetBytes(Hash(header, 0, CONTAINER_HASH_LEN)).CopyTo(header, CONTAINER_HASH_LEN);
+
+                fs.Position = 0;
+                fs.Write(header, 0, BLOCK_SIZE);
+                fs.Flush(true);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"标记 L2 账本失效失败（按“未能标记”处理）：{ex.Message}");
+                return false;
+            }
+        }
+
         /// <summary>索引头部里的"槽数 / M 上限 / ghost 上限"是否与当前配置一致；不一致则返回原因</summary>
         private static string? DetectIndexParameterMismatch(string dir, int slotCount, DiskConfig config)
         {
@@ -1415,26 +1465,14 @@ namespace FlyDisk.Engine
     }
 
     /// <summary>
-    /// "L2 账本与当前目标盘 / 配置对不上"——由 <see cref="SsdCacheService.DetectLedgerMismatch"/> 判定。
-    /// 引擎抛出它而**不是**悄悄清空重建；UI 捕获后弹窗问用户，确认后才以 <c>allowLedgerReset: true</c> 重试启动。
+    /// "L2 账本与当前目标盘 / 配置对不上"——由 <see cref="SsdCacheService.DetectLedgerMismatch"/> 判定，
+    /// 在 <see cref="SsdCacheService"/> 构造时抛出（构造函数没法返回结果），由 <see cref="CacheService"/> 原样上抛。
+    ///
+    /// **正常启动流程走不到这里**：<see cref="TargetService.Validate"/> 已提前把它变成
+    /// <see cref="EngineResult.L2Mismatch"/> 返回给 UI 了，这条只是漏网时的双保险。
     /// </summary>
     public sealed class L2LedgerMismatchException : Exception
     {
         public L2LedgerMismatchException(string message) : base(message) { }
-    }
-
-    /// <summary>
-    /// "目标盘启动时是**联机**状态（上次运行之后盘可能被别的程序/机器改过）"，或
-    /// "**上次没有正常关服**（掉电/强杀/崩溃 ⇒ 容器头的身份戳与索引里的对不上）"——
-    /// 两种情形都表示"盘上这份账本未必还对"。引擎抛它（而不是像以前那样静默作废整层）让 UI 问用户：
-    /// 「现在校验」（校验器逐块比对容器与源盘 ⇒ 干净就把身份戳写回、引擎随后自然采信账本）
-    /// 或「清空重建」。
-    /// </summary>
-    public sealed class L2NeedsVerifyException : Exception
-    {
-        public L2NeedsVerifyException(string message, string reason) : base(message) => Reason = reason;
-
-        /// <summary>一句话原因（写日志、以及用户选"清空重建"时的说明用）</summary>
-        public string Reason { get; }
     }
 }

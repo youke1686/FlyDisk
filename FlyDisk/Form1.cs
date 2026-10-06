@@ -767,36 +767,15 @@ namespace FlyDisk
                     BlockSourceInfo info = peer.BeginService(chosen.Identity);
                     BeginInvoke(new Action(async () =>
                     {
-                        bool stillRequested = _remoteStartPending;
-                        _remoteStartPending = false;
-                        _remoteDiskIdentity = chosen.Identity;
-                        // 选盘等授权期间仍可取消；起本地 target 后进入不可重入的启停阶段。
-                        if (HasTargetWork || _target.IsRunning) return;
-                        if (!stillRequested || !ReferenceEquals(_peer, peer))
-                        {
-                            await EndRemoteServiceQuietly(peer);
-                            return;
-                        }
-                        _targetOperationPending = true;
-                        _targetOperationStarting = true;
-                        RefreshStatus();
                         try
                         {
-                            if (await StartWithRemotePrompt(peer, info))
-                            {
-                                _remoteStatus = Locale.T("main.remote.accelerating", info.Model);
-                                Log(Locale.T("main.log.remoteDiskReady", info.Model, ((double)info.SizeBytes / 1024 / 1024 / 1024).ToString("F1")));
-                                LogAutoMountResult(Locale.T("main.log.iscsiConnectRemoteHint"));
-                            }
-                            else
-                            {
-                                await EndRemoteServiceQuietly(peer);
-                            }
+                            await FinishRemoteStartAsync(peer, info, chosen.Identity);
                         }
-                        finally
+                        catch (Exception ex)
                         {
-                            _targetOperationPending = false;
-                            RefreshStatus();
+                            // async void 回调：异常绝不能再往外抛（会走 Application.ThreadException）。
+                            Log(Locale.T("main.log.startFailed", ex.Message));
+                            MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
                         }
                     }));
                 }
@@ -833,63 +812,100 @@ namespace FlyDisk
             catch (Exception ex) { LogService.DebugFile($"通知对端收回盘失败（已忽略）：{ex.Message}"); }
         }
 
-        /// <summary>远程形态的启动（含 L2 账本的两种"不确定"情形，处理口径见 后续待办.md 第一节）</summary>
-        private async Task<bool> StartWithRemotePrompt(RemotePeer peer, BlockSourceInfo info)
+        /// <summary>
+        /// 对端授权通过之后、在 UI 线程上完成的远程启动收尾。
+        ///
+        /// **独立成方法**是为了让上面那个 <c>BeginInvoke(async …)</c> 回调只剩一层 try/catch：
+        /// async void 回调里逸出的异常会直接进 Application.ThreadException（表现为"程序出错"弹窗）。
+        /// </summary>
+        private async Task FinishRemoteStartAsync(RemotePeer peer, BlockSourceInfo info, string identity)
         {
+            bool stillRequested = _remoteStartPending;
+            _remoteStartPending = false;
+            _remoteDiskIdentity = identity;
+            // 选盘等授权期间仍可取消；起本地 target 后进入不可重入的启停阶段。
+            if (HasTargetWork || _target.IsRunning) return;
+            if (!stillRequested || !ReferenceEquals(_peer, peer))
+            {
+                await EndRemoteServiceQuietly(peer);
+                return;
+            }
+            _targetOperationPending = true;
+            _targetOperationStarting = true;
+            RefreshStatus();
             try
             {
-                await Task.Run(() => _target.StartRemote(peer, info));
-                return true;
-            }
-            catch (L2LedgerMismatchException ex)
-            {
-                DialogResult answer = MessageBox.Show(
-                    Locale.T("main.msg.l2MismatchRemote", ex.Message),
-                    Locale.T("dialog.l2Mismatch"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
-                if (answer != DialogResult.Yes)
+                if (await StartWithRemotePrompt(peer, info))
                 {
-                    Log(Locale.T("main.log.cancelledL2MismatchRemote"));
-                    return false;
+                    _remoteStatus = Locale.T("main.remote.accelerating", info.Model);
+                    Log(Locale.T("main.log.remoteDiskReady", info.Model, ((double)info.SizeBytes / 1024 / 1024 / 1024).ToString("F1")));
+                    LogAutoMountResult(Locale.T("main.log.iscsiConnectRemoteHint"));
                 }
-
-                return await StartRemoteWithReset(peer, info, Locale.T("main.reason.mismatchUserReset"));
-            }
-            catch (L2NeedsVerifyException ex)
-            {
-                // 远程形态**不支持逐块校验**（要把整个缓存大小的数据从对端传回来，慢链路上不可行），只能清空重建
-                DialogResult answer = MessageBox.Show(
-                    Locale.T("main.msg.l2NeedsVerifyRemote", ex.Message),
-                    Locale.T("dialog.l2NeedsHandle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-
-                if (answer != DialogResult.Yes)
+                else
                 {
-                    Log(Locale.T("main.log.remoteL2MustClear"));
-                    return false;
+                    await EndRemoteServiceQuietly(peer);
                 }
-
-                return await StartRemoteWithReset(peer, info, Locale.T("main.reason.userClearRemoteL2", ex.Reason));
             }
-            catch (Exception ex)
+            finally
             {
-                Log(Locale.T("main.log.startFailed", ex.Message));
-                MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
+                _targetOperationPending = false;
+                RefreshStatus();
             }
         }
 
-        private async Task<bool> StartRemoteWithReset(RemotePeer peer, BlockSourceInfo info, string why)
+        /// <summary>远程形态的启动（含 L2 账本的两种"不确定"情形，处理口径见 后续待办.md 第一节）</summary>
+        private async Task<bool> StartWithRemotePrompt(RemotePeer peer, BlockSourceInfo info)
         {
-            try
+            // 与本地形态同一套写法：引擎返回结果，这里弹窗问用户，再带 allowL2Reset 重试
+            bool allowReset = false;
+            while (true)
             {
-                await Task.Run(() => _target.StartRemote(peer, info, allowL2Reset: true));
-                Log(Locale.T("main.log.l2Cleared", why));
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log(Locale.T("main.log.startFailed", ex.Message));
-                MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
+                EngineResult result = await Task.Run(() => _target.StartRemote(peer, info, allowReset));
+
+                switch (result.Outcome)
+                {
+                    case EngineOutcome.Ok:
+                        return true;
+
+                    case EngineOutcome.L2Mismatch:
+                    {
+                        DialogResult answer = MessageBox.Show(
+                            Locale.T("main.msg.l2MismatchRemote", result.Message),
+                            Locale.T("dialog.l2Mismatch"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                        if (answer != DialogResult.Yes)
+                        {
+                            Log(Locale.T("main.log.cancelledL2MismatchRemote"));
+                            return false;
+                        }
+
+                        Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.mismatchUserReset")));
+                        allowReset = true;
+                        continue;
+                    }
+
+                    case EngineOutcome.L2NeedsVerify:
+                    {
+                        // 远程形态**不支持逐块校验**（要把整个缓存大小的数据从对端传回来，慢链路上不可行），只能清空重建
+                        DialogResult answer = MessageBox.Show(
+                            Locale.T("main.msg.l2NeedsVerifyRemote", result.Message),
+                            Locale.T("dialog.l2NeedsHandle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+                        if (answer != DialogResult.Yes)
+                        {
+                            Log(Locale.T("main.log.remoteL2MustClear"));
+                            return false;
+                        }
+
+                        Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userClearRemoteL2", result.Reason)));
+                        allowReset = true;
+                        continue;
+                    }
+
+                    default:   // EngineOutcome.Rejected
+                        Log(Locale.T("main.log.startFailed", result.Message));
+                        MessageBox.Show(result.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
+                }
             }
         }
 
@@ -914,7 +930,11 @@ namespace FlyDisk
             RefreshStatus();
             try
             {
-                if (_target.IsRunning) await Task.Run(_target.Stop);
+                if (_target.IsRunning)
+                {
+                    EngineResult stopped = await Task.Run(_target.Stop);
+                    if (!stopped.Ok) Log(Locale.T("main.log.stopLocalFailed", stopped.Message));
+                }
             }
             catch (Exception ex)
             {
@@ -965,14 +985,23 @@ namespace FlyDisk
         /// </summary>
         private async void CheckForUpdates()
         {
-            string? remote = await UpdateService.FetchRemoteVersionAsync();
-            if (remote == null) return;   // 取不到：静默
+            try
+            {
+                string? remote = await UpdateService.FetchRemoteVersionAsync();
+                if (remote == null) return;   // 取不到：静默
 
-            string current = UpdateService.CurrentVersion;
-            if (string.Equals(remote, current, StringComparison.OrdinalIgnoreCase)) return;   // 版本一致：静默
+                string current = UpdateService.CurrentVersion;
+                if (string.Equals(remote, current, StringComparison.OrdinalIgnoreCase)) return;   // 版本一致：静默
 
-            // 只比"是否不同"，不比大小：本地比远端新（如从源码自己编译）时也会走到这里，这没问题。
-            Log(Locale.T("main.log.updateAvailable", current, remote, UpdateService.RepoUrl));
+                // 只比"是否不同"，不比大小：本地比远端新（如从源码自己编译）时也会走到这里，这没问题。
+                Log(Locale.T("main.log.updateAvailable", current, remote, UpdateService.RepoUrl));
+            }
+            catch (Exception ex)
+            {
+                // async void 入口：异常不能再往外抛（会走 Application.ThreadException）。
+                // 检查更新纯属锦上添花，出任何事都静默。
+                LogService.DebugFile($"检查更新失败（已忽略）：{ex.Message}");
+            }
         }
 
         /// <summary>
@@ -1185,6 +1214,10 @@ namespace FlyDisk
                 return;
             }
 
+            // 本次**不启用 L2**、但缓存目录里还留着**这块盘**的 L2 账本时，先问用户
+            // （此刻还没脱机、系统状态一点没动；详细理由见 ConfirmL2LedgerUnused）。
+            if (!ConfirmL2LedgerUnused(target)) return;
+
             _targetOperationPending = true;
             _targetOperationStarting = true;
             RefreshStatus();
@@ -1206,6 +1239,14 @@ namespace FlyDisk
                     if (_target.CloneDiskWarning.Length > 0) await RecoverFromCloneDiskProblem(target);
                 }
             }
+            catch (Exception ex)
+            {
+                // 这是 async void 入口：异常绝不能再往外抛，否则直接走 Application.ThreadException。
+                // 启动本身的失败已由 StartWithL2MismatchPrompt 转成弹窗 + false，这里兜的是它之外的部分
+                // （保存配置 / 写日志 / 克隆盘恢复）。
+                Log(Locale.T("main.log.startFailed", ex.Message));
+                MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
             finally
             {
                 _targetOperationPending = false;
@@ -1214,105 +1255,124 @@ namespace FlyDisk
         }
 
         /// <summary>
-        /// 启动。两种"账本状态不确定"的情形都由这里弹窗交给用户决定，而不是让引擎悄悄处理：
+        /// 【本地形态】本次**不启用 L2**、但缓存目录里还留着**这块盘**的 L2 账本时，先问用户：
+        /// 继续加速会让那份账本失效——加速期间盘会被写透传改写，账本随即与盘不一致；
+        /// 而它下次被启用时可能因为"盘是脱机打开的"而被**直接采信** ⇒ 返回陈旧块。
+        ///
+        /// **刻意放在 UI 层、启动之前**（而不是让引擎抛异常）：这只是"看一眼 L2 文件 + 比身份 + 问用户"，
+        /// 引擎没有交互能力；放在这里还能保证用户中止时系统状态一点都没动。
+        /// </summary>
+        /// <returns>true = 可以继续启动；false = 用户选择中止</returns>
+        private bool ConfirmL2LedgerUnused(PhysicalDiskInfo target)
+        {
+            if (_config.EnableSsdCache) return true;   // 本次用 L2，账本归引擎自己管
+
+            long? owner;
+            try { owner = L2Verifier.TryReadOwnerIdentity(_config); }
+            catch { return true; }   // 看一眼失败一律当作"没有可用的 L2"，不拦启动
+
+            if (!owner.HasValue || owner.Value != L2Verifier.Identify(target)) return true;
+
+            DialogResult answer = MessageBox.Show(
+                Locale.T("main.msg.l2UnusedLedger", target.DiskNumber),
+                Locale.T("dialog.l2UnusedLedger"),
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+
+            if (answer != DialogResult.Yes)
+            {
+                Log(Locale.T("main.log.l2UnusedLedgerKept"));
+                return false;
+            }
+
+            // 让账本失效：只改容器头的身份戳，索引原样不动 ⇒ 下次启用 L2 时判"需要校验"。
+            if (SsdCacheService.InvalidateLedger(_config))
+            {
+                Log(Locale.T("main.log.l2UnusedLedgerInvalidated"));
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 启动（本地形态）。引擎把"账本状态不确定"作为**返回值**报上来，这里弹窗交给用户决定：
         /// ① 账本与当前盘/配置不匹配 ⇒ 问"清空重建？"；
         /// ② 盘启动时是**联机**、且缓存目录里有账本 ⇒ 问"现在校验？"（或清空重建）。
-        /// 「清空重建」⇒ 以 <c>allowL2Reset: true</c> 重试；「校验」⇒ 打开校验窗口，
+        /// 「清空重建」⇒ 以 <c>allowL2Reset: true</c> 再启一次；「校验」⇒ 打开校验窗口，
         /// 校验干净才带着这份 L2 继续启动（校验器已把盘脱机，引擎因此自然采信账本）；
         /// 没干净就**中止启动、不做任何补救动作**。
         /// </summary>
         /// <returns>是否已经启动</returns>
         private async Task<bool> StartWithL2MismatchPrompt(PhysicalDiskInfo target)
         {
-            try
+            // 用循环重试而不是递归：用户每拍一次板，就带新的 allowL2Reset 再启一次
+            bool allowReset = false;
+            while (true)
             {
-                await Task.Run(() => _target.Start(target));
-                return true;
-            }
-            catch (L2LedgerMismatchException ex)
-            {
-                DialogResult answer = MessageBox.Show(
-                    Locale.T("main.msg.l2Mismatch", ex.Message),
-                    Locale.T("dialog.l2Mismatch"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                EngineResult result = await Task.Run(() => _target.Start(target, allowReset));
 
-                if (answer != DialogResult.Yes)
+                switch (result.Outcome)
                 {
-                    Log(Locale.T("main.log.cancelledL2Mismatch"));
-                    return false;
+                    case EngineOutcome.Ok:
+                        return true;
+
+                    case EngineOutcome.L2Mismatch:
+                    {
+                        DialogResult answer = MessageBox.Show(
+                            Locale.T("main.msg.l2Mismatch", result.Message),
+                            Locale.T("dialog.l2Mismatch"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+
+                        if (answer != DialogResult.Yes)
+                        {
+                            Log(Locale.T("main.log.cancelledL2Mismatch"));
+                            return false;
+                        }
+
+                        Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.mismatchUserReset")));
+                        allowReset = true;   // 用户确认"清空重建" ⇒ 下次带 allowL2Reset 再启
+                        continue;
+                    }
+
+                    case EngineOutcome.L2NeedsVerify:
+                    {
+                        DialogResult answer = MessageBox.Show(
+                            Locale.T("main.msg.l2NeedsVerify", result.Message),
+                            Locale.T("dialog.l2NeedsVerify"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+                        if (answer != DialogResult.Yes)
+                        {
+                            Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userDeclinedVerify", result.Reason)));
+                            allowReset = true;   // 用户选了"清空重建" ⇒ 下次带 allowL2Reset 再启
+                            continue;
+                        }
+
+                        // 校验窗口是模态的：它自己脱机 + 独占源盘、并抢 cache.lock（此刻引擎还没打开盘），跑完保持脱机
+                        bool consistent;
+                        using (var dialog = new L2VerifyForm(_config, target.DiskNumber))
+                        {
+                            dialog.ShowDialog(this);
+                            consistent = dialog.LedgerIsConsistent;
+                        }
+
+                        if (!consistent)
+                        {
+                            // 校验没跑干净（取消 / 中止 / 有没修完的不一致）⇒ **中止启动，不做任何补救动作**：
+                            // 不动盘的状态、不动配置、不动缓存文件（MVP 口径：用户没点的事，程序不替他做）。
+                            //
+                            // 校验器已轮换容器身份戳；未验完时不恢复戳，下次启动仍要求校验。
+                            Log(Locale.T("main.log.abortedL2Verify"));
+                            return false;
+                        }
+
+                        // 校验干净：校验器已把源盘脱机 ⇒ 引擎这次自然采信账本，**不需要 allowL2Reset**
+                        Log(Locale.T("main.log.l2VerifyPassed"));
+                        allowReset = false;
+                        continue;
+                    }
+
+                    default:   // EngineOutcome.Rejected
+                        Log(Locale.T("main.log.startFailed", result.Message));
+                        MessageBox.Show(result.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
                 }
-
-                return await StartWithLedgerReset(target, Locale.T("main.reason.mismatchUserReset"));
-            }
-            catch (L2NeedsVerifyException ex)
-            {
-                DialogResult answer = MessageBox.Show(
-                    Locale.T("main.msg.l2NeedsVerify", ex.Message),
-                    Locale.T("dialog.l2NeedsVerify"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-
-                if (answer != DialogResult.Yes)
-                {
-                    return await StartWithLedgerReset(target, Locale.T("main.reason.userDeclinedVerify", ex.Reason));
-                }
-
-                // 校验窗口是模态的：它自己脱机 + 独占源盘、并抢 cache.lock（此刻引擎还没打开盘），跑完保持脱机
-                bool consistent;
-                using (var dialog = new L2VerifyForm(_config, target.DiskNumber))
-                {
-                    dialog.ShowDialog(this);
-                    consistent = dialog.LedgerIsConsistent;
-                }
-
-                if (!consistent)
-                {
-                    // 校验没跑干净（取消 / 中止 / 有没修完的不一致）⇒ **中止启动，不做任何补救动作**：
-                    // 不动盘的状态、不动配置、不动缓存文件（MVP 口径：用户没点的事，程序不替他做）。
-                    //
-                    // 校验器已轮换容器身份戳；未验完时不恢复戳，下次启动仍要求校验。
-                    Log(Locale.T("main.log.abortedL2Verify"));
-                    return false;
-                }
-
-                return await StartKeepingLedger(target);
-            }
-            catch (Exception ex)
-            {
-                Log(Locale.T("main.log.startFailed", ex.Message));
-                MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
-        }
-
-        /// <summary>清空 L2 之后重试启动（用户已经确认"不要这份缓存"）</summary>
-        private async Task<bool> StartWithLedgerReset(PhysicalDiskInfo target, string why)
-        {
-            try
-            {
-                await Task.Run(() => _target.Start(target, allowL2Reset: true));
-                Log(Locale.T("main.log.l2Cleared", why));
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log(Locale.T("main.log.startFailed", ex.Message));
-                MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
-        }
-
-        /// <summary>带着现有 L2 重试启动（用于"刚刚校验干净"之后：此时源盘已被校验器脱机，引擎会自然采信账本）</summary>
-        private async Task<bool> StartKeepingLedger(PhysicalDiskInfo target)
-        {
-            try
-            {
-                await Task.Run(() => _target.Start(target));
-                Log(Locale.T("main.log.l2VerifyPassed"));
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log(Locale.T("main.log.startFailed", ex.Message));
-                MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
             }
         }
 
@@ -1408,17 +1468,12 @@ namespace FlyDisk
             string error = string.Empty;
             for (int attempt = 1; attempt <= CloneRetryStopAttempts; attempt++)
             {
-                try
-                {
-                    await Task.Run(_target.Stop);
-                    return (true, string.Empty);
-                }
-                catch (Exception ex)
-                {
-                    error = ex.Message;
-                    LogService.DebugFile($"克隆盘恢复：停止加速第 {attempt}/{CloneRetryStopAttempts} 次失败：{ex.Message}");
-                    if (attempt < CloneRetryStopAttempts) await Task.Delay(CloneRetryDelayMs);
-                }
+                EngineResult stopped = await Task.Run(_target.Stop);
+                if (stopped.Ok) return (true, string.Empty);
+
+                error = stopped.Message;   // 被拒（例如会话还没登出去）⇒ 等一拍再来
+                LogService.DebugFile($"克隆盘恢复：停止加速第 {attempt}/{CloneRetryStopAttempts} 次失败：{error}");
+                if (attempt < CloneRetryStopAttempts) await Task.Delay(CloneRetryDelayMs);
             }
             return (false, error);
         }
@@ -1458,7 +1513,14 @@ namespace FlyDisk
                 int diskNumber = _target.LocalDiskNumber;
                 RemotePeer? peer = _peer;
 
-                await Task.Run(_target.Stop);
+                EngineResult stopped = await Task.Run(_target.Stop);
+                if (!stopped.Ok)
+                {
+                    // 被拒（还有别的 iSCSI 连接挂着）：如实弹出来，否则用户只看到按钮弹回来、以为程序卡了
+                    Log(Locale.T("main.log.stopFailed", stopped.Message));
+                    MessageBox.Show(stopped.Message, Locale.T("dialog.stopRejected"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
 
                 if (peer != null)
                 {
@@ -1698,7 +1760,7 @@ namespace FlyDisk
             base.OnFormClosing(e);
         }
 
-        /// <summary>把主窗口从托盘叫回来（单击托盘图标）</summary>
+        /// <summary>把主窗口从托盘叫回来（单击托盘图标；或第二个实例请我们到前台）</summary>
         private void RestoreFromTray()
         {
             Show();
@@ -1706,7 +1768,28 @@ namespace FlyDisk
             _tray.Visible = false;   // 窗口回到屏幕上，通知区图标随即撤掉
             Activate();
             BringToFront();
+            // Activate/BringToFront 对一个"后台进程"未必真能把窗口提到最前（Windows 的前台抢占限制），
+            // 再补一次 SetForegroundWindow——第二个实例已经用 AllowSetForegroundWindow 替我们预授权了。
+            SetForegroundWindow(Handle);
         }
+
+        /// <summary>
+        /// 第二个实例请求"把主窗口叫到前台"时走这里（见 <see cref="Program.ActivateWindowMessage"/>）。
+        /// 窗口可能正藏在托盘里（加速期间关窗口 = 缩到托盘），所以复用 <see cref="RestoreFromTray"/>。
+        /// </summary>
+        protected override void WndProc(ref Message m)
+        {
+            if ((uint)m.Msg == Program.ActivateWindowMessage)
+            {
+                RestoreFromTray();
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {

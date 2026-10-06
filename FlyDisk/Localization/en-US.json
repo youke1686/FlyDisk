@@ -434,5 +434,9 @@
   "engine.remote.ioUnsupported": "The peer does not support this operation",
   "engine.remote.ioErrorCode": "The peer returned error code {0}",
   "engine.remote.invalidPayloadLength": "Remote message length {0} is outside the allowed range",
-  "engine.stop.pending": "Waiting for disk I/O to finish. Please wait."
+  "engine.stop.pending": "Waiting for disk I/O to finish. Please wait.",
+  "main.msg.l2UnusedLedger": "Disk {0} still has an L2 ledger in the cache folder, but L2 caching is disabled for this run. The disk will be written during acceleration, which makes that ledger inconsistent with the disk — if you continue, the ledger will be marked invalid and the next L2-accelerated run on this disk will require verification (or a rebuild) first. Continue?",
+  "dialog.l2UnusedLedger": "L2 ledger will be invalidated",
+  "main.log.l2UnusedLedgerKept": "User aborted: the disk's L2 ledger was left untouched and acceleration did not start",
+  "main.log.l2UnusedLedgerInvalidated": "The disk's L2 ledger has been marked invalid (verification required the next time L2 accelerates it)"
 }

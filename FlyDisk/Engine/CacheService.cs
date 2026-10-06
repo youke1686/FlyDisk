@@ -100,6 +100,9 @@ namespace FlyDisk.Engine
         private long _releasedSlabs;                      // 累计归还给系统的 Slab 数
         private long _watermarkEvictions;                 // 水位（主动）淘汰触发的次数
         private Timer? _levelTimer;                       // 水位节拍：越过 EvictionThreshold 就主动淘汰 + 归还空闲 Slab
+        // 水位越线、而这一拍**一块都淘汰不掉** ⇒ L1 里已没有"可回收的冷块"（空、或只剩刚访问过的热块），
+        // 越线是别的进程造成的。此时临时关上 L1 的接纳，直到水位回落到淘汰线以下（见 CanCache）。
+        private volatile bool _l1Suspended;
         private int _shutdown;
         private readonly object _memoryStatusLock = new();
         private long _memoryStatusUntilTicks;
@@ -221,12 +224,8 @@ namespace FlyDisk.Engine
                 }
                 catch (L2LedgerMismatchException)
                 {
-                    // "账本与盘/参数不匹配"必须冒到 UI 去问用户，不能被下面那层"降级为仅 L1"的兜底吞掉
-                    throw;
-                }
-                catch (L2NeedsVerifyException)
-                {
-                    // 同上：这条也必须由 UI 弹窗问用户（校验保留 / 清空重建）
+                    // "账本与盘/参数不匹配"必须冒到调用方去问用户，不能被下面那层"降级为仅 L1"的兜底吞掉。
+                    // （正常情况下 TargetService.Validate 已提前把它变成返回值了，这里是双保险。）
                     throw;
                 }
                 catch (Exception ex)
@@ -528,7 +527,11 @@ namespace FlyDisk.Engine
                 if (!SystemMemory.TryRead(out MemoryStatus mem)) return;
 
                 double load = mem.MemoryLoadPercent / 100.0;
-                if (load < _config.EvictionThreshold) return;   // 线下：正常缓存，只增不减地攒热数据
+                if (load < _config.EvictionThreshold)
+                {
+                    _l1Suspended = false;                       // 回到线下 ⇒ 放开接纳
+                    return;                                     // 线下：正常缓存，只增不减地攒热数据
+                }
 
                 // 该还多少：按"越线部分 × 物理内存"估算。归还 Slab 后水位会回落，下一拍自然收敛；
                 // 若只是被别的进程临时抬高，下一拍也会自动停手（不会一路把缓存清空）。
@@ -542,6 +545,10 @@ namespace FlyDisk.Engine
                     removed += got;
                     budget -= got;
                 }
+
+                // 越线、有预算却一块都没摘到 ⇒ L1 已无从回收。这时"继续试着淘汰"与"继续接纳新块"
+                // 只会互相抵消（新块收进来活不过下一拍），于是临时关上 L1 的接纳。
+                if (budget > 0 && removed == 0) _l1Suspended = true;
 
                 int released = ReleaseIdleSlabs();
 
@@ -806,10 +813,12 @@ namespace FlyDisk.Engine
             double currentLoad = GetSystemMemoryLoad();
             if (currentLoad >= _config.StopCachingThreshold) return false;
 
-            // **L1 已经空了、水位却仍在淘汰线以上** ⇒ 越线不是缓存造成的（是别的进程占着内存）。
+            // 水位越线、而 L1 已经淘汰不动了（节拍发现无可回收）⇒ 越线是别的进程占着内存，不是缓存。
             // 这时再收新块只会"刚收进来就被下一拍淘汰"，而且 AcquireSlot 会因空闲链空而**扩池**，
-            // 反倒把水位往上推。于是临时把 L1 关上：只要水位还在线上、缓存又是空的就不接纳——
-            // 不接纳 ⇒ 缓存持续为空 ⇒ 这条判断自洽地维持到水位回落到淘汰线以下再自动恢复。
+            // 反倒把水位往上推。于是临时把 L1 关上，等水位回落再放开（标志由 WaterLevelTick 维护）。
+            if (_l1Suspended) return false;
+
+            // 节拍还没跑到、但缓存已经空了的即时兜底：同样是"越线不是缓存造成的"。
             return !(currentLoad >= _config.EvictionThreshold && UsedSlots == 0);
         }
 

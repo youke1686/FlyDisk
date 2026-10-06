@@ -895,13 +895,22 @@ namespace FlyDisk.Engine
 
         private void CheckServiceHold()
         {
-            if (_serving == null || !IsLinkDown) return;
-            if (_serviceExpiryTicks == 0 || Environment.TickCount64 < _serviceExpiryTicks) return;
+            // **Timer 回调（System.Threading.Timer 跑在线程池）**：异常逸出会直接终止进程
+            // （Application.ThreadException 只管 UI 线程），所以这里必须自己兜住。
+            try
+            {
+                if (_serving == null || !IsLinkDown) return;
+                if (_serviceExpiryTicks == 0 || Environment.TickCount64 < _serviceExpiryTicks) return;
 
-            LogService.DebugFile($"远程对端：等待重连超时（{ServiceHoldSeconds} 秒），关闭对「{_serving.Info.Model}」的提供（该盘保持脱机）");
-            CloseServing();
-            _serviceExpiryTicks = 0;
-            OnStateChanged?.Invoke();
+                LogService.DebugFile($"远程对端：等待重连超时（{ServiceHoldSeconds} 秒），关闭对「{_serving.Info.Model}」的提供（该盘保持脱机）");
+                CloseServing();
+                _serviceExpiryTicks = 0;
+                OnStateChanged?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"远程对端：等待重连超时的收尾出错（已忽略）：{ex.Message}");
+            }
         }
 
         /// <summary>提供方等待对方重连的剩余秒数（0 = 没在等）</summary>

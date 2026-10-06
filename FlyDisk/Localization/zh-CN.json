@@ -434,5 +434,9 @@
   "engine.remote.ioUnsupported": "对端不支持该操作",
   "engine.remote.ioErrorCode": "对端返回错误码 {0}",
   "engine.remote.invalidPayloadLength": "远程消息长度 {0} 不在允许范围内",
-  "engine.stop.pending": "正在等待硬盘读写结束，请稍候。"
+  "engine.stop.pending": "正在等待硬盘读写结束，请稍候。",
+  "main.msg.l2UnusedLedger": "磁盘 {0} 在缓存目录里留有一份 L2 账本，但本次**没有启用 L2 加速**。加速期间这块盘会被写入，那份账本会随之与盘不一致——继续的话程序会把它标记为失效，下次启用 L2 加速这块盘时需要先校验（或清空重建）。是否继续加速？",
+  "dialog.l2UnusedLedger": "L2 账本将失效",
+  "main.log.l2UnusedLedgerKept": "用户选择终止：该盘的 L2 账本保持原样，加速未启动",
+  "main.log.l2UnusedLedgerInvalidated": "已把该盘的 L2 账本标记为失效（下次启用 L2 加速它时需要先校验）"
 }
