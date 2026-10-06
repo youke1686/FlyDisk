@@ -340,6 +340,35 @@ namespace FlyDisk.Engine
             }
         }
 
+        /// <summary>
+        /// 复读**本句柄对应的磁盘**此刻的属性（脱机 / 只读）。
+        ///
+        /// 为什么必须走"已持有的句柄"：源盘被本程序独占打开（<c>FILE_SHARE_NONE</c>）后，谁再开探针句柄
+        /// 都会被挡，只能拿这个句柄查——它是观察"我们脱机之后，系统有没有把盘改回联机"的唯一窗口
+        /// （调用方见 TargetService.TraceSourceDiskAttributes）。
+        /// </summary>
+        /// <returns>读到返回 <c>true</c> 并填出两项；失败返回 <c>false</c>（只记诊断日志，不抛）</returns>
+        public bool TryGetCurrentAttributes(out bool isOffline, out bool isReadOnly)
+        {
+            isOffline = false;
+            isReadOnly = false;
+
+            SafeFileHandle? handle = _handle;
+            if (handle == null || handle.IsInvalid) return false;
+
+            try
+            {
+                bool isOnline = PhysicalDiskControl.GetOnlineStatus(handle, out isReadOnly);
+                isOffline = !isOnline;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"磁盘 {DiskNumber} 属性复读失败：{ex.Message}");
+                return false;
+            }
+        }
+
         #endregion
 
         #region 原始扇区读写
