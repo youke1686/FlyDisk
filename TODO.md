@@ -21,6 +21,7 @@
 
 | 事项 | 现状 / 卡点 |
 | --- | --- |
+| **特殊扇区盘（4Kn / 520 等）与写死的块大小 4096** | 现状：缓存块大小是编译期常量 `ServiceConstants.BlockSize = 4096`,它同时充当 L1 槽位大小, L2 容器槽大小与容器头字段, 合并回源缓冲与 UI 换算的尺寸单位。`BytesPerSector` 必须跟随源盘（否则源盘上已有的 NTFS/GPT 的 LBA 解释全错）,于是 `SectorsPerBlock = 4096 / BytesPerSector` 被唯一决定,却做成了只能手改 config.json 的配置项：4Kn 盘（逻辑扇区 4096）须手改成 1, 520 / 528 / 4104 等非 2 幂扇区则任何取值都凑不出 4096,直接拒绝启动。下一步：把 BlockSize 从常量下沉为缓存实例属性,按 `SectorsPerBlock = ceil(4096 / BytesPerSector)` 推导（512→8, 4096→1, 520→8=4160, 528→8=4224, 4104→1）,删掉配置项与「请去改 config.json」文案,并把兼容性判断提前到选盘界面（现在选盘只摆「字节/扇区」数字,不提示）。涉及 `CacheService.cs`, `SsdCacheService.cs`, `CachedPhysicalDisk.cs`, `TargetService.cs`, `L2Verify.cs`, `Inspector.cs`, `Settings.cs`, `CacheStats.cs`, `ServiceConstants.cs` 与 `zh-CN.json` / `en-US.json` 两条文案。**卡点：需要一名具备测试条件的开发者**——当前没有 4Kn 或 520 / 528 字节扇区的真实盘,无法验证挂载, 读写, L2 校验与容器兼容性 |
 | **写缓存** | 将写入操作延迟落盘，先存到 L1 或 L2，再空闲时落盘。除非断电崩溃之类否则要尽可能保证数据安全 |
 | **多硬盘同时加速** | 未讨论。现在的架构（盘身份、缓存目录、iSCSI target、L2 账本）都是一对一 |
 | **本地化** | 更新已有本地化语言表述/增加更多本地化语言 |
