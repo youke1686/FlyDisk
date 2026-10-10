@@ -335,8 +335,9 @@ namespace FlyDisk.Engine
         ///
         /// 1. **块大小**：块号是按 `BytesPerSector × SectorsPerBlock` 算出来的，尺寸不对，
         ///    "块号 b ↔ 字节偏移 b×4096"这条换算就是错的 ⇒ 拿错偏移去比对，还会把错的比对照写回容器。
-        /// 2. **系统盘 / 本程序所在盘**：本流程要**整盘脱机**，脱错盘是灾难（Windows 或本程序当场失去那块盘）。
-        ///    判据与引擎启动校验、设置对话框共用 `PhysicalDiskHandle.DescribeTargetDiskBlockReason`。
+        /// 2. **系统盘 / 本程序所在盘 / 分页文件所在盘**：本流程要**整盘脱机**，脱错盘是灾难
+        ///    （Windows 或本程序当场失去那块盘；分页文件所在盘还会让内核换页失败而蓝屏）。
+        ///    判据与引擎启动校验、选择硬盘对话框共用 `PhysicalDiskHandle.DescribeTargetDiskBlockReason`。
         /// 3. **L2 缓存目录不得与被校验的盘同盘**：脱机后那个卷会消失，而容器/索引/lock 正被读着。
         /// </summary>
         private void ValidateTargetDisk(PhysicalDiskInfo info)
@@ -352,7 +353,7 @@ namespace FlyDisk.Engine
             if (blocked.Length > 0)
             {
                 throw new InvalidOperationException(
-                    Locale.T("l2v.err.targetBlocked", info.DiskNumber, BlockReasonText(info)));
+                    Locale.T("l2v.err.targetBlocked", info.DiskNumber, blocked));
             }
 
             int cacheDisk = PhysicalDiskHandle.GetDiskNumberOfVolume(Path.GetPathRoot(_dir) ?? string.Empty);
@@ -364,25 +365,6 @@ namespace FlyDisk.Engine
 
             if (info.IsReadOnly)
                 throw new InvalidOperationException(Locale.T("l2v.err.targetReadOnly", info.DiskNumber));
-        }
-
-        /// <summary>
-        /// 被拦原因的可读文本（本地化）。**调用方须先确认盘确实被拦**。
-        /// 引擎的 <see cref="PhysicalDiskHandle.DescribeTargetDiskBlockReason"/> 现已本地化（内部走 Locale.T），
-        /// 这里仍按同一条判据（系统盘 / 程序盘）取本地化文案（做法与 <see cref="SelectDiskForm"/> 一致）；
-        /// 引擎若新增规则也返回本地化文本，原样透出即可，至少不会静默放过。
-        /// </summary>
-        private static string BlockReasonText(PhysicalDiskInfo info)
-        {
-            int system = PhysicalDiskHandle.GetSystemDiskNumber();
-            if (system >= 0 && info.DiskNumber == system)
-                return Locale.T("selectDisk.block.systemDisk", Environment.SystemDirectory);
-
-            int program = PhysicalDiskHandle.GetProgramDiskNumber();
-            if (program >= 0 && info.DiskNumber == program)
-                return Locale.T("selectDisk.block.programDisk", AppContext.BaseDirectory);
-
-            return PhysicalDiskHandle.DescribeTargetDiskBlockReason(info.DiskNumber);
         }
 
         /// <summary>

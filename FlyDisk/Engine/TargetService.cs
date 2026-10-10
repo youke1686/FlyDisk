@@ -583,10 +583,12 @@ namespace FlyDisk.Engine
                     ServiceConstants.BlockSize, suggested));
             }
 
-            // ② 不得是系统盘，也不得是**本程序自己所在的那块盘**：
-            //    脱机是"整盘"动作，盘上所有卷会立刻消失——系统盘脱机会把 Windows 送走，
-            //    程序所在盘脱机则会把本程序（以及存在盘上的配置/日志/缓存容器）一起送走。
-            // 判据与「设置」对话框的提示、以及 L2 校验/修复共用一份实现（PhysicalDiskHandle.DescribeTargetDiskBlockReason）
+            // ② 不得是系统盘、不得是**本程序自己所在的那块盘**、也不得是**分页文件所在盘**：
+            //    脱机是"整盘"动作，盘上所有卷会立刻消失——系统盘脱机会把 Windows 送走；
+            //    程序所在盘脱机则会把本程序（以及存在盘上的配置/日志/缓存容器）一起送走；
+            //    分页文件所在盘脱机则会让内核换页失败、当场蓝屏（KERNEL_DATA_INPAGE_ERROR 0x7A）。
+            // 三条判据与「选择硬盘」对话框、以及 L2 校验/修复共用一份实现
+            //（PhysicalDiskHandle.DescribeTargetDiskBlockReason）
             string blockedTarget = PhysicalDiskHandle.DescribeTargetDiskBlockReason(info.DiskNumber);
             if (blockedTarget.Length > 0)
             {
@@ -601,7 +603,9 @@ namespace FlyDisk.Engine
             {
                 LogService.DebugFile("无法确定本程序所在的是哪块物理盘（在网络上运行？），已跳过“程序所在盘”这项校验");
             }
-            LogService.DebugFile($"校验基准：目标盘=磁盘 {info.DiskNumber}，系统盘=磁盘 {systemDisk}，程序所在盘=磁盘 {programDisk}");
+            string pageFileDisks = string.Join(", ", PhysicalDiskHandle.GetPageFileDiskNumbers());
+            LogService.DebugFile($"校验基准：目标盘=磁盘 {info.DiskNumber}，系统盘=磁盘 {systemDisk}，程序所在盘=磁盘 {programDisk}，" +
+                                 $"分页文件盘=磁盘 {(pageFileDisks.Length > 0 ? pageFileDisks : "（无）")}");
 
             // ③ 可移动介质：**只警告不拦**（2026-09-27 起），提示落在「选择硬盘」对话框里
             //    （用户选它的那一刻就看到，比启动后再打一行日志更及时）——见 SelectDiskForm.BuildLocalDetail。

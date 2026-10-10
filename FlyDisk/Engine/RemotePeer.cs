@@ -1009,6 +1009,18 @@ namespace FlyDisk.Engine
                 return;
             }
 
+            // 分页文件（pagefile.sys）所在盘**绝不能**提供出去：本端会把它整盘脱机，而分页文件正是
+            // 本机内核运行时随时读写的内存交换区——盘一脱机，本机当场蓝屏
+            // KERNEL_DATA_INPAGE_ERROR (0x7A)。判据与本地加速的硬拦同源
+            //（PhysicalDiskHandle.GetPageFileDiskNumbers），且必须在**弹授权框之前**就拒掉：
+            // 不该让本机用户对着一个会把本机搞蓝屏的请求去点"同意"。
+            if (PhysicalDiskHandle.GetPageFileDiskNumbers().Contains(target.DiskNumber))
+            {
+                LogService.DebugFile($"远程对端：拒绝把磁盘 {target.DiskNumber}（{target.Model}）提供出去 — 它是本机的分页文件所在盘");
+                SendSelectResult(channel, null, Locale.T("engine.remote.pageFileDiskRefused"));
+                return;
+            }
+
             bool allowed = OnAuthorize?.Invoke(target, $"{PeerName}（{_host}）") ?? false;
 
             // 用户在弹窗上停留期间对端可能已经断开：**这时绝不能把盘脱机出去**——

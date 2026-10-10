@@ -2,6 +2,8 @@
 
 本文件供 AI 编码代理（Agent）阅读，用于快速了解本仓库的结构、技术背景与工作规则。在执行任何任务前，请先完整阅读本文件并严格遵守其中的规则。
 
+> **最高优先工作规则（先计划、后动手）**：将任何修改**先汇报修改计划，等待用户确认后再实际修改**；不得未经确认就直接改动文件。
+
 > **当前仓库订正（2026-10-06，以下条目优先于下文的历史描述）**：
 > - 唯一项目已经改名为 `FlyDisk/FlyDisk.csproj`，命名空间为 `FlyDisk`、`FlyDisk.Engine`、`FlyDisk.Models`；还包含 `Theming/` 与 `Localization/`。数据目录为 `%ProgramData%\FlyDisk\`。
 > - 自动挂载由 `Engine/IscsiInitiator.cs` 调用系统 MSiSCSI 服务与 iscsidsc API；只清理本程序的会话/门户，不停止系统服务。主窗体启停在后台执行，弹窗与状态刷新回 UI 线程；启停及延后收尾期间禁止重入、改设置、校验和重新联机。
@@ -228,8 +230,8 @@ d:\projects\ramdisk\
 │   │                              #   保证与当前 exe 版本一致）；`Open()` 交给系统默认程序打开；失败只记日志
 │   ├── Engine/                    # namespace: RamCacheDisk.Engine
 │   │   ├── TargetService.cs       # ★ 新：生命周期（校验 → 脱机 → 独占 → 起 target；停止的固定顺序）
-│   │   │                          #   + 启动校验（块 4KB / 非系统盘 / 非本程序所在盘 / 非只读 为硬拦；
-│   │   │                          #     机械盘、可移动介质"只警告" / L2 不同盘）；
+│   │   │                          #   + 启动校验（块 4KB / 非系统盘 / 非本程序所在盘 / 非分页文件所在盘 /
+│   │   │                          #     非只读 为硬拦；机械盘、可移动介质"只警告" / L2 不同盘）；
 │   │   │                          #   两条入口 `Start(本地盘)` / `StartRemote(远端块源)`——
 │   │   │                          #   **远程形态停止时完全不碰块源**（关它归 Form1 的 DisconnectRemote）
 │   │   ├── CachedPhysicalDisk.cs  # ★ 新：`Disk` 实现（读走两级缓存、写透传 + 写命中刷新/块级失效）

@@ -9,7 +9,7 @@
 - **可用性功能**：L2 校验/修复（`L2Verify.cs`），重新联机硬盘，检查器（简要/详细双页 + 最小化悬浮方块），深色/浅色主题（`Theming/`），多语言 zh-CN / en-US（`Localization/`），桌面快捷方式图标，帮助文档（嵌入 exe + 每次启动覆盖落盘）。
 - **远程加速**（`Engine/RemotePeer.cs`，`Engine/RemoteProtocol.cs`，`RemoteForm.cs`）：已初步实现，但仍是**实验性**，入口带警告弹窗。
 - **权限与形态**：必须管理员运行；iSCSI 只监听 `127.0.0.1`；**不停止系统的 MSiSCSI 服务**，只清理本程序创建的会话与门户。
-- **目标盘**：禁止把系统盘 / 程序所在盘作为加速目标；目标盘整盘脱机 + `dwShareMode=0` 独占；**停止加速后盘保持脱机是设计，不是 bug**（要联机走菜单「重新联机硬盘」）。
+- **目标盘**：禁止把系统盘 / 程序所在盘 / **分页文件（pagefile.sys）所在盘**作为加速目标（分页文件盘整盘脱机会让内核换页失败，直接蓝屏 `KERNEL_DATA_INPAGE_ERROR 0x7A`；判据统一走 `PhysicalDiskHandle.DescribeTargetDiskBlockReason`）；目标盘整盘脱机 + `dwShareMode=0` 独占；**停止加速后盘保持脱机是设计，不是 bug**（要联机走菜单「重新联机硬盘」）。
 - **文件系统与缓存**：虚拟盘文件系统名必须是 `NTFS`（否则 exe 无法执行）；必须实现 `Overwrite` 回调；删除在 `Cleanup` 阶段执行（`CanDelete` 只做能力探测）；权限映射里 `DELETE` 位必须保留。
 - **远程**：实验性特性，入口必须弹警告（默认取消）；重连主动权**永远在拨号方**；监听循环要能吞掉「连上却不发 Hello」的垃圾连接并 `continue`，不能退出。
 - **本地化**：用户可见文本一律走 `Locale.T(key)`，中英各一份 JSON（`zh-CN.json` / `en-US.json`，键按「模块.用途」命名）；。

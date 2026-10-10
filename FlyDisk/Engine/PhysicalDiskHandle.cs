@@ -23,6 +23,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using DiskAccessLibrary.Win32;
 using FlyDisk.Localization;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace FlyDisk.Engine
@@ -478,6 +479,100 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>
+        /// 承载分页文件（<c>pagefile.sys</c>）的物理盘号集合。
+        ///
+        /// **这些盘绝不能作为加速目标**：本程序对目标盘做的是**整盘脱机**，而分页文件是内核在运行中
+        /// 随时读写的内存交换区——盘一脱机，内核换页失败，当场蓝屏
+        /// <c>KERNEL_DATA_INPAGE_ERROR (0x7A)</c>。系统盘虽已被 <see cref="DescribeTargetDiskBlockReason"/>
+        /// 拦下，但分页文件**可以配在别的数据盘上**（"虚拟内存"里给 D:、E: 各设一段是常见做法），
+        /// 那种盘此前是放行的，正是这份探测要堵的洞。
+        ///
+        /// 两个来源取并集，互为兜底：
+        /// ① 注册表里配置的分页文件位置（<c>PagingFiles</c>）：权威，且**不受目标盘当前联机/脱机影响**；
+        /// ② 各已挂载固定卷根上**实际存在**的 <c>pagefile.sys</c>：覆盖 <c>?:\pagefile.sys</c> 这类
+        ///    由系统自动放置、配置里查不到盘符的情形，也兜住注册表读取失败。
+        ///
+        /// 任何一步探测失败都**只跳过、不抛出**（与 <see cref="FillDriveLetters"/> 同一口径）：
+        /// 不能因为这项防护本身出错而让整个选盘/启动流程挂掉。
+        /// </summary>
+        public static HashSet<int> GetPageFileDiskNumbers()
+        {
+            var disks = new HashSet<int>();
+
+            // ① 注册表：HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management → PagingFiles
+            try
+            {
+                using RegistryKey? key = Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management");
+                if (key?.GetValue("PagingFiles") is { } raw)
+                {
+                    // REG_MULTI_SZ 正常给 string[]；个别环境给单个 string，一并兼容
+                    string[] entries = raw switch
+                    {
+                        string[] multi => multi,
+                        string single => new[] { single },
+                        _ => Array.Empty<string>(),
+                    };
+                    foreach (string entry in entries)
+                    {
+                        string root = PageFileEntryRoot(entry);
+                        if (root.Length == 0) continue;   // "?:\..."（系统自动放置）/ 空 / 其它：交给 ②
+                        int disk = GetDiskNumberOfVolume(root);
+                        if (disk >= 0) disks.Add(disk);
+                    }
+                }
+            }
+            catch
+            {
+                // 读不到就算了：② 的存在性扫描继续兜底
+            }
+
+            // ② 存在性扫描：逐个已挂载的固定卷根找 pagefile.sys
+            try
+            {
+                foreach (DriveInfo drive in DriveInfo.GetDrives())
+                {
+                    try
+                    {
+                        // 分页文件只可能落在固定盘上：跳过光驱 / 可移动介质 / 未就绪卷
+                        if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+                        if (!File.Exists(Path.Combine(drive.RootDirectory.FullName, "pagefile.sys"))) continue;
+                        if (TryGetDiskNumberOfVolume(drive.RootDirectory.FullName, out int disk) && disk >= 0)
+                            disks.Add(disk);
+                    }
+                    catch
+                    {
+                        // 单个卷探测失败：跳过它，别的卷照常
+                    }
+                }
+            }
+            catch
+            {
+                // DriveInfo.GetDrives() 本身失败：本次拿不到，不拦
+            }
+
+            return disks;
+        }
+
+        /// <summary>
+        /// 从 <c>PagingFiles</c> 的一条配置里取出盘符根（如 <c>"D:\"</c>）；取不到时返回空串。
+        ///
+        /// 条目形如 <c>"D:\pagefile.sys 2048 4096"</c>（路径 + 初始大小 + 最大值），只有第一段是路径。
+        /// 由系统自动管理时条目是 <c>"?:\pagefile.sys"</c>：`?` 不是盘符，按空串处理，交给存在性扫描去认。
+        /// </summary>
+        private static string PageFileEntryRoot(string entry)
+        {
+            if (string.IsNullOrWhiteSpace(entry)) return string.Empty;
+
+            string path = entry.Trim().Split(' ', '\t')[0];
+            if (path.Length < 3 || path[1] != ':' || path[2] != '\\') return string.Empty;   // 含 "?:\..."
+
+            char letter = path[0];
+            bool isLetter = (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z');
+            return isLetter ? path.Substring(0, 3) : string.Empty;
+        }
+
+        /// <summary>
         /// 把各盘当前挂载的盘符填进 <see cref="PhysicalDiskInfo.DriveLetters"/>：**一次全盘扫描 + 按盘号归组**
         /// （不做"每块盘各扫一遍 A–Z"的 O(N×26) 重复打开）。
         ///
@@ -523,25 +618,36 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>
-        /// 该盘为什么**不能**被本程序当作目标盘（空串 = 可以）。两条硬拦：承载系统盘、承载本程序自己。
+        /// 该盘为什么**不能**被本程序当作目标盘（空串 = 可以）。三条硬拦：承载系统盘、承载本程序自己、
+        /// 承载分页文件。
         ///
         /// 为什么必须是硬拦：本程序对目标盘做的是**整盘脱机**（所有卷立刻消失）——
-        /// 系统盘脱机等于把 Windows 送走；程序所在盘脱机等于把本程序（以及盘上的配置、日志、L2 容器）一起送走。
+        /// 系统盘脱机等于把 Windows 送走；程序所在盘脱机等于把本程序（以及盘上的配置、日志、L2 容器）一起送走；
+        /// 分页文件所在盘脱机则会让内核换页失败、**当场蓝屏**（<c>KERNEL_DATA_INPAGE_ERROR 0x7A</c>，
+        /// 见 <see cref="GetPageFileDiskNumbers"/>）。
         ///
-        /// **这份实现是唯一的一份**：引擎启动校验、设置对话框的提示、L2 校验/修复三处都调它。
-        /// 以前这条规则在三个地方各写了一遍，L2 校验那次就漏掉了（而它比启动更危险——启动失败什么都不会发生，
-        /// 校验漏了则可能真的把盘脱机）。
+        /// **三条独立判定、全部列出**（以 ", " 连接）：一块盘常常同时踩中多条——本程序通常就装在系统盘上，
+        /// 而系统盘几乎必然承载分页文件；只报第一条会让用户"修一条、重试、再撞下一条"。
+        ///
+        /// 调用方是引擎启动校验（<c>TargetService.Validate</c>）与 L2 校验/修复（<c>L2Verify</c>），
+        /// 它们把返回值原样拼进"是{1}"的句子里。以前这条判据在这两处各写了一遍，L2 校验那次就漏掉了
+        /// （而它比启动更危险——启动失败什么都不会发生，校验漏了则可能真的把盘脱机），现已收敛到这一份。
+        /// 「选择硬盘」对话框是唯一例外：它要带 ❌ 前缀逐条列，用的是同判据的另一套文案
+        /// （<c>SelectDiskForm.BlockReasons</c>）。
         /// </summary>
         public static string DescribeTargetDiskBlockReason(int diskNumber)
         {
             if (diskNumber < 0) return string.Empty;
 
+            var reasons = new List<string>();
             if (GetSystemDiskNumber() == diskNumber)
-                return Locale.T("selectDisk.block.systemDisk", Environment.SystemDirectory);
+                reasons.Add(Locale.T("selectDisk.block.systemDisk", Environment.SystemDirectory));
             if (GetProgramDiskNumber() == diskNumber)
-                return Locale.T("selectDisk.block.programDisk", AppContext.BaseDirectory);
+                reasons.Add(Locale.T("selectDisk.block.programDisk", AppContext.BaseDirectory));
+            if (GetPageFileDiskNumbers().Contains(diskNumber))
+                reasons.Add(Locale.T("selectDisk.block.pageFile"));
 
-            return string.Empty;
+            return string.Join(", ", reasons);
         }
 
         #endregion

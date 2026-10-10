@@ -51,6 +51,8 @@ namespace FlyDisk.Theming
         public Color TextDisabled { get; init; }
         /// <summary>警告文字（远程窗"不加密"那一段）</summary>
         public Color WarningText { get; init; }
+        /// <summary>错误文字（选盘窗口里"会阻止启动"的硬拦原因，行首带 ❌）</summary>
+        public Color DangerText { get; init; }
 
         // ===== 按钮与选择 =====
         public Color ControlBg { get; init; }
@@ -101,6 +103,7 @@ namespace FlyDisk.Theming
             TextSecondary = SystemColors.GrayText,
             TextDisabled = SystemColors.GrayText,
             WarningText = Color.FromArgb(160, 80, 0),
+            DangerText = Color.FromArgb(0xC0, 0x28, 0x28),
 
             ControlBg = SystemColors.Control,
             ControlHover = SystemColors.ControlLight,
@@ -140,6 +143,7 @@ namespace FlyDisk.Theming
             TextSecondary = Color.FromArgb(0x9A, 0x9A, 0x9A),
             TextDisabled = Color.FromArgb(0x6A, 0x6A, 0x6A),
             WarningText = Color.FromArgb(0xE0, 0xA0, 0x50),
+            DangerText = Color.FromArgb(0xF0, 0x6B, 0x6B),
 
             ControlBg = Color.FromArgb(0x33, 0x33, 0x37),
             ControlHover = Color.FromArgb(0x3E, 0x3E, 0x42),

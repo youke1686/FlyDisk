@@ -81,6 +81,13 @@ namespace FlyDisk.Theming
         /// <summary>当前是不是深色</summary>
         public static bool IsDark => _palette.IsDark;
 
+        /// <summary>
+        /// 输入类控件（TextBox / RichTextBox）里**正文**的颜色 —— 与 <see cref="StyleTextInput"/> 同源。
+        /// 给"要自己往输入框里塞带颜色文本"的调用方用：例如选盘窗口把 ❌ 错误行标红时，其余行得取回正文色；
+        /// 那个窗口在**构造期**就渲染第一屏，此时控件还没被上色，读 <c>control.ForeColor</c> 只会拿到过期的默认色。
+        /// </summary>
+        public static Color InputTextColor => _palette.IsDark ? _palette.TextPrimary : SystemColors.WindowText;
+
         private enum LabelRole
         {
             Primary,
@@ -352,7 +359,7 @@ namespace FlyDisk.Theming
 
             WriteBorderStyle(input, p.IsDark ? BorderStyle.FixedSingle : state.OriginalBorderStyle);
             input.BackColor = p.IsDark ? p.InputBg : SystemColors.Window;
-            input.ForeColor = p.IsDark ? p.TextPrimary : SystemColors.WindowText;
+            input.ForeColor = InputTextColor;
         }
 
         // BorderStyle 在 TextBoxBase 与 UpDownBase 上各有一份，Control 上没有，只能分派着读写
