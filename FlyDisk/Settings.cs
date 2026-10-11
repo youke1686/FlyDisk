@@ -62,6 +62,7 @@ namespace FlyDisk
             Bind("settings.ssdDrive", lblSsdDrive);
             Bind("settings.ssdSize", lblSsdSize);
             Bind("settings.ssdConservative", lblSsdConservative);
+            Bind("settings.l2Manage", btnL2Manage);
 
             LocalizationManager.Apply(this);
         }
@@ -241,6 +242,21 @@ namespace FlyDisk
                 return string.Format("{0:0.##} GiB", bytes / 1024.0 / 1024 / 1024);
             }
             return string.Format("{0:0.#} MiB", bytes / 1024.0 / 1024);
+        }
+
+        /// <summary>
+        /// 「L2 管理」：列出整机上找到的 L2 缓存，让用户挑一份做操作（见 <see cref="L2Manage"/>）。
+        ///
+        /// **与 L2 是否启用无关，永远可用**——它最常见的用途恰恰是"我已经关掉 L2 了，但想清掉以前留下的缓存"。
+        /// </summary>
+        private void btnL2Manage_Click(object sender, EventArgs e)
+        {
+            if (!L2Manage.Run(this, _config)) return;
+
+            // 用户在操作窗口里把某一份设成了当前缓存盘：把下拉框与内存估算刷新过来。
+            // **落盘仍由「保存」负责**（与其它设置项一致：取消就不会改到盘上的配置）。
+            LoadSsdCacheDriveList();
+            UpdateMemoryEstimate();
         }
 
         /// <summary>打开随程序落盘的帮助文档（不在就先补一份）。</summary>

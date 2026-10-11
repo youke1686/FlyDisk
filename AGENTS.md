@@ -29,7 +29,7 @@
 
 | 层 | 命名空间 | 主要内容 |
 | --- | --- | --- |
-| 界面层 | `FlyDisk` | `Form1`（启停 + 状态栏 + 菜单 + 日志）、`Settings`、`Inspector`、`RemoteForm`、`SelectDiskForm`、`L2Verify` 的 UI 部分、`HelpDocument`、`UpdateService`、`Program` |
+| 界面层 | `FlyDisk` | `Form1`（启停 + 状态栏 + 菜单 + 日志 + **L2 启动前预检**）、`Settings`、`Inspector`、`RemoteForm`、`PickerForm`（通用选择框）、`L2Manage`、`L2Verify` 的 UI 部分、`HelpDocument`、`UpdateService`、`Program` |
 | 引擎层 | `FlyDisk.Engine` | `TargetService`、`CachedPhysicalDisk`、`PhysicalDiskHandle`、`IBlockSource`、`CacheService`（L1）、`SsdCacheService`（L2）、`RemotePeer` / `RemoteProtocol`、`IscsiInitiator`、`LogService`、`SystemMemory`、`L2Verifier` |
 | 模型层 | `FlyDisk.Models` | `DiskConfig`、`CacheStats`、`ConfigService`、`ServiceConstants` |
 | 主题层 | `FlyDisk.Theming` | `ThemeManager` / `ThemePalette` / `ThemedForm` / `ThemedTabControl` / `AppIcon` / `ShortcutIcon`（浅色 / 深色） |
@@ -86,9 +86,26 @@
   不足之后（**保守期**）只收 ghost 命中的块；分界值 = `SsdConservativeThreshold`（默认 0.80，越界夹到 `[0.50, 0.99]`）。
   **L1 命中对 L2 完全静默**（两者必须正交：L1 管近期性，L2 管跨重启的长期保留）。
 - **账本是否可信**由一条设备级判据决定：打开时该盘**原本就脱机**（⇒ 上次运行之后没人能写它）。
-  两种可疑情形**都不静默作废**（2026-09-30）：①盘原本联机 ⇒ `EngineResult.L2NeedsVerify`；②上次未正常关服（身份戳不符）⇒
-  静默重建；**容器属于另一块盘** ⇒ `EngineResult.L2Mismatch`。均交由 UI 弹窗让用户选「校验后保留 / 清空重建」。
-  校验没跑干净 ⇒ 中止启动、**不做任何补救动作**。
+  盘原本联机、或上次未正常关服（身份戳不符）时**一律不采信**。
+- ★ **职责边界（2026-10-11 约定）：拦截一律在 UI（启动前预检），引擎只做加速。**
+  所有"要不要清掉 / 要不要校验 / 要不要缩放 L2 账本"的判定与询问集中在 `Form1.PrepareL2BeforeStart`
+  （在**脱机之前**问，用户中止时系统状态一点没动）；"清空"= **直接删账本文件**（`L2Manage.TryClear`，
+  用引擎与校验器共同持有的单实例锁做闸）。引擎因此**不再有任何"要用户先拍板"的返回值**——
+  `EngineResult` 只带一个 `EngineOutcome`（`Ok` / `Rejected`）加一条给用户看的消息，不再有 `L2Mismatch` /
+  `L2NeedsVerify` 这类"要 UI 再去拍板"的返回；`Start` 也没有 `allowL2Reset` 这类授权参数。
+- ★ **不静默回退**：引擎装载期只有两种结局——**确实没有账本**（容器与索引都不存在）⇒ 新建空缓存；
+  **其余任何不自洽**（文件不成对 / 不属于本盘 / 盘原本联机 / 身份戳不符）⇒ 抛 `L2LedgerUnusableException`
+  **终止启动**。**L2 初始化失败也不再静默降级为"仅 L1"**，而是报错并引导用户到设置里关闭 L2、
+  或去「L2 管理」清理。只读探测（`DetectLedgerMismatch` / `LedgerStampMismatch` / `DescribeAllL2Caches` 等）
+  仍留在引擎（二进制格式知识不外泄），但它们**只输出事实**；探测本身出意外时上抛，由 UI 报错中止。
+- **「L2 管理」**（`L2Manage.cs`；入口 = 设置里 L2 缓存盘右侧的「L2 管理」按钮）：扫出整机上的 L2 缓存目录
+  （`<卷根>\FlyDisk.Cache`，见 `SsdCacheService.DescribeAllL2Caches`）→ 选一份（`PickerForm` 的「L2 缓存」模式）
+  → 操作窗口（清空 / 打开目录 / 设为当前缓存盘）。用途是清理"用户忘了的"缓存（不自动删是设计：
+  用户可能只是临时关掉 L2），也是 TODO「缓存的手动管理」（快照等）的落点。
+- **启动前预检的顺序**：① 容器属于本盘吗 → ② 账本可信吗（盘原本联机 / 上次未正常关服；**远程不支持逐块校验**，
+  只能清空）→ ③ 容量变化 / 被缓存盘可用空间夹取（缩 / 扩分别说明）。**校验没跑干净 ⇒ 中止启动、不做任何补救动作**。
+  另外**本次不用 L2 却还留着这块盘的账本**时，仍先问一次（`ConfirmL2LedgerUnused`）：它只把身份戳改掉让账本失效，
+  比清空保守——防的是用户误操作。
 - **容量 / ghost 参数与本次配置不一致不再清空，改为缩放保留**：缩容**按位置截断**（保留低槽位那批块，与热度无关；
   按热度保留需要 compaction，会在启动时重新制造卡顿），扩容保留全部；**启动前由 UI 弹窗确认**（缩 / 扩分别说明），
   引擎只按"已确认"执行（确认在 UI 层，引擎不再拦）。详见 `docs/L2容器按需增长与容量缩放_设计.md`。
@@ -138,12 +155,13 @@ d:\projects\FlyDisk\
 ├── docs/
 │   ├── README_en.md               # README 英文版
 │   ├── res/                       # README 用到的截图
+│   ├── L2容器按需增长与容量缩放_设计.md     # ★ L2 按需按 Slab 增长 + 容量缩放的设计与决策（D1–D9）
 │   └── iSCSI克隆盘被判冗余路径_排障记录.md   # ★ 已知缺陷的排障记录（根因待查明，见 TODO）
 ├── FlyDisk/                       # ★ 唯一项目：WinForms 管理员程序 + 引擎层
 │   ├── FlyDisk.slnx / FlyDisk.csproj
 │   ├── app.manifest               # requireAdministrator（脱机 + 独占 PhysicalDrive 必需）
 │   ├── Program.cs                 # 入口 + 未处理异常兜底
-│   ├── Form1.cs / Settings.cs / Inspector.cs / RemoteForm.cs / SelectDiskForm.cs
+│   ├── Form1.cs / Settings.cs / Inspector.cs / RemoteForm.cs / PickerForm.cs / L2Manage.cs
 │   ├── L2Verify.cs                # L2 校验/修复（Engine.L2Verifier + L2VerifyForm，单文件）
 │   ├── HelpDocument.cs / 帮助文档.html   # 帮助文档（单文件双语，嵌入 exe + 每次启动覆盖落盘）
 │   ├── UpdateService.cs           # 检查更新（只比 csproj 里的 <Version> 是否不同）
@@ -169,7 +187,7 @@ d:\projects\FlyDisk\
 
 > **注意**：`废/` 下的文档（`阶段二-iSCSI块设备形态.md`、`关于内存缓存的进一步讨论.md`、`后续待办.md`、`未解决的疑点.md` 等）
 > 曾长期放在仓库根目录，源码注释里仍有对它们的引用；它们现在**已归档**。当前活跃文档只有 `README.md`、`TODO.md`
-> 与 `docs/` 下的排障记录。
+> 与 `docs/` 下的设计 / 排障记录。
 
 > **注意**：`废/` 下的 `第三方资料` 目录，尽管标记为废，但依旧很有价值，标记为废只是避免上传到GitHub中带来不必要的麻烦，并不是说它已经没有价值了。
 

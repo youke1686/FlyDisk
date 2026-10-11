@@ -4,9 +4,9 @@
 
 ## 一、现状（已落地）
 
-- **本地加速**：L1 内存缓存（Slab/Slot + 时间轮 LRU + 按内存水位淘汰），L2 硬盘缓存（M 环 + ghost，跨重启存活），写透传 + 写命中刷新（W1）+ 块级失效，整盘脱机 + 独占打开，启动期崩溃残留清理。
+- **本地加速**：L1 内存缓存（Slab/Slot + 时间轮 LRU + 按内存水位淘汰），L2 硬盘缓存（M 环 + ghost，跨重启存活；**按需按 Slab 整块增长**、容量与上次不一致时**缩放保留**，扩展用 `SetFileValidData` 免零填充），写透传 + 写命中刷新（W1）+ 块级失效，整盘脱机 + 独占打开，启动期崩溃残留清理。
 - **自动挂载**：iSCSI target 自动挂起 + `iscsidsc` 自动登录（`Engine/IscsiInitiator.cs`）。
-- **可用性功能**：L2 校验/修复（`L2Verify.cs`），重新联机硬盘，检查器（简要/详细双页 + 最小化悬浮方块），深色/浅色主题（`Theming/`），多语言 zh-CN / en-US（`Localization/`），桌面快捷方式图标，帮助文档（嵌入 exe + 每次启动覆盖落盘）。
+- **可用性功能**：L2 校验/修复（`L2Verify.cs`），**「L2 管理」**（`L2Manage.cs`：列出整机上的 L2 缓存并清理/切换，入口在设置里），重新联机硬盘，检查器（简要/详细双页 + 最小化悬浮方块），深色/浅色主题（`Theming/`），多语言 zh-CN / en-US（`Localization/`），桌面快捷方式图标，帮助文档（嵌入 exe + 每次启动覆盖落盘）。
 - **远程加速**（`Engine/RemotePeer.cs`，`Engine/RemoteProtocol.cs`，`RemoteForm.cs`）：已初步实现，但仍是**实验性**，入口带警告弹窗。
 - **权限与形态**：必须管理员运行；iSCSI 只监听 `127.0.0.1`；**不停止系统的 MSiSCSI 服务**，只清理本程序创建的会话与门户。
 - **目标盘**：禁止把系统盘 / 程序所在盘 / **分页文件（pagefile.sys）所在盘**作为加速目标（分页文件盘整盘脱机会让内核换页失败，直接蓝屏 `KERNEL_DATA_INPAGE_ERROR 0x7A`；判据统一走 `PhysicalDiskHandle.DescribeTargetDiskBlockReason`）；目标盘整盘脱机 + `dwShareMode=0` 独占；**停止加速后盘保持脱机是设计，不是 bug**（要联机走菜单「重新联机硬盘」）。

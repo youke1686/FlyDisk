@@ -20,6 +20,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
+using FlyDisk.Localization;
 using FlyDisk.Models;
 // 本项目是 WinForms，隐式 using 会把 System.Windows.Forms.Timer 也拉进来 ⇒ 必须消歧（引擎层要的是线程池版）
 using Timer = System.Threading.Timer;
@@ -172,8 +173,11 @@ namespace FlyDisk.Engine
         /// （型号 + 序列号 + 容量 + 扇区大小）写进容器头部，防止"换了另一块盘却沿用旧容器"；
         /// 并用 <c>WasOnline</c> 判定盘上那份账本是否可信。**不区分块源在本地还是远端。**
         /// </param>
-        /// <param name="allowLedgerReset">允许在"L2 账本与盘/参数不匹配"时清空重建（由 UI 问过用户之后才传 true）</param>
-        public CacheService(DiskConfig config, BlockSourceInfo source, bool allowLedgerReset = false)
+        /// <remarks>
+        /// **L2 初始化失败会直接抛出**（不再静默降级为"仅 L1"）：用户配了 L2 就必须让他知道它没生效。
+        /// 所有"要不要清掉 / 要不要校验"的判定都在 UI 的启动前预检里（见 AGENTS.md §2.3）。
+        /// </remarks>
+        public CacheService(DiskConfig config, BlockSourceInfo source)
         {
             _config = config;
 
@@ -215,23 +219,22 @@ namespace FlyDisk.Engine
                 $"CacheService：淘汰参数 时间轮窗口 {_windowSeconds} 秒 / 宽限 {_graceSeconds} 秒 / 单批 {_batchBlocks} 块 / " +
                 $"淘汰{(_evictionEnabled ? "已启用" : "未启用")}");
 
-            // SSD 二级缓存（L2）：初始化失败只降级为"仅 L1" + 警告，不让配置问题把缓存整体打死
+            // SSD 二级缓存（L2）：用户配了它，就必须让它真的生效——**初始化失败直接终止启动**，
+            // 不再静默降级为"仅 L1"（否则用户以为在加速，其实 L2 根本没上，而且毫不知情）。
+            // 提示里会引导用户去设置里手动关闭 L2（见 AGENTS.md §2.3 的职责边界与"不静默"约定）。
             if (_config.EnableSsdCache)
             {
                 try
                 {
-                    _ssd = new SsdCacheService(_config, source, allowLedgerReset);
+                    _ssd = new SsdCacheService(_config, source);
                 }
-                catch (L2LedgerMismatchException)
+                catch (L2LedgerUnusableException)
                 {
-                    // "账本与盘/参数不匹配"必须冒到调用方去问用户，不能被下面那层"降级为仅 L1"的兜底吞掉。
-                    // （正常情况下 TargetService.Validate 已提前把它变成返回值了，这里是双保险。）
-                    throw;
+                    throw;   // 账本不可用：原样上抛（消息已本地化，UI 直接展示并引导用户去「管理 L2」）
                 }
                 catch (Exception ex)
                 {
-                    _ssd = null;
-                    LogService.DebugFile($"CacheService：SSD 二级缓存初始化失败，已降级为仅内存缓存：{ex.Message}");
+                    throw new InvalidOperationException(Locale.T("engine.l2.initFailed", ex.Message), ex);
                 }
             }
 

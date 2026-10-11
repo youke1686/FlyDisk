@@ -567,6 +567,7 @@
 <p>我们目前只支持读缓存。当系统需要读取硬盘中的数据时：</p>
 <p>系统默认行为：直接从源盘读取（会有少量内存缓存，但通常可以忽略）</p>
 <p>我们的行为：优先从 L1 L2 中读取数据，若 L1 L2 中均没有对应数据，才回到源盘读取数据，并同时直接存放到 L1 中，按需存放到 L2 中以便下次读取到相同数据时的加速</p>
+<p>L2 缓存是按需增长的：只有真正读到的数据才会写进 L2，容器也随写入逐步扩大，不会预先占满你设定的预算。</p>
 <div class="note">L2 能跨重启保留，但在上次出现非正常退出、目标盘被手动联机等情况后需要进行全量校验以保证数据不出错，启动时若发现问题，程序会弹窗让你选择。</div>
 <div class="warn"> <strong>⚠ 注意：</strong>在开启 L2 功能时，你<strong>有责任避免</strong>进行手动脱机、使用另一个电脑/双操作系统的另一个使用硬盘等会<strong>令 L2 和实际数据不一致</strong>的操作，这种操作我们的程序无法有效自动察觉，应<strong>手动触发一轮 L2 校验</strong>。如你不确定你的操作是否会导致上述问题，也应<strong>手动触发一轮 L2 校验</strong>。</div>
 
@@ -616,8 +617,8 @@
 <ul>
     <li><strong>启用 L2 缓存</strong>：默认<strong>关闭</strong>。</li>
     <li><strong>L2 缓存盘</strong>：下拉列出当前可用的盘符。请选一块速度快性能好的 SSD。</li>
-    <li><strong>容量预算（GiB）</strong>：默认 <code>8</code>，范围 1–64。这是 L2 在缓存盘上最多占用的空间。如果已有 L2 缓存则不应修改，修改后只能清空重建。</li>
-    <p class="tip">&nbsp;与 L1 不同，L2 会立刻划分预算，占用相应硬盘空间，以确保缓存的稳定</p>
+    <li><strong>容量预算（GiB）</strong>：默认 <code>8</code>，范围 1–64。这是 L2 在缓存盘上最多占用的空间。可以随时修改：改大或改小时，程序会在启动加速前弹窗确认，已有缓存按新容量缩放保留（缩容会丢弃位置靠后的部分块，扩容则全部保留），无需清空重建。</li>
+    <p class="tip">&nbsp;L2 不会预先占满空间：它以 64 MiB 的整块随实际写入逐步增长，用多少占多少，未用到的空间仍可交给缓存盘上的其他内容使用。</p>
 <li><strong>保守线（L2 缓存占用率）</strong>：默认 <code>80%</code>，范围 50–99%。L2 占用率超过它后缓存接收策略转为保守。</li>
 </ul>
 <p><strong>预计额外内存</strong>：有些缓存以外的必要内存开销会随着缓存增多而增大，窗口底部会给出估算，请对照内存余量合理决策。</p>
@@ -720,10 +721,19 @@
 <h3>启动时提示「L2 缓存不匹配」或「需要校验」？</h3>
 <p><strong>这是两个不同的弹窗，按钮都是「是 / 否」，但含义相反</strong>，请按标题和正文写的那一条来判断：</p>
 <ul>
-    <li><strong>「L2 缓存不匹配」</strong>（盘或配置变了）：<strong>「是」= 清空这份 L2 并重建</strong>（原缓存内容全部作废，之后重新学习）；「否」= 中止启动、不做任何改动（下次启动还会问）。这是在提醒你选择上次的盘/改回上次的配置。</li>
+    <li><strong>「L2 缓存不匹配」</strong>（这次选的目标盘与上次不是同一块）：<strong>「是」= 清空这份 L2 并重建</strong>（原缓存内容全部作废，之后重新学习）；「否」= 中止启动、不做任何改动（下次启动还会问）。这是在提醒你这次是不是选错了盘。</li>
     <li><strong>「L2 缓存需要校验」</strong>（上次没正常关服、盘原本是联机状态等）：<strong>「是」= 现在开始校验</strong>（打开校验窗口逐块比对，可能要几分钟；校验干净后启动会带着这份 L2 继续）；「否」= 清空这份 L2 并继续启动。默认停在「是」。</li>
 </ul>
 <p>拿不准时：在「不匹配」弹窗选「否」中止启动，再到菜单「校验 L2」逐块比对、修复后再启动，是最稳的一步。</p>
+
+<h3>启动时提示 L2 容量要放大 / 缩小，或说受缓存盘空间限制？</h3>
+<p>当你把「容量预算」改成与上次不同的值时，程序会在启动加速前让你确认：</p>
+<ul>
+    <li><strong>改小</strong>：缓存缩到新容量，超出部分（缓存中位置靠后的那些块）会被丢弃，其余保留。</li>
+    <li><strong>改大</strong>：已有缓存全部保留，新增的容量会在使用中逐步启用。</li>
+    <li><strong>受空间限制</strong>：缓存盘可用空间不足时，程序会为它保留约 1 GiB 空闲后再决定实际容量，可能比你设定的值小。留这段空闲是必要的——SSD 快满时读写会明显变慢，留出一些空间才能保证加速运行流畅。</li>
+</ul>
+<p>以上情况都只是按新容量缩放、<strong>不会清空</strong>已有缓存；选「否」则中止启动、不改动任何东西。</p>
 
 <h3>提示「抢不到 L2 单实例锁」？</h3>
 <p>目标正在运行，或另一个 FlyDisk 实例正在使用这份缓存。请先点「停止加速」。</p>
@@ -947,6 +957,7 @@
 <p>For now we only support read caching. When the system needs to read data from the disk:</p>
 <p>Default system behavior: read straight from the source disk (there is a small amount of memory caching, usually negligible).</p>
 <p>Our behavior: prefer reading from L1 / L2; only when the data is in neither do we fall back to the source disk, and then we store it directly into L1 and, as needed, into L2, so that reading the same data next time is accelerated.</p>
+<p>The L2 cache grows on demand: only data that is actually read is written into it, and the container expands as it is written to — it does not occupy the whole budget up front.</p>
 <div class="note">L2 survives reboots, but after an abnormal exit last time, the target disk being manually brought online, or similar cases, a full verification is needed to make sure the data is correct. If a problem is found at startup, the program shows a dialog for you to choose.</div>
 <div class="warn"> <strong>⚠ Note:</strong> while L2 is enabled, <strong>it is your responsibility to avoid</strong> operations that make <strong>L2 and the actual data inconsistent</strong>, such as manually taking the disk offline or using the disk from another computer / another OS in a dual-boot setup. The program cannot reliably detect such operations automatically, so you should <strong>manually trigger a round of L2 verification</strong>. If you are unsure whether your operation could cause the above problem, you should also <strong>manually trigger a round of L2 verification</strong>.</div>
 
@@ -997,8 +1008,8 @@
 <ul>
     <li><strong>Enable L2 cache</strong>: <strong>off</strong> by default.</li>
     <li><strong>L2 cache drive</strong>: a drop-down of the currently available drive letters. Choose a fast, high-performance SSD.</li>
-    <li><strong>Size budget (GiB)</strong>: default <code>8</code>, range 1–64. The most L2 may occupy on the cache disk. If an L2 cache already exists, do not change it — changing it only allows a clear-and-rebuild.</li>
-    <p class="tip">&nbsp;Unlike L1, L2 immediately partitions the budget and occupies that disk space, to keep the cache stable.</p>
+    <li><strong>Size budget (GiB)</strong>: default <code>8</code>, range 1–64. The most L2 may occupy on the cache disk. You can change it at any time: when you grow or shrink it, the program asks for confirmation before starting, and the existing cache is resized to the new budget (shrinking drops the blocks at the tail end; growing keeps everything). No clear-and-rebuild is required.</li>
+    <p class="tip">&nbsp;L2 does not occupy the space up front: it grows in 64 MiB whole blocks as data is actually written — it only uses what it needs, and the unused space stays available to other content on the cache disk.</p>
     <li><strong>Conservative line (L2 usage)</strong>: default <code>80%</code>, range 50–99%. Once L2 usage exceeds it, the admission policy switches to conservative.</li>
 </ul>
 <p><strong>Estimated extra memory</strong>: some necessary memory overhead beyond the cache itself grows as the cache grows; the bottom of the window gives an estimate — decide the budget sensibly against your free memory.</p>
@@ -1101,10 +1112,19 @@
 <h3>"L2 cache mismatch" or "needs verification" at startup?</h3>
 <p><strong>These are two different dialogs. Both use "Yes / No", but Yes means opposite things</strong> — judge by what the title and body say:</p>
 <ul>
-    <li><strong>"L2 cache mismatch"</strong> (the disk or configuration changed): <strong>Yes = clear this L2 and rebuild</strong> (everything in it is discarded and re-learned); No = abort startup and change nothing (you will be asked again next time). This is a reminder to pick the previous disk / restore the previous configuration.</li>
+    <li><strong>"L2 cache mismatch"</strong> (the target disk this time is not the same as last time): <strong>Yes = clear this L2 and rebuild</strong> (everything in it is discarded and re-learned); No = abort startup and change nothing (you will be asked again next time). This is a reminder in case you picked the wrong disk.</li>
     <li><strong>"L2 cache needs verification"</strong> (abnormal shutdown last time, the disk was originally online, etc.): <strong>Yes = start verifying now</strong> (opens the verify window and compares block by block, which may take minutes; if it comes back clean, startup continues with this L2); No = clear this L2 and continue startup. The default is Yes.</li>
 </ul>
 <p>If unsure: in the "mismatch" dialog choose No to abort startup, then run "Verify L2" from the menu to compare block by block and repair before starting — that is the safest step.</p>
+
+<h3>At startup it says the L2 size will grow / shrink, or is limited by free space on the cache disk?</h3>
+<p>When you change the "size budget" to a value different from last time, the program asks you to confirm before starting acceleration:</p>
+<ul>
+    <li><strong>Shrinking</strong>: the cache is resized to the new budget; the part beyond it (the blocks toward the tail of the cache) is dropped and the rest is kept.</li>
+    <li><strong>Growing</strong>: the existing cache is fully kept, and the new capacity is brought into use gradually as you use it.</li>
+    <li><strong>Limited by space</strong>: when the cache disk has too little free space, the program keeps about 1 GiB free for it before deciding the actual size, which may be smaller than the value you set. That free margin is necessary — an SSD that is nearly full slows down noticeably, so leaving some free space keeps acceleration smooth.</li>
+</ul>
+<p>All of these only resize the cache to the new budget and <strong>never clear</strong> the existing cache; choosing "No" aborts startup and changes nothing.</p>
 
 <h3>"Could not acquire the L2 single-instance lock"?</h3>
 <p>The target is running, or another FlyDisk instance is using this cache. Click "Stop Acceleration" first.</p>

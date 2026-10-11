@@ -27,19 +27,21 @@ using FlyDisk.Theming;
 namespace FlyDisk
 {
     /// <summary>
-    /// 「选择硬盘」对话框：**每次点「启动加速」时都弹一次**（见 后续待办.md 第一节的"选盘时机"）。
+    /// **通用选择框**（左列表 + 右明细 + 确定/取消）：一次只让用户挑一项。
     ///
-    /// 为什么不预先在设置里选好：用户改过配置后可能隔几天才点启动，很容易忘了当时选的是哪块盘；
-    /// 把选择动作放在启动的同一刻，做到"所见即所选"。代价是每次启动多一次点击，收益是永不选错——
-    /// 而选错的后果是把用户那块盘**整盘脱机**（当场从系统里消失）。
+    /// 五种用法共用这一个对话框（**按"模式"分，而不是各写一个**）：
+    /// - **本地选盘**：列本机物理盘（不能加速的直接标注并禁止选择）；
+    /// - **远程选盘**：列**对端磁盘**（配对成功后由对端现取一份最新的清单）；
+    /// - **「校验 L2」选盘**：本地形态，选要校验哪块盘；
+    /// - **「重新联机源盘」**：本地形态 + <c>offlineOnly: true</c>，只列脱机盘（见 后续待办.md 第十二节）；
+    /// - **「管理 L2」选缓存**：列整机上找到的每一份 L2 缓存目录（见 <c>L2Manage</c>）。
     ///
-    /// **两种形态共用这一个对话框**：本地形态列本机物理盘（不能加速的直接标注并禁止选择），
-    /// 远程形态列**对端磁盘**（配对成功后由对端现取一份最新的清单）。
-    ///
-    /// 另外两处也复用它：**「校验 L2」**（本地形态，选要校验哪块盘）与**「重新联机源盘」**
-    /// （本地形态 + <c>offlineOnly: true</c>，只列脱机盘，见 后续待办.md 第十二节）。
+    /// 为什么**本地选盘每次点「启动加速」都要弹一次**（见 后续待办.md 第一节的"选盘时机"）：
+    /// 用户改过配置后可能隔几天才点启动，很容易忘了当时选的是哪块盘；把选择动作放在启动的同一刻，
+    /// 做到"所见即所选"。代价是每次启动多一次点击，收益是永不选错——而选错的后果是把用户那块盘
+    /// **整盘脱机**（当场从系统里消失）。
     /// </summary>
-    public sealed class SelectDiskForm : ThemedForm
+    public sealed class PickerForm : ThemedForm
     {
         /// <summary>
         /// 信息区里的一行。<paramref name="IsError"/> = **会阻止启动**的硬拦原因：
@@ -48,7 +50,7 @@ namespace FlyDisk
         /// </summary>
         private readonly record struct DetailLine(string Text, bool IsError);
 
-        /// <summary>列表里的一行（把本地盘与对端盘统一成同一种展示模型）</summary>
+        /// <summary>列表里的一行（把本地盘 / 对端盘 / L2 缓存目录统一成同一种展示模型）</summary>
         private sealed class Entry
         {
             public string Text = string.Empty;
@@ -56,6 +58,7 @@ namespace FlyDisk
             public bool Selectable = true;
             public PhysicalDiskInfo? Local;
             public RemoteDiskInfo? Remote;
+            public L2CacheInfo? L2Cache;
         }
 
         private readonly List<Entry> _entries = new();
@@ -95,6 +98,9 @@ namespace FlyDisk
         /// <summary>远程形态：用户选定的对端磁盘；取消时为 null</summary>
         public RemoteDiskInfo? SelectedRemoteDisk { get; private set; }
 
+        /// <summary>「管理 L2」形态：用户选定的那份缓存；取消时为 null</summary>
+        public L2CacheInfo? SelectedL2Cache { get; private set; }
+
         /// <summary>【本地形态】</summary>
         /// <param name="disks">已枚举好的本机物理盘</param>
         /// <param name="identityToPreselect">上次选的那块盘的身份串，用于默认选中</param>
@@ -107,9 +113,9 @@ namespace FlyDisk
         /// 配置里 L2 缓存目录所在的那块盘（-1 = L2 未启用 / 没配 / 查不到）。
         /// 该盘会被标成不能加速——自己给自己加速是纯写放大，引擎启动时也会拒（见启动校验 ⑥）。
         /// </param>
-        public SelectDiskForm(IReadOnlyList<PhysicalDiskInfo> disks, string identityToPreselect,
+        public PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, string identityToPreselect,
             bool offlineOnly = false, int l2CacheDiskNumber = -1)
-            : this(offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local", null, offlineOnly)
+            : this(offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local")
         {
             _emptyTextKey = offlineOnly ? "selectDisk.noOfflineDisks" : "selectDisk.noDisks";
             _l2CacheDiskNumber = l2CacheDiskNumber;
@@ -128,6 +134,12 @@ namespace FlyDisk
                     : BlockReasons(info, _l2CacheDiskNumber, _pageFileDiskNumbers);
 
                 List<DetailLine> detail = BuildLocalDetail(info, blockReasons);
+                if (offlineOnly)
+                {
+                    // 「重新联机」那句说明本来在对话框顶部；顶部提示行已删（2026-10-11），
+                    // 改放**信息区里"盘信息"那一行下面**（第 0 行是这块盘的字节/容量/序列号）
+                    detail.Insert(Math.Min(1, detail.Count), new DetailLine(Locale.T("selectDisk.hint.online"), false));
+                }
                 _entries.Add(new Entry
                 {
                     Local = info,
@@ -158,9 +170,8 @@ namespace FlyDisk
         /// <summary>【远程形态】列出**对端**磁盘</summary>
         /// <param name="disks">对端刚才报过来的清单</param>
         /// <param name="identityToPreselect">上次用的那块对端盘（若这一轮还在，就默认选中它）</param>
-        /// <param name="peerName">对端名字（显示在标题下方）</param>
-        public SelectDiskForm(IReadOnlyList<RemoteDiskInfo> disks, string identityToPreselect, string peerName)
-            : this("selectDisk.title.remote", peerName)
+        public PickerForm(IReadOnlyList<RemoteDiskInfo> disks, string identityToPreselect)
+            : this("selectDisk.title.remote")
         {
             int preselect = -1;
             for (int i = 0; i < disks.Count; i++)
@@ -189,9 +200,39 @@ namespace FlyDisk
             FinishFill(preselect);
         }
 
-        // 本对话框是模态的（ShowDialog）：打开期间主菜单点不到、语言不会变，
-        // 所以文案在构造时按当前语言取一次即可，不必实现 ILocalizable 那套刷新。
-        private SelectDiskForm(string titleKey, string? peerName, bool tallHint = false)
+        /// <summary>
+        /// 【管理 L2 形态】列出整机上找到的 L2 缓存目录（见 <see cref="SsdCacheService.DescribeAllL2Caches"/>）。
+        ///
+        /// 每一行都**可选**——包括认不出来的残留目录，那恰恰是最需要被清掉的那种。
+        /// </summary>
+        /// <param name="caches">扫出来的缓存清单</param>
+        public PickerForm(IReadOnlyList<L2CacheInfo> caches)
+            : this("selectDisk.title.l2")
+        {
+            _emptyTextKey = "selectDisk.noL2Caches";
+            for (int i = 0; i < caches.Count; i++)
+            {
+                L2CacheInfo cache = caches[i];
+                _entries.Add(new Entry
+                {
+                    L2Cache = cache,
+                    Selectable = true,
+                    Text = cache.IsConfigured
+                        ? Locale.T("selectDisk.item.l2Configured", cache.Directory)
+                        : cache.Directory,
+                    Detail = BuildL2Detail(cache)
+                });
+            }
+
+            FinishFill(caches.Count > 0 ? 0 : -1);
+        }
+
+        /// <summary>
+        /// 通用外壳：各模式只给标题。**顶部不再有任何提示行**（2026-10-11 删掉了这个功能）——
+        /// 原来那句「重新联机」的说明改放下方信息区（见本地构造函数的 <c>offlineOnly</c> 分支）。
+        /// </summary>
+        /// <param name="titleKey">窗口标题的文案键</param>
+        private PickerForm(string titleKey)
         {
             Text = Locale.T(titleKey);
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -201,23 +242,8 @@ namespace FlyDisk
             StartPosition = FormStartPosition.CenterParent;
             ClientSize = new Size(560, 356);
 
-            var hint = new Label
-            {
-                // tallHint（"只列脱机盘"）与 peerName 不会同时出现，判定顺序无所谓
-                Text = tallHint
-                    ? Locale.T("selectDisk.hint.online")
-                    : peerName == null
-                        ? Locale.T("selectDisk.hint.local")
-                        : Locale.T("selectDisk.hint.remote", peerName),
-                Location = new Point(12, 10),
-                // "重新联机"那句是两行文案、长句还要折行，高度按实测结果在下面补（这里先给个初值）
-                Size = new Size(536, tallHint ? 32 : 18),
-                ForeColor = Color.Gray
-            };
-
-            _list.Location = new Point(12, tallHint ? 46 : 32);
-            // 列表高度比本改动前**各减 36**，把这 36px 让给下方信息区（对话框总高不变）
-            _list.Size = new Size(536, tallHint ? 146 : 160);
+            _list.Location = new Point(12, 12);
+            _list.Size = new Size(536, 180);
             _list.IntegralHeight = false;
             // 条目不再走自绘换行（试过 DrawMode.OwnerDrawVariable 始终没折行，已放弃）：
             // 行内也不再拼"不能加速"的长尾巴，改由下方盘信息区顶部统一列 ❌ 原因，行本身保持一行放得下。
@@ -244,23 +270,9 @@ namespace FlyDisk
             _cancel.Size = new Size(84, 28);
             _cancel.DialogResult = DialogResult.Cancel;
 
-            Controls.AddRange(new Control[] { hint, _list, _detail, _ok, _cancel });
+            Controls.AddRange(new Control[] { _list, _detail, _ok, _cancel });
             AcceptButton = _ok;
             CancelButton = _cancel;
-
-            // "只列脱机盘"那句占两行、长句还要折行，且文案长短随语言变：
-            // 固定 536 宽（否则单行会横向长出去）→ 实测折行后的高度 → 把列表整体下压。
-            // 对话框总高不变；列表底边与"明细"之间的间距也不变（46+146 = 32+160 = 192）。
-            if (tallHint)
-            {
-                hint.AutoSize = false;
-                Size measured = TextRenderer.MeasureText(hint.Text, hint.Font,
-                    new Size(hint.Width, 4096), TextFormatFlags.WordBreak);
-                int height = Math.Max(32, measured.Height + 6);
-                hint.Size = new Size(hint.Width, height);
-                _list.Location = new Point(12, 46 + height - 32);
-                _list.Size = new Size(536, 146 - (height - 32));
-            }
         }
 
         private void FinishFill(int preselect)
@@ -337,6 +349,20 @@ namespace FlyDisk
             if (!info.IsOnline) return Locale.T("selectDisk.item.drives", Locale.T("selectDisk.offline"));
             if (info.DriveLetters.Count == 0) return string.Empty;
             return Locale.T("selectDisk.item.drives", string.Join(", ", info.DriveLetters));
+        }
+
+        /// <summary>
+        /// L2 缓存目录的明细行。**全是普通行**：这里没有"会阻止启动"的概念（每一行都允许操作），
+        /// 要清掉哪一份完全由用户在下一步的操作窗口里决定。文案与操作窗口共用一份（见 <see cref="L2Manage"/>）。
+        /// </summary>
+        private static List<DetailLine> BuildL2Detail(L2CacheInfo cache)
+        {
+            var lines = new List<DetailLine>();
+            foreach (string text in L2Manage.DescribeCacheLines(cache))
+            {
+                lines.Add(new DetailLine(text, false));
+            }
+            return lines;
         }
 
         /// <summary>
@@ -487,6 +513,7 @@ namespace FlyDisk
 
             SelectedDisk = _entries[index].Local;
             SelectedRemoteDisk = _entries[index].Remote;
+            SelectedL2Cache = _entries[index].L2Cache;
             DialogResult = DialogResult.OK;
             Close();
         }

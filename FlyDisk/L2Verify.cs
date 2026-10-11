@@ -400,7 +400,11 @@ namespace FlyDisk.Engine
                 throw new InvalidOperationException(Locale.T("l2v.err.indexHeaderBad"));
             if (Hash(header, 0, INDEX_HEADER_HASH_OFFSET) != BitConverter.ToUInt64(header, INDEX_HEADER_HASH_OFFSET))
                 throw new InvalidOperationException(Locale.T("l2v.err.indexHeaderHash"));
-            if (slotCount != _slotCount)
+            // 容器与索引记的槽数**可以不同**：中途缩放过、且那次没正常关服时，容器头已按新容量重写、
+            // 而索引还是更早那次的快照。索引里的槽号必然 < 索引的槽数，所以**只要不超过容器记的槽数**
+            // 就仍然全在容器范围内、照样可校验（与主装载的缩放口径一致）；
+            // 真超过才说明容器被换过/被截断，拒绝。
+            if (slotCount <= 0 || slotCount > _slotCount)
                 throw new InvalidOperationException(Locale.T("l2v.err.indexSlotCount", slotCount, _slotCount));
 
             // 身份戳：索引里记的是"上次正常关服那一刻"的戳，容器头是"上次开机时轮换的"戳。

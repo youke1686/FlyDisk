@@ -56,5 +56,14 @@ namespace FlyDisk.Models
 
         /// <summary>配置文件路径（本程序启动时读取；设置对话框保存时写入）</summary>
         public static readonly string ConfigFilePath = Path.Combine(DataDirectory, "config.json");
+
+        /// <summary>
+        /// 展示用的容量串（**1024 进制**，标 GiB / MiB，见 AGENTS.md §4.4 的"标注必须与进制一致"）。
+        /// 放在这里是为了让界面各处只有一份实现（选盘对话框、设置 / 管理 L2、启动日志）。
+        /// </summary>
+        public static string FormatBytes(long bytes)
+            => bytes >= 1024L * 1024 * 1024
+                ? $"{bytes / 1024.0 / 1024 / 1024:F1} GiB"
+                : $"{bytes / 1024.0 / 1024:F0} MiB";
     }
 }

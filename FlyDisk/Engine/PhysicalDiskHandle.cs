@@ -633,7 +633,7 @@ namespace FlyDisk.Engine
         /// 它们把返回值原样拼进"是{1}"的句子里。以前这条判据在这两处各写了一遍，L2 校验那次就漏掉了
         /// （而它比启动更危险——启动失败什么都不会发生，校验漏了则可能真的把盘脱机），现已收敛到这一份。
         /// 「选择硬盘」对话框是唯一例外：它要带 ❌ 前缀逐条列，用的是同判据的另一套文案
-        /// （<c>SelectDiskForm.BlockReasons</c>）。
+        /// （<c>PickerForm.BlockReasons</c>）。
         /// </summary>
         public static string DescribeTargetDiskBlockReason(int diskNumber)
         {

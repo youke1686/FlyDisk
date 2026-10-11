@@ -61,7 +61,7 @@ namespace FlyDisk.Engine
     ///    为什么这条能成立：本程序把盘"占为己有"——启动时整盘脱机（属性**持久化**）、停止时不联机
     ///    （见 <see cref="PhysicalDiskHandle"/> 类注释）。于是"盘是脱机的"就等价于"从上次运行到现在，
     ///    没有任何程序能写它"，账本自然不会过期；反过来，只要盘是联机的（用户手动联机了，或它被拿到
-    ///    别的机器 / 双系统里用过），账本一律作废——**宁可丢缓存，不可返回陈旧块**（那会让 NTFS 读到
+    ///    别的机器 / 双系统里用过），账本一律**不采信**——**宁可丢缓存，不可返回陈旧块**（那会让 NTFS 读到
     ///    别人的数据，属于卷损坏级事故）。
     ///
     ///    **本层防不住的两类"离线修改"（如实登记，与 PrimoCache 文档所述同类问题）**：
@@ -74,6 +74,12 @@ namespace FlyDisk.Engine
     ///    （该卷不支持 VDL 语义 / 特权不可用 ⇒ 本会话门闩回退纯 `SetLength`；扩展失败只关"扩容"、**不停用 L2**）。
     ///    容量变化（上次容器槽数 ≠ 本次配置）**缩放保留**、由 UI 在启动前确认。容器长度不再等于整容量，
     ///    因此**只保证"覆盖已用到的槽"**。详见 `docs/L2容器按需增长与容量缩放_设计.md`。
+    ///
+    /// 8. ★ **账本只有"装载"与"报错"两种结局，绝不静默重建**（2026-10-11 起，约定见 AGENTS.md §2.3）：
+    ///    凡是"要不要清掉 / 要不要校验 / 要不要缩放"的判定与询问**全部在 UI 的启动前预检里**
+    ///    （`Form1.PrepareL2BeforeStart`）——引擎只做加速。所以本层：**确实没有账本**（容器与索引都不存在）
+    ///    时新建空缓存；**其余任何不自洽**（文件不成对 / 不属于本盘 / 盘原本联机 / 身份戳不符）
+    ///    一律抛 <see cref="L2LedgerUnusableException"/> 终止启动，让用户看见、由预检去问怎么办。
     /// </summary>
     public sealed class SsdCacheService : IDisposable
     {
@@ -212,11 +218,14 @@ namespace FlyDisk.Engine
         /// 并用 <c>WasOnline</c> 判定账本可信度。**它不感知块源在本地还是远端**——
         /// 远端形态下这两项都由服务端捎过来（见 后续待办.md 第一节）。
         /// </param>
-        /// <param name="allowLedgerReset">
-        /// 允许在"**盘/参数不匹配**"时清空重建。默认 false ⇒ 抛 <see cref="L2LedgerMismatchException"/>，
-        /// 由 UI 弹窗问过用户之后再以 true 重试（见 后续待办.md 第五节）。
-        /// </param>
-        public SsdCacheService(DiskConfig config, BlockSourceInfo source, bool allowLedgerReset = false)
+        /// <remarks>
+        /// **账本在这里"要么装载、要么报错"，绝不静默重建**：所有"要不要清掉 / 要不要校验"的判定都在
+        /// UI 的启动前预检里做完（见 AGENTS.md §2.3 的职责边界），引擎只在**确实没有账本**时新建空缓存。
+        /// </remarks>
+        /// <exception cref="L2LedgerUnusableException">
+        /// 账本存在但不可用：不完整 / 不属于本盘 / 盘原本联机 / 上次未正常关服
+        /// </exception>
+        public SsdCacheService(DiskConfig config, BlockSourceInfo source)
         {
             _dir = Path.GetFullPath(config.SsdCachePath).TrimEnd('\\');
             _deviceIdentity = ComputeDeviceIdentity(source.Model, source.SerialNumber, source.SizeBytes, source.BytesPerSector);
@@ -260,16 +269,13 @@ namespace FlyDisk.Engine
 
                 long t0 = Environment.TickCount64;
 
-                // **"盘/参数不匹配"必须在打开容器之前判**：容器随后会以 FileShare.None 打开，
-                // 到那时同进程的第二次只读打开也会失败，探测就永远读不到东西了。
-                // 顺序也顺理成章：先知道"要不要问用户"，再去碰任何文件。
-                string mismatch = DetectLedgerMismatch(config, source);
-                if (mismatch.Length > 0 && !allowLedgerReset)
-                {
-                    throw new L2LedgerMismatchException(mismatch);
-                }
+                // **先看盘上到底有没有账本**：FileMode.OpenOrCreate 会凭空建出空文件，所以必须在打开之前看
+                string containerPath = Path.Combine(_dir, ContainerFileName);
+                string indexPath = Path.Combine(_dir, IndexFileName);
+                bool hadContainer = File.Exists(containerPath) && new FileInfo(containerPath).Length > 0;
+                bool hadIndex = File.Exists(indexPath);
 
-                _container = new FileStream(Path.Combine(_dir, ContainerFileName), FileMode.OpenOrCreate,
+                _container = new FileStream(containerPath, FileMode.OpenOrCreate,
                     FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
                 _containerBytes = _container.Length;
 
@@ -279,32 +285,38 @@ namespace FlyDisk.Engine
                 long previousId = 0;
                 int storedSlots = 0;
                 bool containerReady = _containerBytes >= BLOCK_SIZE && TryReadContainerHeader(out previousId, out storedSlots);
-                if (!containerReady)
-                {
-                    // 容器不存在 / 太短 / 不是我们的容器（例如用户只删了 cache.dat）/ 换了另一块盘
-                    // ⇒ 重置到只剩头部块；头部随后由 RotateContainerId 覆写，旧索引的戳反正对不上、不会误信。
-                    EnsureContainerLength(BLOCK_SIZE);
-                }
 
-                // **账本可信判据**（见类注释第 6 条）：只有当"打开这块盘时它原本就是脱机"时，
-                // 才可能有人打包票说"上次运行之后没人写过它"。盘若是联机的（用户手动联机过、或它去过别的机器），
-                // 一律不载入——宁可丢整层缓存，也不能把陈旧块当数据返回。
-                bool ledgerTrusted = !source.WasOnline;
-                bool loaded = ledgerTrusted && containerReady && TryLoadIndex(previousId);
-                if (!loaded)
+                bool loaded;
+                if (!hadContainer && !hadIndex)
                 {
-                    string reason = mismatch.Length > 0
-                        ? $"用户确认清空重建（{mismatch}）"
-                        : (!ledgerTrusted
-                            ? "该盘启动时是联机状态（上次运行之后它可能被别的程序写过），账本一律作废"
-                            : (containerReady ? "索引缺失/校验失败，或上次未正常关服" : "容器已重建"));
-                    ResetToEmpty(reason);
+                    // **确实没有账本**：新建空缓存。这是引擎唯一允许"自动做"的动作——它不是回退，
+                    // 只是"首次使用"的正常路径。
+                    ResetToEmpty("缓存目录是空的（首次使用）");
+                    loaded = false;
                 }
                 else
                 {
+                    // **有账本就必须装得起来**：任何不自我一致一律**报错终止**，绝不静默重建。
+                    // 这些情形本该由 UI 的启动前预检先问清楚（清空 / 校验后保留）；走到这里说明
+                    // UI 与引擎看到的状态不一致（或有人绕过了 UI）——此时静默重建会让人不知不觉丢缓存，
+                    // 所以要报出来让人看见。
+                    if (!containerReady || !hadIndex)
+                        throw new L2LedgerUnusableException(Locale.T("engine.l2.ledgerPartial"));
+
+                    // 账本可信判据（见类注释第 6 条）：只有当"打开这块盘时它原本就是脱机"时，
+                    // 才可能有人打包票说"上次运行之后没人写过它"。盘若是联机的（用户手动联机过、
+                    // 或它去过别的机器），一律不采信——绝不能把陈旧块当数据返回。
+                    if (source.WasOnline)
+                        throw new L2LedgerUnusableException(Locale.T("engine.l2.ledgerUntrustedOnline"));
+
+                    // 身份戳必须对得上：每次开机都换戳 ⇒ 对不上就是"上次没正常关服"
+                    if (!TryLoadIndex(previousId))
+                        throw new L2LedgerUnusableException(Locale.T("engine.l2.ledgerInconsistent"));
+
                     // **容量缩放**：缩容时把文件截到"覆盖最大已登记槽"的 Slab 边界（回收物理空间）；
                     // 扩容**不预扩**——交给按需增长（见设计文档 §4 D6）。缩容按"位置截断"，与热度无关。
                     TruncateToUsedSlabs();
+                    loaded = true;
                 }
 
                 // **开机留痕**（整个方案里唯一一处运行期落盘）：把身份戳换成新的并 FlushFileBuffers。
@@ -317,10 +329,10 @@ namespace FlyDisk.Engine
                 LogService.DebugFile(
                     $"SSD 二级缓存 {(loaded ? "已载入" : "已新建")}：{_slotCount} 槽位（{(long)_slotCount * BLOCK_SIZE / 1024 / 1024} MB / " +
                     $"{(long)_slotCount / SLOTS_PER_SLAB} Slab）" +
-                    (containerReady && storedSlots != _slotCount ? $"，由上次 {storedSlots} 槽缩放而来" : "") +
+                    (loaded && storedSlots != _slotCount ? $"，由上次 {storedSlots} 槽缩放而来" : "") +
                     $" / M={_mLimit} G={_ghostLimit}（保守门槛 {_fillingReserve} 空闲槽 / 保守线 {_conservativeOccupancy:P0}）/ 占用 {UsedSlots} 槽、空洞 {HoleSlots}" +
                     $" / 容器 {_containerBytes / 1024 / 1024} MB / 用时 {_loadMs} ms / 身份戳 0x{_containerId:X16}" +
-                    (ledgerTrusted ? "（异常终止会使整层缓存作废）" : "（该盘原本联机，本次空缓存起步）"));
+                    (loaded ? "（异常终止会使整层缓存作废）" : "（本次新建空缓存）"));
             }
             catch
             {
@@ -440,14 +452,14 @@ namespace FlyDisk.Engine
         /// <summary>
         /// **只读探测**：上次留下的 L2 容器是否属于**当前这块盘**（设备身份）。
         ///
-        /// 返回"为什么不能复用"（空串 = 可以复用、或根本没有容器可谈）。调用方只在**非空**时做文章：
-        /// 引擎抛 <see cref="L2LedgerMismatchException"/> 让 UI 弹窗问用户，而不是悄悄清空。
+        /// 返回"为什么不能复用"（空串 = 可以复用、或根本没有容器可谈）。**只输出事实、不做任何判定**——
+        /// 判定与"要不要问用户"全部在 UI 的启动前预检里（见 AGENTS.md §2.3 的职责边界）。
         ///
         /// **刻意不管的两类**：
-        /// ① "上次没正常关服"（身份戳对不上、索引缺失）——预期内，静默重建即可；
+        /// ① "上次没正常关服"（身份戳对不上、索引缺失）——那由 <see cref="LedgerStampMismatch"/> 报；
         /// ② **容量 / ghost 参数与本次配置不一致**——改为**缩放保留**，其"缩/扩确认"由 UI 预检负责
         ///    （见 docs/L2容器按需增长与容量缩放_设计.md §4 D6/D7），所以这里不再报。
-        /// 探测自身出任何异常都按"没有冲突"处理（不拦启动），并落一条警告。
+        /// 探测自身出意外时**不再"当作无冲突"放过**（约定：不静默）——原样上抛，由 UI 报错中止。
         /// </summary>
         public static string DetectLedgerMismatch(DiskConfig config, BlockSourceInfo info)
         {
@@ -482,14 +494,14 @@ namespace FlyDisk.Engine
                 }
 
                 // **容量不一致不再在这里拦**（见设计文档 §4 D6）：引擎按"已由 UI 确认"执行缩放保留；
-                // "缩 / 扩确认"一并挪到 UI 预检（Form1.ConfirmL2CapacityChange）。ghost 参数差异同理静默适配。
+                // "缩 / 扩确认"一并挪到 UI 预检（Form1.PrepareL2BeforeStart）。ghost 参数差异同理静默适配。
                 return string.Empty;
             }
             catch (Exception ex)
             {
-                LogService.DebugFile(
-                    $"SSD 二级缓存账本探测失败（按“无冲突”处理，不拦启动）：{ex.Message}");
-                return string.Empty;
+                // 约定：不静默。探测本身出意外时不再"当作无冲突"放过——上抛，由 UI 报错中止。
+                throw new InvalidOperationException(
+                    Locale.T("engine.l2.probeFailed", config.SsdCachePath, ex.Message), ex);
             }
         }
 
@@ -601,6 +613,160 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>
+        /// 【管理 L2】扫出**整机上所有的 L2 缓存目录**（只读，不改动任何东西）。
+        ///
+        /// 为什么"扫"是靠得住的：`SsdCachePath` 永远由「缓存盘根 + 固定目录名
+        /// <see cref="ServiceConstants.SsdCacheDirectoryName"/>」拼出来（见 <c>Settings</c>），
+        /// 所以每个固定卷只需查一个位置；配置里那份额外补进来（手工改过 <c>config.json</c> 也能看到）。
+        ///
+        /// 用途：用户**忘了**某块盘上还留着 L2 时，能自己找出来删掉（见 TODO「缓存的手动管理」）。
+        /// </summary>
+        public static List<L2CacheInfo> DescribeAllL2Caches(DiskConfig config)
+        {
+            var list = new List<L2CacheInfo>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void TryAdd(string dir)
+            {
+                try
+                {
+                    string full = Path.GetFullPath(dir).TrimEnd('\\');
+                    if (!seen.Add(full) || !Directory.Exists(full)) return;
+                    list.Add(DescribeL2Cache(full, config));
+                }
+                catch (Exception ex)
+                {
+                    LogService.DebugFile($"管理 L2：跳过目录 {dir}：{ex.Message}");
+                }
+            }
+
+            foreach (DriveInfo drive in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+                    TryAdd(Path.Combine(drive.RootDirectory.FullName, ServiceConstants.SsdCacheDirectoryName));
+                }
+                catch (Exception ex)
+                {
+                    LogService.DebugFile($"管理 L2：枚举卷 {drive.Name} 失败：{ex.Message}");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(config.SsdCachePath)) TryAdd(config.SsdCachePath);
+            return list;
+        }
+
+        /// <summary>【管理 L2】只读描述**一个** L2 缓存目录（不打开、不改动、不加锁）</summary>
+        public static L2CacheInfo DescribeL2Cache(string dir, DiskConfig config)
+        {
+            string full = Path.GetFullPath(dir).TrimEnd('\\');
+            string containerPath = Path.Combine(full, ContainerFileName);
+            string indexPath = Path.Combine(full, IndexFileName);
+
+            bool containerExists = File.Exists(containerPath);
+            bool indexExists = File.Exists(indexPath);
+            long containerBytes = containerExists ? new FileInfo(containerPath).Length : 0;
+            long indexBytes = indexExists ? new FileInfo(indexPath).Length : 0;
+
+            bool recognized = false;
+            int storedSlots = 0;
+            long ownerIdentity = 0;
+            long containerStamp = 0;
+            if (containerBytes >= BLOCK_SIZE)
+            {
+                try
+                {
+                    byte[] header = new byte[BLOCK_SIZE];
+                    using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        fs.ReadExactly(header, 0, BLOCK_SIZE);
+                    }
+                    if (BitConverter.ToUInt32(header, 0) == CONTAINER_MAGIC &&
+                        BitConverter.ToInt32(header, 4) == CONTAINER_VERSION &&
+                        Hash(header, 0, CONTAINER_HASH_LEN) == BitConverter.ToUInt64(header, CONTAINER_HASH_LEN))
+                    {
+                        recognized = true;
+                        storedSlots = BitConverter.ToInt32(header, 16);
+                        ownerIdentity = BitConverter.ToInt64(header, 24);
+                        containerStamp = BitConverter.ToInt64(header, 8);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogService.DebugFile($"管理 L2：读取 {containerPath} 头部失败：{ex.Message}");
+                }
+            }
+
+            // 上次是否正常关服：索引里记的戳 == 容器头当前的戳（与 LedgerStampMismatch 同判据）。
+            // 两者戳一致也可能来自"校验后回写"，那种情况同样可安全装载，所以统一表述为"正常关服"。
+            bool? lastClean = null;
+            if (recognized && indexBytes >= INDEX_HEADER_SIZE)
+            {
+                try
+                {
+                    byte[] ih = new byte[INDEX_HEADER_SIZE];
+                    using (var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        fs.ReadExactly(ih, 0, INDEX_HEADER_SIZE);
+                    }
+                    if (BitConverter.ToUInt32(ih, 0) == INDEX_MAGIC &&
+                        BitConverter.ToInt32(ih, 4) == INDEX_VERSION &&
+                        Hash(ih, 0, INDEX_HEADER_HASH_OFFSET) == BitConverter.ToUInt64(ih, INDEX_HEADER_HASH_OFFSET))
+                    {
+                        lastClean = BitConverter.ToInt64(ih, 52) == containerStamp;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogService.DebugFile($"管理 L2：读取 {indexPath} 头部失败：{ex.Message}");
+                }
+            }
+
+            // 属主盘：容器里只存了身份的**散列**（不可逆），所以枚举本机盘重算比对
+            string ownerText = recognized ? Locale.T("l2m.ownerUnknown") : string.Empty;
+            if (recognized)
+            {
+                try
+                {
+                    foreach (PhysicalDiskInfo disk in PhysicalDiskHandle.Enumerate())
+                    {
+                        if (L2Verifier.Identify(disk) != ownerIdentity) continue;
+                        ownerText = Locale.T("l2m.ownerDisk", disk.DiskNumber,
+                            disk.Model.Length > 0 ? disk.Model : Locale.T("selectDisk.modelUnknown"),
+                            disk.SizeText);
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogService.DebugFile($"管理 L2：比对属主盘失败：{ex.Message}");
+                }
+            }
+
+            bool isConfigured = !string.IsNullOrWhiteSpace(config.SsdCachePath) &&
+                string.Equals(Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), full, StringComparison.OrdinalIgnoreCase);
+
+            return new L2CacheInfo
+            {
+                Directory = full,
+                DriveRoot = Path.GetPathRoot(full) ?? string.Empty,
+                ContainerPath = containerPath,
+                IndexPath = indexPath,
+                LockPath = Path.Combine(full, LockFileName),
+                ContainerExists = containerExists,
+                IndexExists = indexExists,
+                ContainerBytes = containerBytes,
+                IndexBytes = indexBytes,
+                Recognized = recognized,
+                StoredSlots = storedSlots,
+                OwnerText = ownerText,
+                LastShutdownClean = lastClean,
+                IsConfigured = isConfigured,
+            };
+        }
+
+        /// <summary>
         /// 只读探测："容器头部的身份戳"与"索引里记的戳"是否**不符**——不符 = **上次没有正常关服**
         /// （掉电/强杀/崩溃）：索引还是上一次正常关服时的快照，而容器已被之后的运行改过。
         ///
@@ -608,7 +774,9 @@ namespace FlyDisk.Engine
         /// 错乱的槽（含"索引指向的槽已被复用给别的块"）用源盘数据修回正确内容，修完由
         /// `L2Verifier.ConfirmLedger` 把戳写回即重新自洽。所以这条归"需要校验"，而不是"静默作废"。
         ///
-        /// 返回空串 = 正常，或"没有可校验的账本"（容器/索引不存在、头部不可信、槽数不符——后者归参数不匹配那条）。
+        /// 返回空串 = **正常**（含"校验后回写"：校验器把索引里的戳写回容器头，两者戳一致、槽数可能因缩放而不同），
+        /// 或"没有可校验的账本"（容器/索引不存在、头部不可信）。
+        /// 探测自身出意外时**原样上抛**（约定：不静默），由 UI 报错中止。
         /// </summary>
         public static string LedgerStampMismatch(DiskConfig config)
         {
@@ -644,18 +812,21 @@ namespace FlyDisk.Engine
                 {
                     return string.Empty;   // 索引头部不可信（上一版格式 / 没写完）：没有可校验的账本
                 }
-                if (BitConverter.ToInt32(ih, 12) != BitConverter.ToInt32(ch, 16))
-                    return string.Empty;   // 槽数不符：归"参数不匹配"那条，交给 DetectLedgerMismatch
-
+                // **戳一致 ⇒ 上次正常关服**。这当然也包括"校验后回写"的状态：校验器会把索引里的戳
+                // 写回容器头，此时两者的戳一致、而槽数可能因容量缩放而不同——那是正常的，不能报。
                 long containerStamp = BitConverter.ToInt64(ch, 8);
-                if (BitConverter.ToInt64(ih, 52) == containerStamp) return string.Empty;   // 戳一致 ⇒ 上次正常关服
+                if (BitConverter.ToInt64(ih, 52) == containerStamp) return string.Empty;
 
+                // 戳不一致 = **上次没有正常关服**。**绝不能因为"槽数不同"就把它放过**：容器头每次开机
+                // 都被重写（含槽数），所以槽数不同这件事本身恰恰说明"索引落盘之后容器头又被写过"——
+                // 同样是没正常关服，必须一并报出来，交给用户"校验后保留 / 清空重建"。
                 return Locale.T("engine.l2.stampMismatch");
             }
             catch (Exception ex)
             {
-                LogService.DebugFile($"L2 身份戳探测失败（按“无需校验”处理）：{ex.Message}");
-                return string.Empty;
+                // 约定：不静默。探测本身出意外时不再"当作无需校验"放过——上抛，由 UI 报错中止。
+                throw new InvalidOperationException(
+                    Locale.T("engine.l2.probeFailed", config.SsdCachePath, ex.Message), ex);
             }
         }
 
@@ -1766,14 +1937,62 @@ namespace FlyDisk.Engine
     }
 
     /// <summary>
-    /// "L2 账本与当前目标盘 / 配置对不上"——由 <see cref="SsdCacheService.DetectLedgerMismatch"/> 判定，
-    /// 在 <see cref="SsdCacheService"/> 构造时抛出（构造函数没法返回结果），由 <see cref="CacheService"/> 原样上抛。
+    /// "**L2 账本存在但不可用**"——在 <see cref="SsdCacheService"/> 构造时抛出（构造函数没法返回结果），
+    /// 由 <see cref="TargetService"/> 转成"启动失败"报给 UI。
     ///
-    /// **正常启动流程走不到这里**：<see cref="TargetService.Validate"/> 已提前把它变成
-    /// <see cref="EngineResult.L2Mismatch"/> 返回给 UI 了，这条只是漏网时的双保险。
+    /// 四种情形：**不完整**（只有容器或只有索引）、**不属于这块盘**、**盘原本联机**（上次运行之后可能被写过）、
+    /// **身份戳不符**（上次没正常关服）。
+    ///
+    /// 为什么是异常而不是"静默重建"：约定的职责边界是**拦截一律在 UI 的启动前预检**（清空 / 校验后保留都
+    /// 在那里问），引擎只做加速；引擎这边再遇到不自洽，说明 UI 与引擎看到的状态不一致（或有人绕过 UI），
+    /// 此时悄悄丢掉整层缓存会让人不知不觉——所以要报出来。
     /// </summary>
-    public sealed class L2LedgerMismatchException : Exception
+    public sealed class L2LedgerUnusableException : Exception
     {
-        public L2LedgerMismatchException(string message) : base(message) { }
+        public L2LedgerUnusableException(string message) : base(message) { }
+    }
+
+    /// <summary>
+    /// 【管理 L2】一份 L2 缓存目录的**只读**描述（见 <see cref="SsdCacheService.DescribeAllL2Caches"/>）。
+    /// 只列事实：文件在不在、多大、是不是我们的容器、认不认得属主盘、是不是配置里当前那份。
+    /// </summary>
+    public sealed class L2CacheInfo
+    {
+        /// <summary>缓存目录（绝对路径、无尾斜杠）</summary>
+        public string Directory { get; init; } = string.Empty;
+
+        /// <summary>所在卷根（如 <c>D:\</c>）</summary>
+        public string DriveRoot { get; init; } = string.Empty;
+
+        public string ContainerPath { get; init; } = string.Empty;
+        public string IndexPath { get; init; } = string.Empty;
+
+        /// <summary>单实例锁文件路径——**删除前要用它做闸**（引擎与校验器都以 <c>FileShare.None</c> 持有它）</summary>
+        public string LockPath { get; init; } = string.Empty;
+
+        public bool ContainerExists { get; init; }
+        public bool IndexExists { get; init; }
+        public long ContainerBytes { get; init; }
+        public long IndexBytes { get; init; }
+
+        /// <summary>容器头的 magic / version / 校验和都通过 = 确实是本程序的容器（否则是无法识别的残留）</summary>
+        public bool Recognized { get; init; }
+
+        /// <summary>容器头记的槽位数（0 = 未知；仅 <see cref="Recognized"/> 为真时有意义）</summary>
+        public int StoredSlots { get; init; }
+
+        /// <summary>属主盘的描述（"磁盘 N：型号，容量"）；认不出时是"未知盘"，<see cref="Recognized"/> 为假时为空串</summary>
+        public string OwnerText { get; init; } = string.Empty;
+
+        /// <summary>
+        /// 上次是否**正常关服**（索引里的身份戳 == 容器头当前的戳）。
+        /// <c>null</c> = 判断不了（容器无法识别 / 索引缺失或头部不合法）。
+        /// </summary>
+        public bool? LastShutdownClean { get; init; }
+
+        /// <summary>是否是配置里**当前**使用的那个缓存目录</summary>
+        public bool IsConfigured { get; init; }
+
+        public long TotalBytes => ContainerBytes + IndexBytes;
     }
 }

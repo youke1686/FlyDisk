@@ -67,6 +67,7 @@ namespace FlyDisk
             lblSsdConservative = new Label();
             trackSsdConservative = new TrackBar();
             lblSsdConservativeVal = new Label();
+            btnL2Manage = new Button();
             lblMemEstimate = new Label();
             ((System.ComponentModel.ISupportInitialize)trackEviction).BeginInit();
             ((System.ComponentModel.ISupportInitialize)trackStop).BeginInit();
@@ -296,6 +297,17 @@ namespace FlyDisk
             lblSsdConservativeVal.TabIndex = 18;
             lblSsdConservativeVal.Text = "80%";
             // 
+            // btnL2Manage
+            // 
+            // 「L2 管理」：紧挨着 L2 缓存盘下拉框（见 L2Manage）——用来清理那些"忘了的" L2 缓存
+            btnL2Manage.Location = new Point(280, 64);
+            btnL2Manage.Name = "btnL2Manage";
+            btnL2Manage.Size = new Size(95, 27);
+            btnL2Manage.TabIndex = 13;
+            btnL2Manage.Text = "L2 管理";
+            btnL2Manage.UseVisualStyleBackColor = true;
+            btnL2Manage.Click += btnL2Manage_Click;
+            // 
             // lblMemEstimate
             // 
             // 窗口底部的"预计额外内存"提示：文本由 Settings.UpdateMemoryEstimate() 动态生成（含数字，不登记静态绑定）
@@ -312,6 +324,7 @@ namespace FlyDisk
             groupBoxSsd.Controls.Add(chkEnableSsdCache);
             groupBoxSsd.Controls.Add(lblSsdDrive);
             groupBoxSsd.Controls.Add(cmbSsdCacheDrive);
+            groupBoxSsd.Controls.Add(btnL2Manage);
             groupBoxSsd.Controls.Add(lblSsdSize);
             groupBoxSsd.Controls.Add(numSsdCacheGb);
             groupBoxSsd.Controls.Add(lblSsdConservative);
@@ -380,6 +393,7 @@ namespace FlyDisk
         private Label lblSsdConservative;
         private TrackBar trackSsdConservative;
         private Label lblSsdConservativeVal;
+        private Button btnL2Manage;
         private Label lblMemEstimate;
     }
 }
