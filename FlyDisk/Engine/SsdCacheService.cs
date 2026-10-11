@@ -18,11 +18,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using DiskAccessLibrary;
 using FlyDisk.Localization;
 using FlyDisk.Models;
+using Microsoft.Win32.SafeHandles;
 
 namespace FlyDisk.Engine
 {
@@ -37,7 +39,7 @@ namespace FlyDisk.Engine
     /// **键从"路径 + 文件内块号"换成"全局块号"**（`LBA / SectorsPerBlock`），于是整张文件表消失、
     /// 失效退化成块区间失效。容器、身份戳、空洞机制、账本原子替换**逐行保留**。
     ///
-    /// 读本文件前必须知道六条前提：
+    /// 读本文件前必须知道七条前提：
     /// 1. **只服务读**：L2 里的数据是"源盘读取时的写穿副本"，永不对源盘写回；源盘写入走"透传 + 失效"。
     /// 2. **准入的唯一入口是"回源读到整块"**（<see cref="Insert"/>）：L1 命中对 L2 **完全静默**——
     ///    那个块 L1 服务得了，L2 既不必留它、也不必记它的频次。旧版在这里调 `Touch` 把"L1 命中的块"
@@ -66,12 +68,24 @@ namespace FlyDisk.Engine
     ///    ① 用户手动把盘联机 → 改了数据 → 自己再脱机：全程没有"联机状态可被我们观测到"的时机；
     ///    ② 把盘接到另一台电脑或另一个操作系统上改写：本机 Windows 里那条"脱机属性"记录根本不会变。
     ///    这两类只能靠用户自觉规避（与 PrimoCache"离线修改"的免责口径一致）。
+    ///
+    /// 7. ★ **容器不是预分配的**（2026-10-11 起）：它在磁盘上只占"真正用到的部分"——启动时最多一个头部块，
+    ///    随写入**按 Slab（64 MB = 16384 槽）整块增长**；扩展时用 `SetFileValidData` 免掉文件系统的零填充
+    ///    （该卷不支持 VDL 语义 / 特权不可用 ⇒ 本会话门闩回退纯 `SetLength`；扩展失败只关"扩容"、**不停用 L2**）。
+    ///    容量变化（上次容器槽数 ≠ 本次配置）**缩放保留**、由 UI 在启动前确认。容器长度不再等于整容量，
+    ///    因此**只保证"覆盖已用到的槽"**。详见 `docs/L2容器按需增长与容量缩放_设计.md`。
     /// </summary>
     public sealed class SsdCacheService : IDisposable
     {
         #region 常量
 
         private const int BLOCK_SIZE = ServiceConstants.BlockSize;
+
+        /// <summary>整块大小（64 MB）。**L2 容器按 Slab 整块增长 / 截断**（见 docs/L2容器按需增长与容量缩放_设计.md §4）。</summary>
+        private const int SLAB_SIZE = ServiceConstants.SlabSize;
+
+        /// <summary>一个 Slab 的槽数（64 MB / 4 KB = 16384）。</summary>
+        private const int SLOTS_PER_SLAB = SLAB_SIZE / BLOCK_SIZE;
 
         // 容器头部：占一个块，存"身份戳 + 设备身份"。用来识别"用户删掉了 cache.dat 但 index.bin 还在"
         // 与"换了另一块盘却沿用同一个目录"这两类情况——若不做这个校验，重建出来的容器（全零）会被旧索引
@@ -94,14 +108,22 @@ namespace FlyDisk.Engine
         private const byte FREQ_MASK = 0x03;               // 每块 2 bit 访问计数（0..3）
         private const int MAX_FREQ = 3;
 
-        private const int MIN_SLOTS = 4096;                // 容量下限 16 MiB
+        // 容量下限 = 1 个 Slab（64 MiB）。容量必须**规整为整 Slab**，否则"整块增长"的批次边界不干净；
+        // 设置界面本来就是整 GiB（1 GiB = 16 个 Slab），所以这条对用户可选值无影响（见设计文档 §4 D1）。
+        private const int MIN_SLOTS = SLOTS_PER_SLAB;
         // 容量上限 64 GiB。**上限的实质是内存**：索引/槽位结构常驻内存，约 MetadataBytesPerBlock 字节/块，
         // 每 1 GiB 容量约 15 MiB，所以 64 GiB 大约要 930 MiB 常驻内存（设置界面会把这份估算摊给用户看）。
         // 想再往上放就得改块大小（见 后续待办.md）或把索引也落盘，不能只改这个数。
         private const long MAX_CAPACITY_BYTES = 64L * 1024 * 1024 * 1024;
         private const int MAX_SLOTS = (int)(MAX_CAPACITY_BYTES / BLOCK_SIZE);
-        private const long MIN_KEEP_FREE_BYTES = 2L * 1024 * 1024 * 1024; // 给目标卷至少留 2 GiB
+        // 为**缓存盘**保留的最小空闲空间（1 GiB）。SSD 快满时读写速度**可能明显变慢**，留一段空闲是保证
+        // 加速运行流畅的必要条件，也顺带避免卷被缓存容器填满。UI 在"夹取警告"里会说明这一点。
+        private const long MIN_KEEP_FREE_BYTES = 1L * 1024 * 1024 * 1024;
+
         private const int RING_SLACK = 4;                  // 环形缓冲余量，避免在边界上反复淘汰
+
+        /// <summary>为缓存盘保留的最小空闲空间（字节）——UI 在"夹取警告"里要说明这个数</summary>
+        public static long KeepFreeBytes => MIN_KEEP_FREE_BYTES;
 
         /// <summary>
         /// 每块（<see cref="ServiceConstants.BlockSize"/>）索引的**常驻内存开销估算**（字节）。
@@ -131,6 +153,9 @@ namespace FlyDisk.Engine
         private FileStream? _container;
         private FileStream? _lockFile;             // 单实例锁（两个实例同时写容器会把索引写坏）
         private long _containerId;                 // 容器身份戳（写在容器头部，也写进索引）
+        private long _containerBytes;              // 容器**当前长度**（按需增长后不再等于"整容量"）
+        private volatile bool _sfvdUnavailable;    // 门闩：该卷不支持 VDL 语义 / 特权不可用 ⇒ 本会话扩展不再免零填充
+        private volatile bool _growthBlocked;      // 门闩：容器扩展失败（卷满）⇒ 本会话只停"扩容"，L2 继续服务已覆盖范围
 
         // ===== 每槽元数据（下标 = 槽号）=====
         // 阶段一这里是 (fileId, 文件内块号)；块设备下没有文件，只剩一个**全局块号**：
@@ -246,15 +271,19 @@ namespace FlyDisk.Engine
 
                 _container = new FileStream(Path.Combine(_dir, ContainerFileName), FileMode.OpenOrCreate,
                     FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
+                _containerBytes = _container.Length;
 
-                long required = (long)(_slotCount + 1) * BLOCK_SIZE;   // +1 是容器头部
+                // 容器**按需、按 Slab 整块增长**（见 docs/L2容器按需增长与容量缩放_设计.md §4 D2）：
+                // 启动时只要求"至少有一个头部块、且头部可信"，**不再要求长度等于整容量**——这正是
+                // "不再一次性初始化整个文件"、从而修掉"大 L2 启动卡住"的关键。
                 long previousId = 0;
-                bool containerReady = _container.Length >= required && TryReadContainerHeader(out previousId);
+                int storedSlots = 0;
+                bool containerReady = _containerBytes >= BLOCK_SIZE && TryReadContainerHeader(out previousId, out storedSlots);
                 if (!containerReady)
                 {
-                    // 容器不存在 / 尺寸不符 / 不是我们的容器（例如用户只删了 cache.dat）/ 换了另一块盘
-                    // ⇒ 尺寸校正到应有值，头部随后由 RotateContainerId 覆写；旧索引的戳反正对不上，不会误信
-                    EnsureContainerLength(required);
+                    // 容器不存在 / 太短 / 不是我们的容器（例如用户只删了 cache.dat）/ 换了另一块盘
+                    // ⇒ 重置到只剩头部块；头部随后由 RotateContainerId 覆写，旧索引的戳反正对不上、不会误信。
+                    EnsureContainerLength(BLOCK_SIZE);
                 }
 
                 // **账本可信判据**（见类注释第 6 条）：只有当"打开这块盘时它原本就是脱机"时，
@@ -271,6 +300,12 @@ namespace FlyDisk.Engine
                             : (containerReady ? "索引缺失/校验失败，或上次未正常关服" : "容器已重建"));
                     ResetToEmpty(reason);
                 }
+                else
+                {
+                    // **容量缩放**：缩容时把文件截到"覆盖最大已登记槽"的 Slab 边界（回收物理空间）；
+                    // 扩容**不预扩**——交给按需增长（见设计文档 §4 D6）。缩容按"位置截断"，与热度无关。
+                    TruncateToUsedSlabs();
+                }
 
                 // **开机留痕**（整个方案里唯一一处运行期落盘）：把身份戳换成新的并 FlushFileBuffers。
                 // 从此盘上那份旧索引的戳永远对不上 ⇒ 本次运行无论怎么改容器、无论怎么死，下次开机都不会误信它。
@@ -280,9 +315,11 @@ namespace FlyDisk.Engine
                 _loadedFromDisk = loaded;
 
                 LogService.DebugFile(
-                    $"SSD 二级缓存 {(loaded ? "已载入" : "已新建")}：{_slotCount} 槽位（{(long)_slotCount * BLOCK_SIZE / 1024 / 1024} MB）" +
+                    $"SSD 二级缓存 {(loaded ? "已载入" : "已新建")}：{_slotCount} 槽位（{(long)_slotCount * BLOCK_SIZE / 1024 / 1024} MB / " +
+                    $"{(long)_slotCount / SLOTS_PER_SLAB} Slab）" +
+                    (containerReady && storedSlots != _slotCount ? $"，由上次 {storedSlots} 槽缩放而来" : "") +
                     $" / M={_mLimit} G={_ghostLimit}（保守门槛 {_fillingReserve} 空闲槽 / 保守线 {_conservativeOccupancy:P0}）/ 占用 {UsedSlots} 槽、空洞 {HoleSlots}" +
-                    $" / 用时 {_loadMs} ms / 身份戳 0x{_containerId:X16}" +
+                    $" / 容器 {_containerBytes / 1024 / 1024} MB / 用时 {_loadMs} ms / 身份戳 0x{_containerId:X16}" +
                     (ledgerTrusted ? "（异常终止会使整层缓存作废）" : "（该盘原本联机，本次空缓存起步）"));
             }
             catch
@@ -314,8 +351,8 @@ namespace FlyDisk.Engine
             return unchecked((long)h);
         }
 
-        /// <summary>容量（字节）→ 槽位数：下限 16 MiB、上限 64 GiB，并为目标卷留出 2 GiB 余量</summary>
-        private static int ComputeSlotCount(string dir, long maxBytes)
+        /// <summary>容量（字节）→ 槽位数：下限 1 Slab（64 MiB）、上限 64 GiB，为**缓存盘**留 1 GiB，**并规整为整 Slab**</summary>
+        public static int ComputeSlotCount(string dir, long maxBytes)
         {
             int slots = (int)Math.Clamp(maxBytes / BLOCK_SIZE, MIN_SLOTS, MAX_SLOTS);
             try
@@ -324,15 +361,19 @@ namespace FlyDisk.Engine
                 if (!string.IsNullOrEmpty(root))
                 {
                     long free = new DriveInfo(root).AvailableFreeSpace;
+                    // `free` 是**扣除现有 cache.dat / index.bin 之后**的余量 ⇒ 必须把"L2 已占用的空间"加回来，
+                    // 否则同一份空间被扣两次、容量会被白白夹小（例：现有 4 GiB 容器 + 另有 7.1 GiB 空闲，
+                    // 明明够放 8 GiB，却会被夹到 5.1 GiB）。
+                    long l2Used = ContainerFootprint(dir);
+                    long budget = free - MIN_KEEP_FREE_BYTES + l2Used;
                     long wanted = (long)slots * BLOCK_SIZE;
-                    if (wanted > free - MIN_KEEP_FREE_BYTES)
+                    if (wanted > budget)
                     {
-                        long allowed = Math.Max((long)MIN_SLOTS * BLOCK_SIZE,
-                            (free - MIN_KEEP_FREE_BYTES) / BLOCK_SIZE * BLOCK_SIZE);
+                        long allowed = Math.Max((long)MIN_SLOTS * BLOCK_SIZE, budget / BLOCK_SIZE * BLOCK_SIZE);
                         int clamped = (int)Math.Clamp(allowed / BLOCK_SIZE, MIN_SLOTS, MAX_SLOTS);
                         LogService.DebugFile(
-                            $"SSD 二级缓存：容量上限超过该卷可用空间，已夹取 {wanted / 1024 / 1024} MiB → {clamped * (long)BLOCK_SIZE / 1024 / 1024} MiB" +
-                            $"（可用 {free / 1024 / 1024} MiB，为卷保留 {MIN_KEEP_FREE_BYTES / 1024 / 1024} MiB）");
+                            $"SSD 二级缓存：容量超过该卷可用空间，已夹取 {wanted / 1024 / 1024} MiB → {clamped * (long)BLOCK_SIZE / 1024 / 1024} MiB" +
+                            $"（可用 {free / 1024 / 1024} MiB，L2 已占用 {l2Used / 1024 / 1024} MiB，为缓存盘保留 {MIN_KEEP_FREE_BYTES / 1024 / 1024} MiB）");
                         slots = clamped;
                     }
                 }
@@ -341,17 +382,71 @@ namespace FlyDisk.Engine
             {
                 LogService.DebugFile($"SSD 二级缓存：查询 {dir} 可用空间失败（按配置值继续）：{ex.Message}");
             }
-            return slots;
+
+            // 容量必须规整为整 Slab（见设计文档 §4 D1）
+            return RoundDownToSlab(slots);
+        }
+
+        /// <summary>L2 该目录下已占用的空间（容器 + 索引）——用于把"已被 available-free 扣掉的部分"加回预算</summary>
+        private static long ContainerFootprint(string dir)
+        {
+            long used = 0;
+            try
+            {
+                var container = new FileInfo(Path.Combine(dir, ContainerFileName));
+                if (container.Exists) used += container.Length;
+                var index = new FileInfo(Path.Combine(dir, IndexFileName));
+                if (index.Exists) used += index.Length;
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"SSD 二级缓存：读取 L2 已占用空间失败（按 0 处理）：{ex.Message}");
+            }
+            return used;
         }
 
         /// <summary>
-        /// **只读探测**：上次留下的 L2 账本与当前目标盘 / 当前配置是否对得上。
+        /// 按配置算出本次将采用的槽数。**口径与引擎完全一致**，供 UI 在启动前预检"容量是否变化"复用。
+        /// 路径非法 / 查询失败返回 0（调用方按"读不到"处理）。
+        /// </summary>
+        public static int ComputeSlotCountFor(DiskConfig config)
+        {
+            if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return 0;
+            try
+            {
+                return ComputeSlotCount(Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), config.SsdCacheMaxBytes);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// 按配置算出的**标称**槽数（只做 MIN/MAX 与整 Slab 规整，**不做可用空间夹取**）。
+        /// 与 <see cref="ComputeSlotCountFor"/>（夹取后的实际值）配合，供 UI 判断"本次是否发生了夹取"。
+        /// </summary>
+        public static int ConfiguredSlotCountFor(DiskConfig config)
+        {
+            if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return 0;
+            int slots = (int)Math.Clamp(config.SsdCacheMaxBytes / BLOCK_SIZE, (long)MIN_SLOTS, (long)MAX_SLOTS);
+            return RoundDownToSlab(slots);
+        }
+
+        /// <summary>把槽数向下规整到一个整 Slab（下限 1 Slab、上限 MAX_SLOTS）</summary>
+        private static int RoundDownToSlab(int slots)
+            => Math.Clamp(slots / SLOTS_PER_SLAB * SLOTS_PER_SLAB, SLOTS_PER_SLAB, MAX_SLOTS);
+
+        /// <summary>
+        /// **只读探测**：上次留下的 L2 容器是否属于**当前这块盘**（设备身份）。
         ///
-        /// 返回"为什么对不上"（空串 = 对得上、或根本没有账本可谈）。调用方只在**非空**时做文章：
+        /// 返回"为什么不能复用"（空串 = 可以复用、或根本没有容器可谈）。调用方只在**非空**时做文章：
         /// 引擎抛 <see cref="L2LedgerMismatchException"/> 让 UI 弹窗问用户，而不是悄悄清空。
         ///
-        /// 刻意**不管**"上次没正常关服"（身份戳对不上、索引缺失）——那类是预期内的，静默重建即可；
-        /// 这里只抓"用户换了盘 / 改了容量或 ghost 参数"这种**会让人莫名其妙丢掉整层缓存**的情形。
+        /// **刻意不管的两类**：
+        /// ① "上次没正常关服"（身份戳对不上、索引缺失）——预期内，静默重建即可；
+        /// ② **容量 / ghost 参数与本次配置不一致**——改为**缩放保留**，其"缩/扩确认"由 UI 预检负责
+        ///    （见 docs/L2容器按需增长与容量缩放_设计.md §4 D6/D7），所以这里不再报。
         /// 探测自身出任何异常都按"没有冲突"处理（不拦启动），并落一条警告。
         /// </summary>
         public static string DetectLedgerMismatch(DiskConfig config, BlockSourceInfo info)
@@ -363,7 +458,6 @@ namespace FlyDisk.Engine
                 if (!File.Exists(containerPath)) return string.Empty;   // 首次运行：没有账本可谈
 
                 long identity = ComputeDeviceIdentity(info.Model, info.SerialNumber, info.SizeBytes, info.BytesPerSector);
-                int slotCount = ComputeSlotCount(dir, config.SsdCacheMaxBytes);
 
                 byte[] header = new byte[BLOCK_SIZE];
                 using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -387,16 +481,9 @@ namespace FlyDisk.Engine
                         ((double)info.SizeBytes / 1024 / 1024 / 1024).ToString("F1"));
                 }
 
-                int containerSlots = BitConverter.ToInt32(header, 16);
-                if (containerSlots != slotCount)
-                {
-                    // 注意这条可能来自"缓存盘可用空间的自动夹取"（ComputeSlotCount 会为卷留 2 GB），
-                    // 不一定真的改过配置 —— 所以措辞要中性，且由用户决定是否重建。
-                    return Locale.T("engine.l2.slotMismatch", containerSlots, slotCount);
-                }
-
-                // 索引头部记的"槽数 / M 上限 / ghost 上限"是同一批参数的另一份记录（ghost 倍率改了也在这里现形）
-                return DetectIndexParameterMismatch(dir, slotCount, config) ?? string.Empty;
+                // **容量不一致不再在这里拦**（见设计文档 §4 D6）：引擎按"已由 UI 确认"执行缩放保留；
+                // "缩 / 扩确认"一并挪到 UI 预检（Form1.ConfirmL2CapacityChange）。ghost 参数差异同理静默适配。
+                return string.Empty;
             }
             catch (Exception ex)
             {
@@ -475,41 +562,42 @@ namespace FlyDisk.Engine
             }
         }
 
-        /// <summary>索引头部里的"槽数 / M 上限 / ghost 上限"是否与当前配置一致；不一致则返回原因</summary>
-        private static string? DetectIndexParameterMismatch(string dir, int slotCount, DiskConfig config)
+        /// <summary>
+        /// **只读探测**：容器头部记的**槽数**（供 UI 在启动前判断"容量是否变化"，见设计文档 §4 D7）。
+        /// 与 <see cref="DetectLedgerMismatch"/> 同一套头部校验；任何情况下都不写盘。
+        /// </summary>
+        /// <returns>读到返回 true；没有容器 / 头部不合法 / 打不开 / 槽数非正 返回 false</returns>
+        public static bool TryPeekContainerSlotCount(DiskConfig config, out int slotCount)
         {
-            string indexPath = Path.Combine(dir, IndexFileName);
-            if (!File.Exists(indexPath)) return null;
-
-            using var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            if (fs.Length < INDEX_HEADER_SIZE) return null;
-
-            byte[] header = new byte[INDEX_HEADER_SIZE];
-            fs.ReadExactly(header, 0, INDEX_HEADER_SIZE);
-
-            // 版本/校验和都不符的索引属于"上一版格式"或"没写完"，那是静默重建那一类，不在这里报
-            if (BitConverter.ToUInt32(header, 0) != INDEX_MAGIC ||
-                BitConverter.ToInt32(header, 4) != INDEX_VERSION ||
-                Hash(header, 0, INDEX_HEADER_HASH_OFFSET) != BitConverter.ToUInt64(header, INDEX_HEADER_HASH_OFFSET))
+            slotCount = 0;
+            try
             {
-                return null;
+                if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return false;
+
+                string containerPath = Path.Combine(
+                    Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), ContainerFileName);
+                if (!File.Exists(containerPath)) return false;
+
+                byte[] header = new byte[BLOCK_SIZE];
+                using var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                if (fs.Length < BLOCK_SIZE) return false;
+                fs.ReadExactly(header, 0, BLOCK_SIZE);
+
+                if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
+                    BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
+                    BitConverter.ToInt32(header, 4) != CONTAINER_VERSION)
+                {
+                    return false;
+                }
+
+                slotCount = BitConverter.ToInt32(header, 16);
+                return slotCount > 0;
             }
-
-            int iSlotCount = BitConverter.ToInt32(header, 12);
-            int iSLimit = BitConverter.ToInt32(header, 16);
-            int iMLimit = BitConverter.ToInt32(header, 20);
-            int iGhostLimit = BitConverter.ToInt32(header, 24);
-
-            double ghostFraction = Clamp(config.SsdCacheGhostFraction, 0.0, 4.0);
-            int mLimit = Math.Max(1, slotCount);
-            int ghostLimit = (int)(mLimit * ghostFraction);
-
-            if (iSlotCount != slotCount || iSLimit != 0 || iMLimit != mLimit || iGhostLimit != ghostLimit)
+            catch (Exception ex)
             {
-                return Locale.T("engine.l2.indexParamMismatch",
-                    iSlotCount, iMLimit, iGhostLimit, slotCount, mLimit, ghostLimit);
+                LogService.DebugFile($"L2 容器槽数探测失败（按“读不到”处理）：{ex.Message}");
+                return false;
             }
-            return null;
         }
 
         /// <summary>
@@ -762,6 +850,9 @@ namespace FlyDisk.Engine
         /// <summary>写一个槽的数据（数据源只有托管缓冲：准入的唯一来源就是回源读到的整块）</summary>
         private bool WriteSlotFrom(int slot, byte[] buffer, int offset)
         {
+            // **按需、按 Slab 整块增长**：需要新 Slab 时先扩（扩容失败只关"扩容"，不停 L2，见 GrowToCoverSlot）
+            if (!GrowToCoverSlot(slot)) return false;
+
             try
             {
                 _container!.Position = (long)(slot + 1) * BLOCK_SIZE;
@@ -1032,13 +1123,82 @@ namespace FlyDisk.Engine
             _container.ReadExactly(buffer, offset, BLOCK_SIZE);
         }
 
-        /// <summary>把容器调整到应有的长度（不足则补零、多余则截断）。内容是否可信由身份戳判定，不在这里管。</summary>
-        private void EnsureContainerLength(long required)
+        /// <summary>
+        /// 把容器调整到指定长度并同步 <see cref="_containerBytes"/>。
+        /// **只用于两处**：重置到"只剩头部块"、以及缩容截断——**不再一次性扩到整容量**（那是老实现卡住的根因）。
+        /// 增长走 <see cref="GrowToCoverSlot"/>（它还要顺带做免零填充）。
+        /// </summary>
+        private void EnsureContainerLength(long length)
         {
-            if (_container!.Length != required)
+            if (_container!.Length != length)
             {
-                _container.SetLength(required);
-                LogService.DebugFile($"Ssd 容器尺寸已校正为 {required} 字节（{_slotCount} 槽 + 头部）");
+                _container.SetLength(length);
+                LogService.DebugFile($"Ssd 容器尺寸已调整为 {length} 字节");
+            }
+            _containerBytes = length;
+        }
+
+        /// <summary>
+        /// **按需、按 Slab 整块增长**：确保容器覆盖到 <paramref name="slot"/> 所在 Slab 的末尾。
+        /// 扩展用 <see cref="SetFileValidData"/> 免掉文件系统的零填充（省 SSD 写放大，见设计文档 §4 D4）；
+        /// 该卷不支持 VDL 语义 / 特权不可用 ⇒ 本会话门闩 <see cref="_sfvdUnavailable"/>，回退纯 SetLength。
+        /// 扩展失败（多半卷满）⇒ 只关掉"扩容"能力（<see cref="_growthBlocked"/>），**不停用 L2**（§4 D5）：
+        /// 已覆盖范围内的缓存照常命中，账本照样提交。
+        /// </summary>
+        /// <returns>true = 已覆盖该槽（或本来就在范围内）；false = 本块放弃准入</returns>
+        private bool GrowToCoverSlot(int slot)
+        {
+            long needed = BLOCK_SIZE + ((long)slot / SLOTS_PER_SLAB + 1) * SLAB_SIZE;
+            if (needed <= _containerBytes) return true;
+            if (_growthBlocked) return false;
+
+            try
+            {
+                _container!.SetLength(needed);
+                _containerBytes = needed;
+
+                if (!_sfvdUnavailable && !TrySetFileValidData(_container!, needed))
+                {
+                    _sfvdUnavailable = true;
+                    LogService.DebugFile(
+                        "SSD 二级缓存：SetFileValidData 不可用（该卷不支持 VDL 语义，或特权不可用）" +
+                        "⇒ 本会话容器扩展不再免零填充（功能不受影响，只是会多写一遍零）");
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // L2 是旁路：这里是"尽力而为"的扩容，**任何失败都不许冒到上层读写路径**。
+                // 绝大多数是卷满（IOException）/权限（UnauthorizedAccessException），一律按"本会话不再扩容"处理。
+                _growthBlocked = true;
+                LogService.DebugFile(
+                    $"SSD 二级缓存：容器扩展失败（{ex.GetType().Name}: {ex.Message}）⇒ 本会话不再扩容；" +
+                    "已覆盖范围继续服务，账本照常提交");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// **缩容**：把容器截到"覆盖最大已登记槽"的 Slab 边界（回收物理空间）；无占用则只留头部块。
+        /// 只在装载成功之后调用（此时所有已登记槽都在新槽数内）。**扩容不在这里预扩**——交给 <see cref="GrowToCoverSlot"/>。
+        /// </summary>
+        private void TruncateToUsedSlabs()
+        {
+            int maxUsedSlot = -1;
+            for (int slot = _slotCount - 1; slot >= 0; slot--)
+            {
+                if (_slotBlockIndex[slot] >= 0) { maxUsedSlot = slot; break; }
+            }
+
+            long needed = maxUsedSlot < 0
+                ? BLOCK_SIZE
+                : BLOCK_SIZE + ((long)maxUsedSlot / SLOTS_PER_SLAB + 1) * SLAB_SIZE;
+
+            if (_containerBytes > needed)
+            {
+                EnsureContainerLength(needed);
+                LogService.DebugFile(
+                    $"SSD 二级缓存缩容：容器截到 {needed / 1024 / 1024} MB（最大已登记槽 {maxUsedSlot}）");
             }
         }
 
@@ -1069,9 +1229,14 @@ namespace FlyDisk.Engine
             _container.Flush(true);
         }
 
-        private bool TryReadContainerHeader(out long containerId)
+        /// <summary>
+        /// 读容器头部并校验"是不是我们的容器"。**不再校验槽数**——允许与本次配置不同（容量缩放，见设计文档 §4 D6），
+        /// 容器里记的旧槽数经 <paramref name="storedSlotCount"/> 返回，仅供日志。
+        /// </summary>
+        private bool TryReadContainerHeader(out long containerId, out int storedSlotCount)
         {
             containerId = 0;
+            storedSlotCount = 0;
             byte[] buf = new byte[BLOCK_SIZE];
             _container!.Position = 0;
             _container.ReadExactly(buf, 0, BLOCK_SIZE);
@@ -1079,10 +1244,10 @@ namespace FlyDisk.Engine
             if (Hash(buf, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(buf, CONTAINER_HASH_LEN)) return false;
             if (BitConverter.ToUInt32(buf, 0) != CONTAINER_MAGIC) return false;
             if (BitConverter.ToInt32(buf, 4) != CONTAINER_VERSION) return false;
-            if (BitConverter.ToInt32(buf, 16) != _slotCount) return false;
             if (BitConverter.ToInt32(buf, 20) != BLOCK_SIZE) return false;
             if (BitConverter.ToInt64(buf, 24) != _deviceIdentity) return false;   // 换了另一块盘 ⇒ 容器作废
 
+            storedSlotCount = BitConverter.ToInt32(buf, 16);   // 允许与本次配置不同（缩放）
             containerId = BitConverter.ToInt64(buf, 8);
             return true;
         }
@@ -1096,7 +1261,8 @@ namespace FlyDisk.Engine
             Array.Fill(_slotBlockIndex, -1L);
             Array.Fill(_slotFlags, (byte)0);
             _freeCount = 0;
-            for (int i = 0; i < _slotCount; i++)
+            // **降序压栈** ⇒ PopFree（LIFO，取栈尾）**升序出槽** ⇒ 文件从头连续增长、不留稀疏空洞（见设计文档 §4 D3）
+            for (int i = _slotCount - 1; i >= 0; i--)
             {
                 _freeStack[_freeCount++] = i;
             }
@@ -1105,12 +1271,13 @@ namespace FlyDisk.Engine
 
             try
             {
-                long required = (long)(_slotCount + 1) * BLOCK_SIZE;
-                if (_container!.Length != required) _container.SetLength(required);
+                // 清空 = 只留头部块；其余空间按需再长（顺带把旧容器占的物理空间还回卷）
+                if (_container!.Length != BLOCK_SIZE) _container.SetLength(BLOCK_SIZE);
+                _containerBytes = BLOCK_SIZE;
             }
             catch (Exception ex)
             {
-                LogService.DebugFile($"SSD 二级缓存：容器尺寸校正失败：{ex.Message}");
+                LogService.DebugFile($"SSD 二级缓存：容器重置为空失败：{ex.Message}");
             }
 
             LogService.DebugFile($"SSD 二级缓存：已重建为空缓存（{reason}）");
@@ -1252,7 +1419,7 @@ namespace FlyDisk.Engine
                 fs.ReadExactly(header, 0, INDEX_HEADER_SIZE);
 
                 uint magic;
-                int version, blockSize, slotCount, sLimit, mLimit, ghostLimit;
+                int version, blockSize, oldSlotCount, sLimit, oldGhostLimit;
                 int usedSlots, sCount, mCount, ghostCount;
                 long generation, storedContainerId;
                 ulong headerHash;
@@ -1262,10 +1429,10 @@ namespace FlyDisk.Engine
                     magic = hr.ReadUInt32();
                     version = hr.ReadInt32();
                     blockSize = hr.ReadInt32();
-                    slotCount = hr.ReadInt32();
+                    oldSlotCount = hr.ReadInt32();
                     sLimit = hr.ReadInt32();
-                    mLimit = hr.ReadInt32();
-                    ghostLimit = hr.ReadInt32();
+                    _ = hr.ReadInt32();        // 旧 M 上限：不再参与校验（mLimit/ghostLimit 一律由新配置推导）
+                    oldGhostLimit = hr.ReadInt32();
                     usedSlots = hr.ReadInt32();
                     sCount = hr.ReadInt32();
                     mCount = hr.ReadInt32();
@@ -1278,26 +1445,36 @@ namespace FlyDisk.Engine
 
                 if (magic != INDEX_MAGIC || version != INDEX_VERSION || blockSize != BLOCK_SIZE) return false;
                 // sLimit 在 v3 里恒为 0 —— 非 0 说明这是删掉 S 之前的账本（版本号本该先拦住，这里再兜一道）
-                if (slotCount != _slotCount || sLimit != 0 || mLimit != _mLimit || ghostLimit != _ghostLimit) return false;
+                if (oldSlotCount <= 0 || sLimit != 0) return false;
                 if (storedContainerId != containerId) return false;   // 容器被重建过（例如只删了 cache.dat）
                 if (Hash(header, 0, INDEX_HEADER_HASH_OFFSET) != headerHash) return false;
                 if (usedSlots < 0 || sCount != 0) return false;       // S 已删：正文里不该再有 S 环条目
-                if (mCount < 0 || mCount > _mRing.Length || ghostCount < 0 || ghostCount > _ghostRing.Length) return false;
+                // **计数用"旧头部值"做 sanity 上界**（头部有 hash 校验、可信）：容量缩放后不能再拿当前数组长度当界，
+                // 否则损坏文件里一个巨大的计数会变成长时间循环 / _ghostSet 膨胀（见设计文档 §5 D6）。
+                if (mCount < 0 || mCount > oldSlotCount) return false;
+                if (oldGhostLimit < 0 || ghostCount < 0 || ghostCount > oldGhostLimit) return false;
 
                 // 每个槽（下标）只能出现一次，且必须与环上的块号对得上。
                 // 最危险的形态是"块索引指向的槽不在环上"——那个槽会被当成空闲复用，旧条目就会读到别人的数据。
                 bool[] ringed = new bool[_slotCount];
                 int registered = 0;
+                int dropped = 0;   // 超出本次容量的旧槽条目（缩容时丢弃）
 
                 using (var body = new HashingStream(fs))
                 {
                     using (var br = new BinaryReader(body, Encoding.UTF8, leaveOpen: true))
                     {
-                        if (!ReadRing(br, _mRing, ref _mHead, ref _mCount, mCount, ringed, ref registered)) return false;
+                        if (!ReadRing(br, _mRing, ref _mHead, ref _mCount, mCount, ringed, ref registered, ref dropped))
+                            return false;
 
+                        // ghost：超出新上限的部分丢弃，**保留较新的那批**（跳过最老的，与 FIFO 语义一致）；
+                        // 新上限为 0 时一条都不留（否则会写下 ghostCount>ghostLimit 的账本，下次装载被 sanity 拦掉）
+                        int ghostKeep = Math.Max(0, Math.Min(ghostCount, _ghostLimit));
+                        int ghostSkip = ghostCount - ghostKeep;
                         for (int i = 0; i < ghostCount; i++)
                         {
                             long blockIndex = br.ReadInt64();
+                            if (i < ghostSkip) continue;
                             _ghostRing[(_ghostHead + _ghostCount) % _ghostRing.Length] = blockIndex;
                             _ghostCount++;
                             _ghostSet.Add(blockIndex);
@@ -1310,18 +1487,24 @@ namespace FlyDisk.Engine
                     if (BitConverter.ToUInt64(trailer, 0) != bodyHash) return false;
                 }
 
-                // 交叉校验：① 环上登记的槽数必须与头部记的"占用槽数"一致；
-                //            ② 块索引的条目数必须与之相等（两者都从同一批环条目重建，不等说明正文被改过）
-                if (registered != usedSlots) return false;
+                // 交叉校验：① "登记 + 丢弃"必须等于头部记的"占用槽数"（缩容丢掉的也计入）；
+                //            ② 块索引的条目数必须等于登记数（两者都从同一批环条目重建，不等说明正文被改过）
+                if (registered + dropped != usedSlots) return false;
                 if (_blocksByIndex.Count != registered) return false;
 
-                // 未出现在任何环上的槽 ⇒ 空闲
+                // 未出现在任何环上的槽 ⇒ 空闲。**降序压栈 ⇒ PopFree 升序出槽**（文件从头连续增长，见 §4 D3）
                 _freeCount = 0;
-                for (int slot = 0; slot < _slotCount; slot++)
+                for (int slot = _slotCount - 1; slot >= 0; slot--)
                 {
                     if (!ringed[slot]) _freeStack[_freeCount++] = slot;
                 }
                 Interlocked.Exchange(ref _usedSlots, registered);
+
+                if (dropped > 0)
+                {
+                    LogService.DebugFile(
+                        $"Ssd 索引载入：容量缩放丢弃 {dropped} 个超出新容量的槽条目（保留 {registered} 个）");
+                }
 
                 LogService.DebugFile($"Ssd 索引载入成功：代 {generation}、容器 id=0x{containerId:X16}");
                 _generation = generation;   // 代次跨运行延续（纯诊断，用于确认"第 N 次正常关服留下了账本"）
@@ -1336,7 +1519,7 @@ namespace FlyDisk.Engine
 
         /// <summary>读一个 FIFO 环：按 (槽号, 全局块号, 标志位) 逐条重建块索引；空洞（块号 &lt; 0）压缩掉</summary>
         private bool ReadRing(BinaryReader br, int[] ring, ref int head, ref int count, int entryCount,
-            bool[] ringed, ref int registered)
+            bool[] ringed, ref int registered, ref int dropped)
         {
             int read = 0;
             for (int i = 0; i < entryCount; i++)
@@ -1345,8 +1528,11 @@ namespace FlyDisk.Engine
                 long blockIndex = br.ReadInt64();
                 byte flags = br.ReadByte();
 
-                if (slot < 0 || slot >= _slotCount) return false;
+                if (slot < 0) return false;
                 if (blockIndex < 0) continue;               // 空洞：不入环，槽位保持空闲
+
+                // **容量缩放**：旧账本里超出本次容量的槽一律丢弃（其余原槽位不动，相对顺序不变）
+                if (slot >= _slotCount) { dropped++; continue; }
 
                 if (ringed[slot]) return false;             // 同一个槽不能同时出现在两个环上
                 ringed[slot] = true;
@@ -1459,6 +1645,121 @@ namespace FlyDisk.Engine
                     finally { _lockFile = null; }
                 }
             }
+        }
+
+        #endregion
+
+        #region Win32 API
+
+        // ===== 免零填充：把容器的"有效数据长度（VDL）"直接推到新长度 =====
+        // 文件系统扩展文件时默认要保证新区域"读出来是 0"，代价是把这批簇写一遍零（大 L2 启动卡住的根因）。
+        // SetFileValidData 声明"这段已是有效数据"，从而免掉零填充。前提是**该卷实现并保留 VDL 语义**
+        // （NTFS / ReFS 可以，FAT32 / exFAT 不行），且调用方持有 SE_MANAGE_VOLUME_NAME 特权。
+        // 我们**不预判文件系统**：直接调，失败就置 _sfvdUnavailable 门闩回退纯 SetLength。
+
+        private static readonly object _privilegeLock = new();
+        private static bool _privilegeReady;
+
+        private const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
+        private const uint TOKEN_QUERY = 0x0008;
+        private const uint SE_PRIVILEGE_ENABLED = 0x00000002;
+        private const string SE_MANAGE_VOLUME_NAME = "SeManageVolumePrivilege";
+
+        /// <summary>
+        /// 启用 SE_MANAGE_VOLUME_NAME（管理员默认持有但**被禁用**，需显式启用）。进程级、只需一次。
+        /// 加锁是因为"首次触发"可能来自构造线程与 target 工作线程两处（改的是进程 token）。
+        /// </summary>
+        private static bool TryEnableVolumePrivilege()
+        {
+            if (_privilegeReady) return true;
+            lock (_privilegeLock)
+            {
+                if (_privilegeReady) return true;
+
+                IntPtr token = IntPtr.Zero;
+                try
+                {
+                    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out token))
+                        return false;
+                    if (!LookupPrivilegeValue(null, SE_MANAGE_VOLUME_NAME, out LUID luid))
+                        return false;
+
+                    var tp = new TOKEN_PRIVILEGES
+                    {
+                        PrivilegeCount = 1,
+                        Privileges = new LUID_AND_ATTRIBUTES { Luid = luid, Attributes = SE_PRIVILEGE_ENABLED }
+                    };
+                    if (!AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero))
+                        return false;
+                    // AdjustTokenPrivileges "成功"也可能什么都没改（ERROR_NOT_ALL_ASSIGNED）
+                    if (Marshal.GetLastWin32Error() != 0) return false;
+
+                    _privilegeReady = true;
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+                finally
+                {
+                    if (token != IntPtr.Zero) CloseHandle(token);
+                }
+            }
+        }
+
+        /// <summary>把容器的有效数据长度推到 <paramref name="length"/>（免零填充）。任一前提不满足返回 false。</summary>
+        private static bool TrySetFileValidData(FileStream container, long length)
+        {
+            try
+            {
+                if (!TryEnableVolumePrivilege()) return false;
+                return SetFileValidData(container.SafeFileHandle, length);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetFileValidData(SafeFileHandle hFile, long validDataLength);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool LookupPrivilegeValue(string? systemName, string name, out LUID luid);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool AdjustTokenPrivileges(IntPtr tokenHandle, bool disableAllPrivileges,
+            ref TOKEN_PRIVILEGES newState, int bufferLength, IntPtr previousState, IntPtr returnLength);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LUID
+        {
+            public uint LowPart;
+            public int HighPart;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LUID_AND_ATTRIBUTES
+        {
+            public LUID Luid;
+            public uint Attributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TOKEN_PRIVILEGES
+        {
+            public uint PrivilegeCount;
+            public LUID_AND_ATTRIBUTES Privileges;
         }
 
         #endregion

@@ -830,6 +830,14 @@ namespace FlyDisk
                 await EndRemoteServiceQuietly(peer);
                 return;
             }
+
+            // 容量缩放确认：本地 / 远程共用同一份本地 L2，口径与本地形态完全一致（见 ConfirmL2CapacityChange）。
+            if (!ConfirmL2CapacityChange())
+            {
+                await EndRemoteServiceQuietly(peer);
+                return;
+            }
+
             _targetOperationPending = true;
             _targetOperationStarting = true;
             RefreshStatus();
@@ -1218,6 +1226,10 @@ namespace FlyDisk
             // （此刻还没脱机、系统状态一点没动；详细理由见 ConfirmL2LedgerUnused）。
             if (!ConfirmL2LedgerUnused(target)) return;
 
+            // 本次**启用 L2**、但上次容器容量与本次配置不一致时，先问用户"缩放（保留缓存）"还是中止
+            // （与上面互斥；同样在脱机之前，用户取消时系统状态一点没动）。
+            if (!ConfirmL2CapacityChange()) return;
+
             _targetOperationPending = true;
             _targetOperationStarting = true;
             RefreshStatus();
@@ -1291,6 +1303,72 @@ namespace FlyDisk
             }
             return true;
         }
+
+        /// <summary>
+        /// 【容量缩放 / 夹取确认】启动前预检。两种情况都会问用户：
+        /// ① **容量与上次不同**（改过配置、或可用空间变化）⇒ 说明将放大 / 缩小并保留缓存；
+        /// ② **本次容量被缓存盘可用空间夹取**（配置值放不下）⇒ 额外说明"为什么留这段余量"（SSD 快满会掉速），
+        ///    因为夹取很可能直接导致缩容。
+        ///
+        /// **放在 UI 层、启动之前**（本地与远程共用同一份本地 L2）：此刻还没脱机，用户取消时系统状态一点没动；
+        /// 用户确认后引擎按新容量缩放（引擎已不再拦容量差异，见 SsdCacheService.DetectLedgerMismatch 与
+        /// docs/L2容器按需增长与容量缩放_设计.md §4 D6/D7）。
+        /// </summary>
+        /// <returns>true = 可以继续启动；false = 用户选择中止</returns>
+        private bool ConfirmL2CapacityChange()
+        {
+            if (!_config.EnableSsdCache) return true;                    // 本次不用 L2：没有容量可谈
+            if (!SsdCacheService.LedgerExists(_config)) return true;      // 没有可保留的账本：重建即可
+            if (!SsdCacheService.TryPeekContainerSlotCount(_config, out int oldSlots)) return true;
+
+            int configuredSlots = SsdCacheService.ConfiguredSlotCountFor(_config);   // 标称（不夹取）
+            int effectiveSlots = SsdCacheService.ComputeSlotCountFor(_config);       // 实际（夹取后）
+            if (configuredSlots <= 0 || effectiveSlots <= 0) return true;
+
+            bool clamped = effectiveSlots != configuredSlots;
+            bool changed = effectiveSlots != oldSlots;
+            if (!clamped && !changed) return true;   // 既没夹取、容量也没变：没什么可说
+
+            string configuredText = CapacityText(configuredSlots);
+            string oldText = CapacityText(oldSlots);
+            string effectiveText = CapacityText(effectiveSlots);
+            string reserveText = SizeText(SsdCacheService.KeepFreeBytes);
+
+            string messageKey;
+            if (clamped)
+            {
+                messageKey = !changed ? "main.msg.l2ClampSame"
+                    : (effectiveSlots < oldSlots ? "main.msg.l2ClampShrink" : "main.msg.l2ClampGrow");
+            }
+            else
+            {
+                messageKey = effectiveSlots < oldSlots ? "main.msg.l2ResizeShrink" : "main.msg.l2ResizeGrow";
+            }
+
+            DialogResult answer = MessageBox.Show(
+                Locale.T(messageKey, configuredText, oldText, effectiveText, reserveText),
+                Locale.T(clamped ? "dialog.l2Clamp" : "dialog.l2Resize"), MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+
+            if (answer != DialogResult.Yes)
+            {
+                Log(Locale.T("main.log.cancelledL2Resize"));
+                return false;
+            }
+
+            Log(Locale.T("main.log.l2ResizeConfirmed", oldText, effectiveText));
+            return true;
+        }
+
+        /// <summary>字节 → 容量文本（1024 进制标 GiB / MiB；口径与项目"标注必须与进制一致"一致）</summary>
+        private static string SizeText(long bytes)
+            => bytes >= 1024L * 1024 * 1024
+                ? $"{bytes / 1024.0 / 1024 / 1024:F1} GiB"
+                : $"{bytes / 1024.0 / 1024:F0} MiB";
+
+        /// <summary>槽数 → 容量文本（附槽数）</summary>
+        private static string CapacityText(int slots)
+            => $"{SizeText((long)slots * ServiceConstants.BlockSize)}（{slots:N0} 槽）";
 
         /// <summary>
         /// 启动（本地形态）。引擎把"账本状态不确定"作为**返回值**报上来，这里弹窗交给用户决定：

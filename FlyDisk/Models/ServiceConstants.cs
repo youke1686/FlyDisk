@@ -33,7 +33,8 @@ namespace FlyDisk.Models
         public const int BlockSize = 4096;
 
         /// <summary>
-        /// 非托管内存池的 Slab 大小（64MB）。同样是"缓存引擎分配 + UI 展示换算"共用的事实，
+        /// Slab（整块）大小（64MB）。**不特指某种介质**：L1 非托管内存池按它向系统申请 / 归还内存，
+        /// L2 容器按它整块增长 / 截断（见 docs/L2容器按需增长与容量缩放_设计.md）。
         /// 与 <see cref="BlockSize"/> 一起作为唯一定义点（见 未解决的疑点.md TD-20）。
         /// </summary>
         public const int SlabSize = 64 * 1024 * 1024;

@@ -239,6 +239,11 @@ namespace FlyDisk.Engine
             _container = new FileStream(containerPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
                 bufferSize: 1, FileOptions.RandomAccess);
 
+            // 容器**按需、按 Slab 增长** ⇒ 长度不再等于整容量；这里只要求"至少含一个头部块"，
+            // "是否覆盖账本用到的每个槽"由 LoadIndex 拿到实际槽位后再校验（见设计文档 §5.5）。
+            if (_container.Length < BLOCK_SIZE)
+                throw new InvalidOperationException(Locale.T("l2v.err.containerLength", _container.Length, BLOCK_SIZE));
+
             byte[] header = new byte[BLOCK_SIZE];
             _container.ReadExactly(header, 0, BLOCK_SIZE);
 
@@ -258,14 +263,7 @@ namespace FlyDisk.Engine
             if (blockSize != BLOCK_SIZE || _slotCount <= 0)
                 throw new InvalidOperationException(Locale.T("l2v.err.containerHeaderParams", blockSize, _slotCount));
 
-            long required = (long)(_slotCount + 1) * BLOCK_SIZE;
-            if (_container.Length != required)
-            {
-                throw new InvalidOperationException(
-                    Locale.T("l2v.err.containerLength", _container.Length, required));
-            }
-
-            // **槽位数以盘上记录为准**：不重算（见类注释第 2 条）
+            // 槽位数以盘上记录为准：不重算（见类注释第 2 条）
             _totalBlocks = info.SizeBytes / BLOCK_SIZE;
             if (deviceIdentity != ComputeDeviceIdentity(info))
             {
@@ -434,6 +432,7 @@ namespace FlyDisk.Engine
             long[] blocks = new long[usedSlots];
             int[] slots = new int[usedSlots];
             int n = 0;
+            int maxSlot = -1;     // 账本里用到的最大槽号（用于校验容器是否覆盖到位）
             ulong bodyHash;
 
             using (var body = new HashingStream(fs))
@@ -455,6 +454,7 @@ namespace FlyDisk.Engine
                             throw new InvalidOperationException(Locale.T("l2v.err.indexSlotDup", slot));
 
                         slotSeen[slot] = true;
+                        if (slot > maxSlot) maxSlot = slot;
                         blocks[n] = block;
                         slots[n] = slot;
                         n++;
@@ -470,6 +470,14 @@ namespace FlyDisk.Engine
                 fs.ReadExactly(trailer, 0, 8);
                 if (BitConverter.ToUInt64(trailer, 0) != bodyHash)
                     throw new InvalidOperationException(Locale.T("l2v.err.indexBodyHash"));
+            }
+
+            // 容器必须**覆盖账本用到的每一个槽**（容器按需增长 ⇒ 长度不固定，只校验"够不够用"，见设计文档 §5.5）
+            long needed = (long)(maxSlot + 2) * BLOCK_SIZE;
+            if (_container.Length < needed)
+            {
+                throw new InvalidOperationException(
+                    Locale.T("l2v.err.containerLength", _container.Length, needed));
             }
 
             _blocks = blocks;

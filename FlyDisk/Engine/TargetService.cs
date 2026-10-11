@@ -643,9 +643,13 @@ namespace FlyDisk.Engine
                     LogService.DebugFile($"{root} 无法对应到物理盘，已跳过“缓存目录同盘”校验");
                 }
 
-                // ⑥′ 上次留下的 L2 账本跟当前盘/配置对得上吗？对不上时**不静默清空**——那会让用户
-                //     莫名其妙丢掉整层缓存。交给 UI 弹窗让用户决定（见 SsdCacheService.DetectLedgerMismatch）。
+                // ⑥′ 上次留下的 L2 容器属于当前这块盘吗？不是则**不静默清空**——那会让用户莫名其妙丢掉
+                //     整层缓存。交给 UI 弹窗让用户决定（见 SsdCacheService.DetectLedgerMismatch）。
                 //     特意放在这里（脱机之前）：用户选"否"时，系统状态一点都没动。
+                //
+                //     **容量 / ghost 参数与本次配置不一致不再在这里拦**：改为"缩放保留"，其"缩 / 扩确认"
+                //     由 UI 预检负责（Form1.ConfirmL2CapacityChange），引擎按已确认执行
+                //     （见 docs/L2容器按需增长与容量缩放_设计.md §4 D6/D7）。
                 if (!allowL2Reset)
                 {
                     // **联机状态必须取"此刻"的，不能沿用选盘时的快照**：`info` 是选盘那一刻抓的，
