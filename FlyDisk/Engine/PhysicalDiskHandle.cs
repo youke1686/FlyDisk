@@ -197,36 +197,18 @@ namespace FlyDisk.Engine
                 // "程序没运行时没人写过它"这条判据不成立，跨重启的 L2 缓存也就无从谈起（见类注释）。
                 if (!OfflineForTakeover(probe))
                     throw new IOException(Locale.T("engine.disk.offlineFailed", diskNumber));
-
-                // 脱机是**异步生效**的：卷要退场、partmgr 要重新枚举设备——立刻去独占打开，常常直接撞
-                // ERROR_SHARING_VIOLATION(32)（现象就是"无法独占打开"）。这里先静默一小会儿再试。
-                Thread.Sleep(OfflineSettleMs);
             }
 
-            SafeFileHandle? exclusive = TryOpenExclusive(diskNumber, out int exclusiveError);
-            SafeFileHandle handle;
-            if (exclusive != null)
+            SafeFileHandle? handle = TryOpenExclusive(diskNumber, out int exclusiveError);
+            if (handle == null)
             {
-                handle = exclusive;
-            }
-            else
-            {
-                // 退一步：拿不到独占就退化为**宽松共享**打开（别人的写访问也允许），先把盘接管下来。
-                // 为什么共享模式必须"允许写"：只要还有进程以写方式打开着这块盘，任何"不允许写"的打开请求
-                // 都会被 Windows 直接拒掉（ERROR_SHARING_VIOLATION），我们就永远进不去（见 CreateAttributeHandle 的注释）。
-                // 数据安全仍由**脱机**这条保证：盘脱机后卷已退场，别的程序拿不到它的文件系统。
-                handle = CreateDiskHandle(diskNumber, FileAccess.ReadWrite, FallbackShare, writeThrough: true);
-                if (handle.IsInvalid)
-                {
-                    // 连宽松共享都打不开（真有程序独占着它）就不要把盘留在"看不见"的状态里：
-                    // 恢复成我们打开它之前的样子
-                    if (wasOnline) SetOnlineBestEffort(diskNumber);
-                    throw new IOException(
-                        Locale.T("engine.disk.exclusiveOpenFailed", diskNumber, exclusiveError));
-                }
-                LogService.DebugFile($"磁盘 {diskNumber} 未能取得独占句柄（错误 {exclusiveError}，已重试 {ExclusiveOpenAttempts} 次），" +
-                                     "已退化为宽松共享打开；该盘已脱机，数据仍不会被其他程序通过文件系统访问，" +
-                                     "但若有别的程序也直接读写这块物理盘，双方数据可能互相覆盖");
+                // 拿不到独占就**拒绝启动**、绝不降级（见 AGENTS.md §2.1：独占是硬不变量）：
+                // 独占失败说明还有别的进程握着这块盘（备份 / 杀软 / 盘工具 / 另一个本程序实例），
+                // 此时若放行只会让双方的数据互相覆盖，别人也会读到写透传过程中的半更新扇区。
+                // 拒绝前先把盘恢复成我们打开它之前的样子，不把用户的盘留在"看不见"的状态里。
+                if (wasOnline) SetOnlineBestEffort(diskNumber);
+                LogService.DebugFile($"磁盘 {diskNumber} 无法独占打开（错误 {exclusiveError}，已重试 {ExclusiveOpenAttempts} 次），拒绝启动（不降级）");
+                throw new IOException(Locale.T("engine.disk.exclusiveOpenFailed", diskNumber, exclusiveError));
             }
 
             LogService.DebugFile($"磁盘 {diskNumber} 已脱机并打开（原状态：{(wasOnline ? "联机" : "脱机（接管）")}，" +
@@ -257,12 +239,9 @@ namespace FlyDisk.Engine
                 // 与 Open 同口径：脱机属性必须持久化，否则重启后盘自己回来，"没人写过它"这条判据不成立
                 if (!OfflineForTakeover(probe))
                     throw new IOException(Locale.T("engine.disk.offlineFailed", diskNumber));
-
-                // 同 Open：脱机是异步生效的，等卷退场再打开（否则轻则共享冲突、重则读到半退场状态）
-                Thread.Sleep(OfflineSettleMs);
             }
 
-            SafeFileHandle handle = CreateDiskHandle(diskNumber, FileAccess.Read, FallbackShare);
+            SafeFileHandle handle = CreateDiskHandle(diskNumber, FileAccess.Read, FileShare.Read);
             if (handle.IsInvalid)
             {
                 // 打不开就不要把盘留在"看不见"的状态里：恢复成我们打开它之前的样子
@@ -944,25 +923,13 @@ namespace FlyDisk.Engine
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool WriteFile(SafeFileHandle hFile, IntPtr lpBuffer, uint nNumberOfBytesToWrite, out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
 
-        /// <summary>脱机之后、去独占打开之前先等多久（毫秒）：卷退场与设备栈重枚举都是**异步**的，立刻打开必撞共享冲突</summary>
-        private const int OfflineSettleMs = 800;
-
         /// <summary>独占打开的重试次数与间隔（毫秒）：给系统一点时间把手放开</summary>
         private const int ExclusiveOpenAttempts = 4;
         private const int ExclusiveOpenRetryMs = 400;
 
         /// <summary>
-        /// 拿不到独占时的**退化共享模式**：允许别人的读写与删除。
-        ///
-        /// 为什么必须"允许写"：只要还有进程以写方式持有这块盘的句柄，任何"不允许写"的打开请求都会被
-        /// Windows 直接拒掉（<c>ERROR_SHARING_VIOLATION 32</c>）——这正是"无法独占打开"的常见成因。
-        /// 数据安全仍由**脱机**保证（卷已退场，别的程序拿不到文件系统），退化本身会如实落诊断日志。
-        /// </summary>
-        private const FileShare FallbackShare = FileShare.ReadWrite | FileShare.Delete;
-
-        /// <summary>
         /// 尝试**独占**打开（<c>FILE_SHARE_NONE</c>）：失败就等一拍再试，最多 <see cref="ExclusiveOpenAttempts"/> 次。
-        /// 返回 null 表示始终没拿到（调用方退化为共享打开），并把最后一次错误码写进 <paramref name="lastError"/>。
+        /// 返回 null 表示始终没拿到（调用方**拒绝启动、不降级**），并把最后一次错误码写进 <paramref name="lastError"/>。
         /// </summary>
         private static SafeFileHandle? TryOpenExclusive(int diskNumber, out int lastError)
         {
