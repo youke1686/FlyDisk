@@ -1,6 +1,7 @@
 .vs/
 *.suo
 *.user
+*.diff
 
 [Bb]in/
 [Oo]bj/
