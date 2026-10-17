@@ -117,6 +117,10 @@ namespace FlyDisk
             }
             Locale.SetLanguage(config.Language);
 
+            // 旧布局 L2 缓存：新版不再支持、也不再迁移。启动时先问用户是否删除；
+            // 选「否」= 直接退出（不在带着旧缓存的情况下继续跑）。
+            if (!L2Manage.PromptRemoveLegacyCaches(config)) return;
+
             // 崩溃 / 强杀残留：上次进程被杀时，iSCSI 会话与发现门户还留在系统里。启动期幂等清理一次
             // （服务没在跑时内部直接跳过；任何失败都只记日志、不拦启动）。
             IscsiInitiator.CleanupStale(config.TargetIqn, config.ListenAddress, config.ListenPort);

@@ -48,11 +48,15 @@ namespace FlyDisk
             tabPages = new Theming.ThemedTabControl();
             pageBrief = new TabPage();
             briefView = new BriefView();
+            diskBar = new Panel();
+            lblDiskPicker = new Label();
+            cmbDisk = new ComboBox();
             pageDetail = new TabPage();
             textBox1 = new TextBox();
             chkTopMost = new CheckBox();
             tabPages.SuspendLayout();
             pageBrief.SuspendLayout();
+            diskBar.SuspendLayout();
             pageDetail.SuspendLayout();
             SuspendLayout();
             // 
@@ -71,7 +75,9 @@ namespace FlyDisk
             // pageBrief
             // 
             // 简要页整页自绘：系统 ProgressBar 做不出"条上带阈值刻度 / 条内分三段"（见 BriefView 类注释）
+            // 顶部一条"选择盘"下拉（多盘时可见）；Fill 先加、Top 后加，docking 才会把顶部先占掉
             pageBrief.Controls.Add(briefView);
+            pageBrief.Controls.Add(diskBar);
             pageBrief.Location = new Point(4, 25);
             pageBrief.Name = "pageBrief";
             pageBrief.Size = new Size(792, 421);
@@ -79,12 +85,40 @@ namespace FlyDisk
             pageBrief.Text = "简要";
             pageBrief.UseVisualStyleBackColor = true;
             // 
+            // diskBar
+            // 
+            diskBar.Controls.Add(lblDiskPicker);
+            diskBar.Controls.Add(cmbDisk);
+            diskBar.Dock = DockStyle.Top;
+            diskBar.Location = new Point(0, 0);
+            diskBar.Name = "diskBar";
+            diskBar.Padding = new Padding(12, 4, 12, 4);
+            diskBar.Size = new Size(792, 32);
+            diskBar.TabIndex = 1;
+            // 
+            // lblDiskPicker
+            // 
+            lblDiskPicker.AutoSize = true;
+            lblDiskPicker.Location = new Point(12, 8);
+            lblDiskPicker.Name = "lblDiskPicker";
+            lblDiskPicker.Size = new Size(59, 17);
+            lblDiskPicker.TabIndex = 0;
+            lblDiskPicker.Text = "选择盘";
+            // 
+            // cmbDisk
+            // 
+            cmbDisk.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbDisk.Location = new Point(80, 4);
+            cmbDisk.Name = "cmbDisk";
+            cmbDisk.Size = new Size(300, 25);
+            cmbDisk.TabIndex = 1;
+            // 
             // briefView
             // 
             briefView.Dock = DockStyle.Fill;
-            briefView.Location = new Point(0, 0);
+            briefView.Location = new Point(0, 32);
             briefView.Name = "briefView";
-            briefView.Size = new Size(792, 421);
+            briefView.Size = new Size(792, 389);
             briefView.TabIndex = 0;
             // 
             // pageDetail
@@ -138,6 +172,8 @@ namespace FlyDisk
             Text = "检查器";
             tabPages.ResumeLayout(false);
             pageBrief.ResumeLayout(false);
+            diskBar.ResumeLayout(false);
+            diskBar.PerformLayout();
             pageDetail.ResumeLayout(false);
             pageDetail.PerformLayout();
             ResumeLayout(false);
@@ -148,8 +184,11 @@ namespace FlyDisk
 
         private Theming.ThemedTabControl tabPages;
         private TabPage pageBrief;
-        private TabPage pageDetail;
         private BriefView briefView;
+        private Panel diskBar;
+        private Label lblDiskPicker;
+        private ComboBox cmbDisk;
+        private TabPage pageDetail;
         private TextBox textBox1;
         private CheckBox chkTopMost;
     }

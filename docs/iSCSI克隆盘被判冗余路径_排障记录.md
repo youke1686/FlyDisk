@@ -205,6 +205,16 @@ wevtutil qe System /q:"*[System[Provider[@Name='disk']]]" /c:40 /rd:true /f:text
 （菜单「重新联机硬盘」）、引导到 **GitHub 仓库**提 issue（**文案里不写链接**；点「是」由
 `Form1.GitHubIssuesUrl` 打开 issue 页面）。
 
+> **2026-10-17 现状（PR-13 整改后）**：上面 9.1/9.2 的方法名与流程已随多盘编排重写——
+> - 检查改为**会话级**：每个会话登录后只看"本次登录新出现的盘"，≥1 块且全部 online、非只读才通过；
+>   保险丝 10 秒；不再有 `CloneDiskWarning` 软告警，失败抛 `IscsiCloneCheckException`；
+> - 恢复改为 **`Form1.StartAllAsync` 的"整套重试一次"**：停掉本次已起来的全部会话 → 等 1 秒 →
+>   不重跑 L2 预检 → 整批重来；`RecoverFromCloneDiskProblem` / `TryStopForCloneRecovery` /
+>   `main.msg.cloneUnfixable` 等已删除，最终失败统一进聚合弹窗；
+> - **关键前提仍然成立**：克隆盘失败时源盘**刻意保持脱机**（`StopCore(restoreDeviceState:false)`），
+>   所以整套重试依旧是从脱机起步；
+> - 缺陷根因仍未查明，见 §5 与 `TODO.md`。
+
 ### 9.3 顺带改掉的文案
 
 - `main.log.diskPlacementHint`（启动提示）改为："加速后的硬盘照旧在「此电脑」中打开使用，

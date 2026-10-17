@@ -18,6 +18,40 @@
 namespace FlyDisk.Models
 {
     /// <summary>
+    /// 一块盘的 L2 配置（阶段 3 起）：每块盘自己的 L2 卷与容量上限。
+    /// 同一条目 = 这块盘参与 L2；`CacheVolume` 为空或 `MaxBytes &lt;= 0` = 配置不完整，启动时会被拒绝
+    /// （「L2 管理」允许先留空保存，但绝不静默当成"不启用"）。
+    /// </summary>
+    public sealed class L2DiskConfig
+    {
+        /// <summary>盘身份串（`型号|序列号`）——与 <c>PhysicalDiskHandle.DescribeIdentity</c> 同口径</summary>
+        public string DiskIdentity { get; set; } = string.Empty;
+
+        /// <summary>设备身份散列（与容器头里的归属身份同一套算法）；用于拼目录名与匹配扫描结果</summary>
+        public long OwnerHash { get; set; }
+
+        /// <summary>L2 缓存卷（存盘符，如 "D:"；空 = 不启用）</summary>
+        public string CacheVolume { get; set; } = string.Empty;
+
+        /// <summary>该盘的 L2 容量上限（字节）</summary>
+        public long MaxBytes { get; set; } = DefaultMaxBytes;
+
+        /// <summary>默认上限：8 GiB（回收条目时容器头读不出槽数就用它）</summary>
+        public const long DefaultMaxBytes = 8L * 1024 * 1024 * 1024;
+
+        /// <summary>找到这块盘的配置条目；没有返回 null</summary>
+        public static L2DiskConfig? Find(List<L2DiskConfig> list, string diskIdentity)
+        {
+            if (string.IsNullOrEmpty(diskIdentity)) return null;
+            foreach (L2DiskConfig entry in list)
+            {
+                if (string.Equals(entry.DiskIdentity, diskIdentity, StringComparison.Ordinal)) return entry;
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 配置模型（阶段二）：被加速的对象是**一整块物理盘**（`\\.\PhysicalDriveN`），
     /// 对外以 iSCSI 块设备的形式交给上层。
     ///
@@ -26,6 +60,9 @@ namespace FlyDisk.Models
     /// </summary>
     public class DiskConfig
     {
+        /// <summary>浅拷贝（字符串 / 值类型安全；列表按引用共享）。会话副本与 L2 校验都用它。</summary>
+        public DiskConfig Clone() => (DiskConfig)MemberwiseClone();
+
         // ===== 界面 =====
 
         /// <summary>
@@ -35,10 +72,18 @@ namespace FlyDisk.Models
         /// </summary>
         public string Language { get; set; } = string.Empty;
 
+        /// <summary>
+        /// 是否在启动加速时用 iSCSI 发起端**自动登录**目标。
+        ///
+        /// 关闭后：引擎照常起 target / 建 LUN，但不做自动登录，由用户在「iSCSI 发起程序」里手动挂载。
+        /// 它同时也是自动登录失败时的官方绕过路径（设置窗口里可关；便于调试与故障排查）。
+        /// </summary>
+        public bool EnableAutoIscsiLogin { get; set; } = true;
+
         // ===== 目标设备（iSCSI target）=====
 
         /// <summary>
-        /// 上次选择的那块物理盘的**身份串**（`型号|序列号`；无序列号时回落到 `型号|容量|扇区`）。
+        /// 上次选择的那块物理盘的**身份串**（`型号|序列号`；无序列号时为空串，且这类盘会被直接拒绝加速）。
         ///
         /// **为什么不存盘号**：盘号只是**枚举顺序**，插拔顺序一变、或同时插着多块盘，
         /// 同一个 N 就可能落到另一块盘上；而我们对目标盘做的是**整盘脱机**——
@@ -48,6 +93,13 @@ namespace FlyDisk.Models
         /// **粒度是整盘，不是单分区**：同一块盘上的其他卷会一起被 export，停止时也一起回来。
         /// </summary>
         public string PhysicalDiskIdentity { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 上次「启动加速」里选中的**全部**盘身份串（多盘同时加速，见 AGENTS.md §2.1）。
+        /// 与 <see cref="PhysicalDiskIdentity"/> 同口径：**只用于下次在选盘框里预选**，绝不作为启动依据
+        /// （保留单值那个字段是为了兼容旧配置与"上次那块盘"的既有用法）。
+        /// </summary>
+        public List<string> LastAcceleratedDiskIdentities { get; set; } = new();
 
         /// <summary>目标 IQN（发起程序里看到的目标名）</summary>
         public string TargetIqn { get; set; } = "iqn.flydisk:acceleration-disk";
@@ -92,8 +144,7 @@ namespace FlyDisk.Models
         /// <summary>停止缓存的系统内存占用比例（越过该水位后不再接纳新数据）</summary>
         public double StopCachingThreshold { get; set; } = 0.9;
 
-        // 以下三项是 LRU 淘汰（时间桶）的参数，**当前没有 UI 控件**，只能手改 config.json；
-        // 启动时会打印一条生效值日志（这些参数看不到、也改不到，只能靠日志确认）。
+        // 以下三项是 LRU 淘汰（时间桶）的参数，在「设置 → 高级 → L1 调参」里可改；
         // 非法值一律夹到安全区间并落警告，不让配置错误把缓存打死（见 关于内存缓存的进一步讨论.md §6.6）。
 
         /// <summary>淘汰时间轮窗口（秒）：超过该窗口未被命中的块归入"冷尾"，优先被淘汰</summary>
@@ -108,15 +159,23 @@ namespace FlyDisk.Models
         // ===== SSD 二级缓存（L2，见 关于内存缓存的进一步讨论.md §7）=====
         // 定位：给机械盘做「跨重启存活」的持久缓存。**对 SSD 源盘毫无意义**（纯写放大），
         // 因此启动时会拒绝「缓存目录所在的物理盘 == 被加速的物理盘」（那会让缓存读写与源数据抢同一块盘）。
-        // 缓存目录不可用时降级为仅 L1 + 警告，不让配置错误把整层打死。
 
-        /// <summary>是否启用 SSD 二级缓存（L2）</summary>
+        /// <summary>
+        /// **每块盘各自的 L2 配置**（阶段 3 起）：盘身份 + 该盘选的 L2 卷 + 容量上限。
+        /// 没有条目的盘 = 不启用 L2；条目存在但 `CacheVolume` 为空（或 `MaxBytes &lt;= 0`）= **配置不完整**，
+        /// 启动前统一拦截（见 `Form1.ValidateL2ConfigForStart`），不会静默跳过。
+        /// </summary>
+        public List<L2DiskConfig> L2Disks { get; set; } = new();
+
+        // ---- 以下三个是**旧版单盘 L2 配置**，仅用于远程形态兼容；本地形态已不再读取 ----
+
+        /// <summary>【旧版】是否启用 SSD 二级缓存（仅远程形态兜底）</summary>
         public bool EnableSsdCache { get; set; } = false;
 
-        /// <summary>L2 缓存目录（容器与索引都放在这里；应指向 SSD，且不能落在被加速的那块盘上）</summary>
+        /// <summary>【旧版】L2 缓存目录（仅远程形态兜底）</summary>
         public string SsdCachePath { get; set; } = string.Empty;
 
-        /// <summary>L2 容器容量上限（字节）。**必需项**：元数据约 50 B/块，不设上限会吃掉成百 MB 内存</summary>
+        /// <summary>【旧版】L2 容器容量上限（仅远程形态兜底）</summary>
         public long SsdCacheMaxBytes { get; set; } = 8L * 1024 * 1024 * 1024;
 
         /// <summary>L2 的 ghost 条目数相对 M 的倍率（默认 1.0；只存块号，无数据）</summary>
