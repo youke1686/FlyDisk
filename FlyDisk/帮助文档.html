@@ -528,7 +528,7 @@
     <ul>
         <li>本软件处于 <strong>Beta 测试阶段</strong>，稳定性尚未充分验证，<strong>请勿用于重要数据</strong>。对于因此造成的损失，我们不承担任何责任。</li>
         <li>理论上<strong>存在游戏误封号可能</strong>，虽然可能性极小，但如果用于游戏加速，依旧务必先<strong>新开小号</strong>做<strong>至少一周高强度游戏</strong>的可行性验证。&nbsp;</li>
-<li>停止加速后，目标盘会<strong>保持脱机、在系统里看不到，</strong>这是有意设计：盘归本程序独占，跨重启的缓存才敢采信。要还盘给系统，见「重新联机硬盘」。</li>
+<li>使用 L2 时，停止加速后目标盘会<strong>保持脱机、在系统里看不到，</strong>这是有意设计：盘归本程序独占，跨重启的缓存才敢采信；未使用 L2 的盘会在停止成功后自动联机。需要手动还盘见「重新联机硬盘」。</li>
         <li>程序必须<strong>以管理员身份运行</strong>，否则无法把整盘脱机或独占打开。</li>
     </ul>
 </div>
@@ -578,62 +578,67 @@
     <tr><td>菜单栏</td><td>设置 / 检查器 / 校验 L2 / 重新联机硬盘 / 远程 / 🌍 语言。加速运行中，部分入口会暂时禁用。</td></tr>
     <tr><td>主按钮</td><td>「启动加速」↔「停止加速」等。负责主要功能。</td></tr>
     <tr><td>状态行</td><td>显示 iSCSI 地址、当前连接数、链路状态等少量运行状态指示信息。</td></tr>
-<tr><td>日志区</td><td>运行过程中的提示与错误，按「问题 → 原因 → 处理」的口径记录，遇到问题先看这里。</td></tr>
+<tr><td>日志区</td><td>运行过程中的提示与错误。</td></tr>
 </table>
 
 <h2 id="start-zh">启动加速与选盘</h2>
 
-<p><strong>每次启动都要重新确认一次选盘</strong>——这是故意的：避免你改过配置后隔几天才启动、已经忘了上次选的是哪块导致的误操作选错盘，但再这一步默认选项是上次的选择。</p>
+<p><strong>每次启动都要重新确认一次选盘</strong>——这是故意的：避免你改过配置后隔几天才启动、已经忘了上次选的是哪块导致的误操作选错盘，但这一步默认选项是上次的选择。</p>
 
-<h3>列表怎么看</h3>
+<h3>硬盘选择窗口&nbsp;</h3>
 <p>每一行长这样：</p>
 <pre><code>磁盘 0（C: , D:）    型号字样    （容量）</code></pre>
-<p>括号里是该盘上的<strong>盘符</strong>（一块盘可能对应多个卷、多个盘符，用英文逗号分隔）；脱机的盘通常是由于你加速过，没有盘符，那一格显示「<em>脱机</em>」。</p>
-<p>目前仅能同时加速一整块物理硬盘，不单卷加速 。</p>
-<p><strong>可以一次选多块盘</strong>：在列表里<strong>勾选每行前面的复选框</strong>，确定后这些盘会<strong>同时</strong>被加速——每块盘各用各的 iSCSI 端口（从配置端口开始依次递增）与各自的目标名，互不干扰。多盘是<strong>全成或全不成</strong>：任何一块失败都会把本次已经起来的会话全部停掉并汇总弹出原因（不会出现"一部分在加速、一部分没加速"）；多盘时主按钮变成「停止加速（全部 N 块）」一键收尾；<strong>每块盘都可以有自己的 L2</strong>（各自的 L2 卷与上限，在「L2 管理」里按盘配置；没配置的盘只用 L1 + 写透传）。</p>
+<p>括号里是该盘上的<strong>盘符</strong>（一块盘可能对应多个卷、多个盘符）；你曾经加速过的盘，那一格显示「<em>脱机</em>」。</p>
+<p>目前仅能同时加速一整块物理硬盘，不单卷（单盘符）加速 。</p>
+<p><strong>可以一次选多块盘</strong>：在列表里<strong>勾选每行前面的复选框</strong>，确定后这些盘会<strong>同时</strong>被加速——每块盘各用各的 iSCSI 端口（从配置端口开始依次递增）与各自的目标名，互不干扰。<strong>每块盘都可以单独配置 L2 缓存</strong>，具体配置方法见设置中的 L2 管理</p>
 <h3>盘信息区</h3>
 <p>选中一行后，下方会显示：</p>
 <ul>
     <li>第一行基本信息：<strong>字节/扇区 · 容量 · 序列号</strong>。</li>
-    <li>接下来是「不能加速」的 ❌ 原因及排查方法（如果有）。其中<strong>没有序列号的盘不能作为加速目标</strong>：同型号设备无法可靠区分，可能指错盘。</li>
-    <li>再往下是一些性能相关的提示，建议关注一下。</li>
+    <li>对于因为某种原因不能加速的盘，会说明原因及排查方法（如果有）。</li>
+    <li>可能还有一些其他的相关的提示，建议关注一下。</li>
 </ul>
 
 <h2 id="settings-zh">设置界面</h2>
-<p>通过菜单「<strong>设置</strong>」打开。配置只在「启动加速」那一刻被实际应用，加速运行中不能修改设置。窗口分「<strong>基础</strong>」（左）与「<strong>高级</strong>」（右）两栏。</p>
+<p>通过菜单「<strong>设置</strong>」打开，窗口分「<strong>基础</strong>」（左）与「<strong>高级</strong>」（右）两栏。</p>
 
-<h3>基础（左栏）</h3>
+<h3>基础</h3>
 <ul>
     <li><strong>启用 L1 缓存</strong>：默认<strong>开启</strong>。关掉后不再用 L1 缓存，不影响 L2。</li>
-    <li><strong>开始淘汰阈值（内存使用率）</strong>：默认 <code>80%</code>。系统内存使用率超过它时，开始淘汰冷块以释放内存。</li>
-    <li><strong>停止缓存阈值（内存使用率）</strong>：默认 <code>90%</code>。若数据量过大无法及时淘汰，超过它时暂停接受新的缓存数据。需保持「淘汰 &lt; 停止」。</li>
-    <li><strong>L2 摘要 + 「L2 管理」</strong>：这里只显示"已为几块盘配置 L2、合计上限"，具体的 L2 卷与上限在「L2 管理」里按盘维护（见下）。</li>
-    <li><strong>预计额外内存</strong>：窗口底部给出估算，请对照内存余量合理决策。</li>
+    <li><strong>开始淘汰阈值（整机内存使用率）</strong>：默认 <code>80%</code>。系统内存使用率超过它时，开始淘汰冷块以释放内存。</li>
+    <li><strong>停止缓存阈值（整机内存使用率）</strong>：默认 <code>90%</code>。若数据量过大无法及时淘汰，超过它时暂停接受新的缓存数据。需保持「淘汰 &lt; 停止」。</li>
+    <li><strong>L2 摘要 + 「L2 管理」</strong>：这里只显示"已为几块盘配置 L2、合计上限"，具体的 L2 所在卷与上限在「L2 管理」里按盘维护（见下）。</li>
+    <li><strong>预计额外内存</strong>：除了缓存占用的部分外，为了加速所必须的内存占用。调整参数时请避免这个数字占用你的太多内存。由于实际使用时缓存会动态变化等，计算结果仅供参考。</li>
 </ul>
 
-<h3>高级（右栏）</h3>
+<h3>高级</h3>
 <ul>
     <li><strong>iSCSI 端点</strong>：监听地址（默认 <code>127.0.0.1</code>）与端口（默认 <code>3260</code>，范围 1–65535）。只监听回环；除非与已有 iSCSI 冲突，否则不用改。</li>
-    <li><strong>启用自动 iSCSI 登录</strong>：默认<strong>开启</strong>。开启时程序启动 target 后会自动连接，盘符直接回来。关闭后 target 照常监听，但需要你到「iSCSI 发起程序」手动连接；<strong>自动登录失败会直接按启动失败处理</strong>并引导你关闭本项后重试。</li>
-    <li><strong>L1 调参</strong>：淘汰窗口、淘汰宽限、单次淘汰块数。一般无需修改。</li>
-    <li><strong>L2 调参</strong>：保守线（默认 <code>80%</code>，范围 50–99%）与 ghost 倍率。一般无需修改。</li>
+    <li><strong>启用自动 iSCSI 登录</strong>：仅供调试或特殊情况使用，默认<strong>开启</strong>。开启时程序启动 target 后会自动连接，盘符直接回来。关闭后 target 照常监听，但需要你到系统自带的「iSCSI 发起程序」手动连接。</li>
+    <li><strong>L1 调参、L2 调参</strong>：一般无需修改。如果你对我们的缓存淘汰算法有很深的了解，希望改变参数尝试更多组合，可以试试。</li>
+    
     <li><strong>远程</strong>：远程服务监听端口与上次的对端地址（仅「远程」实验性功能使用）。</li>
 </ul>
 
 <h3 id="set-l2-zh">L2 管理（每盘独立配置）</h3>
-<p>从「设置 → 基础 → L2 管理」打开，一张表维护每块盘的 L2：</p>
+<p>从「设置 → L2 管理」打开，一张表维护每块盘的 L2 缓存文件</p>
+<p>首先明确&nbsp;L2 缓存文件的作用：当使用 L2 加速慢盘时，盘上的数据会部分复制到快盘一份，读取时尽可能直接读取快盘上的数据以提高速度。具体来说，慢盘的数据会被部分写入 L2 缓存文件中。</p>
 <ul>
-    <li>列：<strong>盘 | L2 卷 | 上限 | 实占 | 状态</strong>。L2 卷是行内下拉，上限是行内输入（GiB，1–64）。</li>
-    <li><strong>新建</strong>：末尾加一行空行，从下拉里选盘、选 L2 卷、填上限。</li>
-    <li><strong>删除</strong>：移除这一行<strong>并删除它的缓存文件</strong>（会二次确认）。</li>
+    <li><strong>要加速的盘</strong>：这个 L2 缓存文件会在加速哪块慢盘时被使用。慢盘和&nbsp;L2 缓存文件一一对应。</li>
+    <li><strong>L2 所在卷</strong>：要把 L2 缓存文件放到哪个快盘，会实际占用你所选卷的部分空间，所选卷越快加速效果越好。</li>
+    <li><strong>上限</strong>：这个 L2 缓存文件最多可以扩展到多大，占用多大快盘空间。</li>
+    <li><strong>实占</strong>：这个 L2 缓存文件目前占用了多少空间。</li>
+    <li><strong>启用</strong>：临时关闭这块盘的 L2（只跑 L1）。缓存文件会保留；若账本仍有效，下次启动这块盘时会先询问（继续会把它标记为待校验）；已经失效的账本不会再提示。重新启用时可能需要校验。</li>
+    <li><strong>已初始化</strong>（缓存文件已建立）的行，<strong>要加速的盘</strong>与 <strong>L2 所在卷</strong>会显示为文字、不能修改；需要改的话先「清空缓存内容」或删除该行。</li>
+    <li><strong>状态</strong>：指示出这个 L2 缓存文件是否能够正常运行；「待校验」表示账本已失效，下次启用需要校验。</li>
+<li><strong>新建</strong>：末尾加一行空行，从下拉里选盘、选 L2 所在卷、填上限。</li>
+    <li><strong>删除</strong>：移除这一行<strong>并删除它的缓存文件</strong>，释放硬盘空间。</li>
     <li><strong>清空缓存内容</strong>：保留配置，只删缓存内容，实占归 0；下次加速会自动重建。</li>
-    <li><strong>未识别</strong>的目录只读显示（盘=未知、状态=未识别）。<strong>旧版布局</strong>（<code>FlyDisk.Cache</code> 根目录下的 <code>cache.dat</code> / <code>index.bin</code>）新版已不支持：程序启动时会提示删除，选「否」则退出。</li>
-    <li>未接上的盘也会显示，卷与上限仍可编辑。</li>
-    <li>上限<strong>超过该卷可用空间</strong>时，启动会被<strong>阻止</strong>并提示该卷最多能放多少；请回来把上限调小（不再静默夹取）。</li>
-    <li><strong>配置不完整</strong>（选了盘，但 L2 卷为空 / 上限无效）：允许先留空保存，但<strong>启动时会被拒绝</strong>；请补全该行，或删除这一行。</li>
-    <li>关闭窗口点「确定」保存，「取消」不生效。</li>
+    
+    
+    <li>修改完成后点<strong>「确定」</strong>保存，「取消」或直接关闭窗口不生效。</li>
 </ul>
-<p class="tip">&nbsp;L2 不会预先占满空间：它以 64 MiB 的整块随实际写入逐步增长，用多少占多少，未用到的空间仍可交给缓存盘上的其他内容使用。</p>
+<p class="tip">&nbsp;L2 文件不会预先占满空间上限：随实际写入逐步增长，用多少占多少，未用到的空间用户仍可自由使用。</p>
 <h2 id="inspector-zh">检查器</h2>
 <p>菜单「<strong>检查器</strong>」打开，用来观察当前运行状态、统计数据，以便确定加速有没有效果。顶部有两个页签：</p>
 
@@ -648,19 +653,19 @@
 </ul>
 
 <h3>详细页</h3>
-<p>使用时通常不需要关注，纯文字，排查问题时方便直接复制粘贴给 AI。多盘同时加速时，会依次列出<strong>所有盘</strong>的完整信息。</p>
+<p>使用时通常不需要关注，纯文字，排查问题时方便直接复制粘贴给 AI 或通过 issue 反馈。多盘同时加速时，会依次列出所有盘的完整信息。</p>
 
 <h3>悬浮窗与置顶</h3>
 <ul>
-    <li>检查器<strong>最小化</strong>时，会变成一个 <strong>50×50 的悬浮窗</strong>方便随时查看加速情况：左右分半，用灰阶分别显示「加速后读取」与「源盘读取」速度。单击悬浮窗可快捷打开检查器。</li>
+    <li>检查器<strong>最小化</strong>时，会变成一个 <strong>50×50 的悬浮窗</strong>方便随时查看加速情况：左右分半，用灰阶分别显示当前简要页选中的盘的「加速后读取」与「源盘读取」速度。单击悬浮窗可快捷打开检查器。</li>
     <li>检查器恢复显示后，悬浮窗自动隐藏。</li>
-    <li>不想要就直接彻底关闭检查器即可。&nbsp;</li>
+    <li>不想要就直接<strong>彻底关闭检查器</strong>即可。&nbsp;</li>
 </ul>
 
 <h2 id="verify-zh">校验 L2</h2>
 
 <p>当程序判断 L2 缓存的可信度存疑时强制进行。你也可以手动触发，但正常使用时通常没必要 。&nbsp;<strong>&nbsp;</strong></p>
-<div class="warn"> <strong>⚠ 注意：</strong>在开启 L2 功能时，你<strong>有责任避免</strong>进行手动脱机、使用另一个电脑/双操作系统的另一个使用硬盘等会<strong>令 L2 和实际数据不一致</strong>的操作，这种操作我们的程序无法有效自动察觉，应<strong>手动触发一轮 L2 校验</strong>。如你不确定你的操作是否会导致上述问题，也应<strong>手动触发一轮 L2 校验</strong>。</div>
+<div class="warn"> <strong>⚠ 注意：</strong>在开启 L2 功能时，你<strong>有责任避免</strong>进行手动脱机、使用 另一个电脑/双操作系统的另一个 使用硬盘等会<strong>令 L2 和实际数据不一致</strong>的操作，这种操作我们的程序无法有效自动察觉，应<strong>手动触发一轮 L2 校验</strong>。如你不确定你的操作是否会导致上述问题，也应<strong>手动触发一轮 L2 校验</strong>。</div>
 <p>手动校验方法如下：&nbsp;</p>
 
 <ol>
@@ -668,13 +673,11 @@
     <li>点「<strong>校验</strong>」：程序逐块比对 L2 缓存与源盘，可能需要几分钟，取决于你的 L2 占用情况。</li>
     <li>结果显示「一致：N 块全部相同」或「不一致 N 块（错误率 …）」。</li>
     <li>若发现不一致，可点「<strong>修复</strong>」：把源盘的数据回写到 L2 容器，把这些错乱的块修回来。</li>
+    <li>校验过程可随时「<strong>取消</strong>」&nbsp;</li>
 </ol>
-
-<div class="warn">校验要对源盘做只读访问；因此不能在加速运行时进行——请先「停止加速」。校验过程可随时「取消」，取消不会破坏已有缓存。</div>
-
 <h2 id="reonline-zh">重新联机硬盘（把盘还给系统）</h2>
 
-<p>停止加速后，目标盘保持脱机，系统不可见，以便下次加速使用。要把它交还给操作系统，有两种办法：</p>
+<p>使用 L2 的目标盘在停止加速后保持脱机、系统不可见，以便下次加速使用；未使用 L2 的盘会在停止成功后自动联机（启动失败清理、克隆盘重试与关机路径不会）。要手动把盘交还给操作系统，有两种办法：</p>
 <ul>
     <li><strong>菜单「重新联机硬盘」</strong>：列表只显示脱机盘，大概率都是你加速过的，选一块、确定即可一键完成。</li>
     <li>或者用 Windows 自带：<strong>磁盘管理 → 右键该盘 → 联机</strong>。如失败也可以咨询 AI 后使用命令行联机。</li>
@@ -729,8 +732,8 @@
 <h2 id="faq-zh">常见问题</h2>
 
 <h3>停止加速后，那块盘在系统里不见了？</h3>
-<p>正常。停止加速后盘中保留「脱机并由本程序独占」的状态，这是为了跨重启缓存可信。再次使用只需再次加速即可。也可以用菜单「重新联机硬盘」或「磁盘管理 → 联机」即可还盘。见“重新联机硬盘”章节</p>
-
+<p>不用担心，你的数据没有丢。</p>
+<p>如果这块盘使用了 L2，属正常，停止后盘中保留「脱机并由本程序独占」的状态，这是为了跨重启缓存可信。未使用 L2 的盘会在停止成功后自动联机，但特殊情况可能也不会回来。用菜单「重新联机硬盘」或「磁盘管理 → 联机」即可还盘。见“重新联机硬盘”章节。</p>
 <h3>启动时提示「L2 缓存不匹配」或「需要校验」？</h3>
 <p><strong>这是两个不同的弹窗，按钮都是「是 / 否」，但含义相反</strong>，请按标题和正文写的那一条来判断：</p>
 <ul>
@@ -931,8 +934,9 @@
 <div class="warn">
     <strong>⚠ Please read first</strong>
     <ul>
-        <li>This software is in <strong>Beta</strong>. Stability is not 100% guaranteed — <strong>do not use it with important data</strong>.</li>
-        <li>After you stop acceleration, the target disk <strong>stays offline and invisible</strong> to the system. This is intentional (the disk stays owned by the program so the cache survives reboots). See "Re-online a Disk" to give it back.</li>
+        <li>This software is in <strong>Beta</strong>. Stability is not 100% guaranteed — <strong>do not use it with important data</strong>. We accept no liability for any loss caused by it.</li>
+        <li>In theory there is a small chance of a <strong>game account ban</strong>. Although unlikely, if you use it for game acceleration, always validate with a <strong>new alt account</strong> for <strong>at least a week of intensive gaming</strong> first.&nbsp;</li>
+        <li>When L2 is used, the target disk <strong>stays offline and invisible</strong> to the system after you stop acceleration. This is intentional (the disk stays owned by the program so the cache survives reboots). Disks without L2 are brought back online automatically after a successful stop. See "Re-online a Disk" to give one back manually.</li>
         <li>The program must run <strong>as administrator</strong> (the manifest requests it, so a UAC prompt appears), otherwise it cannot take the disk offline or open it exclusively.</li>
     </ul>
 </div>
@@ -981,63 +985,65 @@
     <tr><td>Menu bar</td><td>Settings / Inspector / Verify L2 / Re-online Disk / Remote / 🌍 Language. Some entries are temporarily disabled while acceleration is running.</td></tr>
     <tr><td>Main button</td><td>"Start Acceleration" ↔ "Stop Acceleration", etc. Handles the main functions.</td></tr>
     <tr><td>Status line</td><td>Shows a few run-state indicators such as the iSCSI address, the current connection count and the link state.</td></tr>
-    <tr><td>Log box</td><td>Notices and errors during operation, written as "problem → cause → action". Check here first when something goes wrong.</td></tr>
+    <tr><td>Log box</td><td>Notices and errors during operation.</td></tr>
 </table>
 
 <h2 id="start-en">Starting &amp; Choosing a Disk</h2>
 
 <p><strong>You confirm the disk every time you start</strong> — on purpose. Otherwise, after changing the configuration you might start days later and have forgotten which disk you chose, and pick the wrong one by mistake; the default option at this step is your previous choice.</p>
 
-<h3>Reading the list</h3>
+<h3>Disk Selection Window&nbsp;</h3>
 <p>Each row looks like this:</p>
 <pre><code>Disk 0 (C: , D:)    Model    (Capacity)</code></pre>
-<p>The parentheses hold the <strong>drive letters</strong> on that disk (a disk may map to several volumes and letters, separated by English commas). An offline disk usually means you accelerated it before, so it has no letters and that slot shows "<em>offline</em>".</p>
+<p>The parentheses hold the <strong>drive letters</strong> on that disk (a disk may map to several volumes and letters, separated by English commas). An offline disk usually means you accelerated it before; that slot shows "<em>offline</em>".</p>
 <p>For now you can accelerate only a whole physical disk at once; per-volume acceleration is not supported.</p>
-<p><strong>You can select several disks at once</strong>: <strong>tick the checkbox in front of each row</strong>; after confirming they are accelerated <strong>simultaneously</strong> — each disk gets its own iSCSI port (incrementing from the configured port) and its own target name, so they do not interfere. Multiple disks are <strong>all or nothing</strong>: if any disk fails, every session started by this attempt is stopped and the reasons are shown in one dialog (you never end up with "some accelerating, some not"). With multiple disks the main button becomes "Stop acceleration (all N)" for one-shot teardown. <strong>Every disk can have its own L2</strong> (its own L2 volume and limit, configured per disk in "L2 Management"; disks without a configuration use L1 + write-through only).</p>
+<p><strong>You can select several disks at once</strong>: <strong>tick the checkbox in front of each row</strong>; after confirming, those disks are accelerated <strong>simultaneously</strong> — each disk gets its own iSCSI port (incrementing from the configured port) and its own target name, so they do not interfere. <strong>Every disk can have its own L2 cache</strong>; see "L2 Management" in Settings for how to configure it.</p>
 
 <h3>Disk info area</h3>
 <p>After selecting a row, the area below shows:</p>
 <ul>
     <li>The first line of basic info: <strong>bytes per sector · capacity · serial number</strong>.</li>
-    <li>Then the ❌ reasons why it <strong>cannot</strong> be accelerated and how to troubleshoot them (if any). A disk <strong>without a serial number cannot be the acceleration target</strong>: devices of the same model could not be told apart reliably, so the wrong disk might be picked.</li>
-    <li>Then a few performance-related hints — worth a look.</li>
+    <li>For a disk that cannot be accelerated for some reason, the reason and troubleshooting steps are shown (if any).</li>
+    <li>There may be some other related hints — worth a look.</li>
 </ul>
 
 <h2 id="settings-en">Settings</h2>
-<p>Open it from the "<strong>Settings</strong>" menu. The configuration is actually applied at the moment you press "Start Acceleration"; settings cannot be changed while acceleration is running. The window has two columns: <strong>Basic</strong> (left) and <strong>Advanced</strong> (right).</p>
+<p>Open it from the "<strong>Settings</strong>" menu. The window has two columns: <strong>Basic</strong> (left) and <strong>Advanced</strong> (right).</p>
 
-<h3>Basic (left)</h3>
+<h3>Basic</h3>
 <ul>
     <li><strong>Enable L1 cache</strong>: <strong>on</strong> by default. Turning it off stops using the L1 cache; it does not affect L2.</li>
-    <li><strong>Eviction start threshold (memory usage)</strong>: default <code>80%</code>. When system memory usage exceeds it, cold blocks start being evicted to free memory.</li>
-    <li><strong>Stop caching threshold (memory usage)</strong>: default <code>90%</code>. If too much data cannot be evicted in time and usage exceeds it, new cache data stops being accepted. Keep "eviction &lt; stop".</li>
+    <li><strong>Eviction start threshold (overall system memory usage)</strong>: default <code>80%</code>. When system memory usage exceeds it, cold blocks start being evicted to free memory.</li>
+    <li><strong>Stop caching threshold (overall system memory usage)</strong>: default <code>90%</code>. If too much data cannot be evicted in time and usage exceeds it, new cache data stops being accepted. Keep "eviction &lt; stop".</li>
     <li><strong>L2 summary + "L2 Management"</strong>: only shows how many disks have L2 configured and their total limit; per-disk volumes and limits are maintained in "L2 Management" (see below).</li>
-    <li><strong>Estimated extra memory</strong>: shown at the bottom of the window; decide the limits sensibly against your free memory.</li>
+    <li><strong>Estimated extra memory</strong>: memory required for acceleration in addition to the cache itself. Avoid letting this number take too much of your RAM; actual cache usage changes dynamically, so the result is only an estimate.</li>
 </ul>
 
-<h3>Advanced (right)</h3>
+<h3>Advanced</h3>
 <ul>
     <li><strong>iSCSI endpoint</strong>: listen address (default <code>127.0.0.1</code>) and port (default <code>3260</code>, range 1–65535). Loopback only; leave it alone unless it conflicts with an existing iSCSI setup.</li>
-    <li><strong>Log in to iSCSI automatically</strong>: <strong>on</strong> by default. When on, the program connects automatically right after starting the target, so the drive letters come back immediately. When off, the target still listens, but you must connect manually from the iSCSI Initiator. <strong>An auto-login failure is treated as a startup failure</strong> and the program guides you to turn this option off and retry.</li>
-    <li><strong>L1 tuning</strong>: eviction window, eviction grace, blocks per eviction. Normally no need to change.</li>
-    <li><strong>L2 tuning</strong>: conservative line (default <code>80%</code>, range 50–99%) and ghost ratio. Normally no need to change.</li>
+    <li><strong>Log in to iSCSI automatically</strong>: for debugging or special cases only, <strong>on</strong> by default. When on, the program connects automatically right after starting the target, so the drive letters come back immediately. When off, the target still listens, but you must connect manually from the Windows "iSCSI Initiator".</li>
+    <li><strong>L1 tuning, L2 tuning</strong>: normally no need to change. If you know our eviction algorithms very well and want to try other parameter combinations, you can experiment.</li>
     <li><strong>Remote</strong>: remote service listen port and the last peer address (used only by the experimental "Remote" feature).</li>
 </ul>
 
 <h3 id="set-l2-en">L2 Management (per-disk)</h3>
-<p>Open it from "Settings → Basic → L2 Management". One table maintains L2 for every disk:</p>
+<p>Open it from "Settings → L2 Management". One table maintains the L2 cache file for every disk.</p>
+<p>First, what the L2 cache file does: when L2 accelerates a slow disk, part of the data on that disk is copied to the fast disk, and reads prefer the copy on the fast disk to improve speed. Concretely, part of the slow disk's data is written into the L2 cache file.</p>
 <ul>
-    <li>Columns: <strong>Disk | L2 volume | Limit | Used | Status</strong>. The volume is an in-row drop-down; the limit is an in-row input (GiB, 1–64).</li>
-    <li><strong>New</strong>: appends an empty row; choose a disk, a volume and a limit.</li>
-    <li><strong>Delete</strong>: removes the row <strong>and deletes its cache files</strong> (confirmation required).</li>
-    <li><strong>Clear cache content</strong>: keeps the configuration, deletes only the cached content, and resets "Used" to 0; it is rebuilt on the next start.</li>
-    <li><strong>Unrecognized</strong> folders are shown read-only (disk = unknown, status = unrecognized). The <strong>old layout</strong> (<code>cache.dat</code> / <code>index.bin</code> directly under <code>FlyDisk.Cache</code>) is no longer supported: startup asks whether to delete it; choosing "No" exits the program.</li>
-    <li>Disks that are not connected are still listed; their volume and limit remain editable.</li>
-    <li>If the limit <strong>exceeds the volume's free space</strong>, startup is <strong>blocked</strong> and the message tells you the maximum this volume can hold; lower the limit here (no more silent clamping).</li>
-    <li><strong>Incomplete configuration</strong> (a disk is selected but the L2 volume is empty / the limit is invalid): you may save it as a draft, but <strong>startup will be refused</strong>; complete the row or delete it.</li>
-    <li>Click "OK" to save; "Cancel" discards the changes.</li>
+    <li><strong>Disk to accelerate</strong>: which slow disk this L2 cache file is used for. Each slow disk maps to one L2 cache file.</li>
+    <li><strong>L2 volume</strong>: which fast disk to place the L2 cache file on. It actually occupies part of the selected volume; the faster the volume, the better the acceleration.</li>
+    <li><strong>Limit</strong>: the maximum size this L2 cache file may grow to, i.e. how much space it may occupy on the fast disk.</li>
+    <li><strong>Used</strong>: how much space this L2 cache file currently occupies.</li>
+    <li><strong>On</strong>: temporarily turn L2 off for this disk (L1 only). The cache file is kept; if the ledger is still valid, starting this disk asks first (continuing marks it as needing verification), while an already-invalid ledger is not prompted again. Re-enabling may require verification.</li>
+    <li>Once a cache is <strong>initialized</strong> (the cache file has been created), <strong>Disk to accelerate</strong> and <strong>L2 volume</strong> are shown as plain text and cannot be changed; to change them, clear the cache content first or delete the row.</li>
+    <li><strong>Status</strong>: indicates whether this L2 cache file can work normally; "Needs verification" means the ledger is already invalid and must be verified before L2 is enabled again.</li>
+    <li><strong>New</strong>: appends an empty row; choose a disk, an L2 volume and a limit.</li>
+    <li><strong>Delete</strong>: removes this row <strong>and deletes its cache file</strong>, freeing disk space.</li>
+    <li><strong>Clear cache content</strong>: keeps the configuration, deletes only the cached content, and resets "Used" to 0; it is rebuilt on the next acceleration.</li>
+    <li>Click <strong>"OK"</strong> to save; "Cancel" or closing the window directly discards the changes.</li>
 </ul>
-<p class="tip">&nbsp;L2 does not occupy the space up front: it grows in 64 MiB whole blocks as data is actually written — it only uses what it needs, and the unused space stays available to other content on the cache disk.</p>
+<p class="tip">&nbsp;The L2 file does not fill the whole limit up front: it grows with actual writes, uses only as much as it needs, and the unused space remains available to you.</p>
 
 <h2 id="inspector-en">Inspector</h2>
 <p>Open it from the "<strong>Inspector</strong>" menu to watch the current run state and statistics, so you can tell whether acceleration is doing its job. There are two tabs at the top:</p>
@@ -1052,11 +1058,11 @@
 </ul>
 
 <h3>Detail tab</h3>
-<p>Usually nothing to worry about during use; it is plain text, handy for copying and pasting to an AI when troubleshooting. When several disks are accelerated at once, it lists the full information for <strong>every disk</strong> in sequence.</p>
+<p>Usually nothing to worry about during use; it is plain text, handy for copying and pasting to an AI or reporting via an issue when troubleshooting. When several disks are accelerated at once, it lists the full information for <strong>every disk</strong> in sequence.</p>
 
 <h3>Floating window and top-most</h3>
 <ul>
-    <li>When the inspector is <strong>minimized</strong>, it turns into a <strong>50×50 floating window</strong> for checking acceleration at any time: split into left/right halves showing the "accelerated read" and "source read" speeds in grayscale. Single-click the floating window to open the inspector.</li>
+    <li>When the inspector is <strong>minimized</strong>, it turns into a <strong>50×50 floating window</strong> for checking acceleration at any time: split into left/right halves showing the "accelerated read" and "source read" speeds of the disk selected in the brief tab, in grayscale. Single-click the floating window to open the inspector.</li>
     <li>Restoring the inspector hides the floating window automatically.</li>
     <li>If you do not want it, just close the inspector entirely.&nbsp;</li>
 </ul>
@@ -1072,13 +1078,12 @@
     <li>Click "<strong>Verify</strong>": the program compares the L2 cache against the source disk block by block; this may take minutes depending on how much L2 is in use.</li>
     <li>The result reads "consistent: all N blocks equal" or "N inconsistent blocks (error rate …)".</li>
     <li>If inconsistencies are found, click "<strong>Repair</strong>": it writes the source data back into the L2 container and fixes those scrambled blocks.</li>
+    <li>Verification can be <strong>cancelled</strong> at any time.&nbsp;</li>
 </ol>
-
-<div class="warn">Verification reads the source disk read-only, so it cannot run while acceleration is active — stop first. You can "Cancel" at any time; cancelling does not damage the existing cache.</div>
 
 <h2 id="reonline-en">Re-online a Disk (give the disk back to the system)</h2>
 
-<p>After stopping acceleration the target disk stays offline and invisible to the system, ready for the next acceleration. To give it back to the OS, there are two ways:</p>
+<p>A target disk that uses L2 stays offline and invisible after stopping, ready for the next acceleration; disks without L2 are brought back online automatically after a successful stop (not on startup-failure cleanup, clone retry, or shutdown). To give a disk back to the OS manually, there are two ways:</p>
 <ul>
     <li>Menu "<strong>Re-online Disk</strong>": the list shows only offline disks — most likely the ones you accelerated. Pick one and confirm to finish in one click.</li>
     <li>Or use the Windows built-in: <strong>Disk Management → right-click the disk → Online</strong>. If that fails, you can also consult an AI and bring it online from the command line.</li>
@@ -1133,7 +1138,8 @@
 <h2 id="faq-en">FAQ</h2>
 
 <h3>The disk disappeared from Windows after stopping?</h3>
-<p>Normal. After stopping, the disk keeps the "offline and exclusively owned by this program" state so the cache stays trustworthy across reboots. To use it again, just accelerate again; you can also use the menu "Re-online Disk" or "Disk Management → Online" to give it back. See the "Re-online a Disk" section.</p>
+<p>Don't worry, your data is not lost.</p>
+<p>If the disk uses L2, this is normal: after stopping it keeps the "offline and exclusively owned by this program" state so the cache stays trustworthy across reboots. Disks without L2 are brought back online automatically after a successful stop, but in special cases it may still not come back. Use the menu "Re-online Disk" or "Disk Management → Online" to give it back. See the "Re-online a Disk" section.</p>
 
 <h3>"L2 cache mismatch" or "needs verification" at startup?</h3>
 <p><strong>These are two different dialogs. Both use "Yes / No", but Yes means opposite things</strong> — judge by what the title and body say:</p>

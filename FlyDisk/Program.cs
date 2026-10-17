@@ -79,6 +79,14 @@ namespace FlyDisk
 
             ApplicationConfiguration.Initialize();
 
+            // 兜底：本程序占着用户的整块盘（脱机 + 独占），一旦有未捕获异常带着进程死掉，
+            // 那块盘就留在"看不见"的状态里。所以要把异常留痕并明确告知恢复路径，而不是静默退出。
+            // **必须早于任何控件创建**：WinForms 规定线程上一旦创建过控件，就不能再改异常模式
+            // （首次启动的 WarningForm 会创建控件）。
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (s, e) => ReportCrash(e.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => ReportCrash(e.ExceptionObject as Exception);
+
             // 启动版权/授权声明（GPL 建议交互式程序启动时给出提示；本程序不弹窗，改为写诊断日志，
             // 见 THIRD-PARTY-NOTICES.md 第六节）。放在最前，保证每次运行开头都有一份、且不依赖后续初始化是否成功。
             LogService.DebugFile("FlyDisk - Copyright (C) 2026 youke1686 (https://github.com/youke1686)");
@@ -117,6 +125,16 @@ namespace FlyDisk
             }
             Locale.SetLanguage(config.Language);
 
+            // 首次打开：使用前风险确认。只有「同意并继续」才进入主界面；
+            // 「不同意，退出」/ 关窗 = 直接退出，不触碰任何磁盘状态。
+            if (!config.WarningAccepted)
+            {
+                using var warning = new WarningForm();
+                if (warning.ShowDialog() != DialogResult.OK) return;
+                config.WarningAccepted = true;
+                ConfigService.Save(config, out _);   // 写失败只会在下次启动再问一次
+            }
+
             // 旧布局 L2 缓存：新版不再支持、也不再迁移。启动时先问用户是否删除；
             // 选「否」= 直接退出（不在带着旧缓存的情况下继续跑）。
             if (!L2Manage.PromptRemoveLegacyCaches(config)) return;
@@ -124,12 +142,6 @@ namespace FlyDisk
             // 崩溃 / 强杀残留：上次进程被杀时，iSCSI 会话与发现门户还留在系统里。启动期幂等清理一次
             // （服务没在跑时内部直接跳过；任何失败都只记日志、不拦启动）。
             IscsiInitiator.CleanupStale(config.TargetIqn, config.ListenAddress, config.ListenPort);
-
-            // 兜底：本程序占着用户的整块盘（脱机 + 独占），一旦有未捕获异常带着进程死掉，
-            // 那块盘就留在"看不见"的状态里。所以要把异常留痕并明确告知恢复路径，而不是静默退出。
-            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-            Application.ThreadException += (s, e) => ReportCrash(e.Exception);
-            AppDomain.CurrentDomain.UnhandledException += (s, e) => ReportCrash(e.ExceptionObject as Exception);
 
             Application.Run(new Form1());
         }

@@ -33,8 +33,9 @@ namespace FlyDisk
     /// <summary>
     /// **「L2 管理」**（阶段 4）：一张表维护**每块盘**的 L2 配置与缓存。
     ///
-    /// 列：盘 | L2 卷 | 上限 | 实占 | 状态。
+    /// 列：盘 | L2 卷 | 上限 | 实占 | 启用 | 状态。
     /// - 新建 = 末尾加空行（卷与上限都留空）；盘与卷都是行内下拉，上限是行内输入；
+    /// - 「启用」是行内复选框：取消 = 本次只用 L1，缓存文件与账本保留；
     /// - 删除 = 移除配置条目**并删除缓存文件**（确认框明确说明会删文件）；
     /// - 「清空缓存内容」= 删除容器/索引、实占归 0，配置保留；
     /// - 未识别行只读（盘=未知、状态=未识别）；
@@ -171,6 +172,7 @@ namespace FlyDisk
         private readonly Label _hdrVolume = new();
         private readonly Label _hdrLimit = new();
         private readonly Label _hdrUsed = new();
+        private readonly Label _hdrEnabled = new();
         private readonly Label _hdrStatus = new();
 
         private readonly Button _add = new();
@@ -192,7 +194,11 @@ namespace FlyDisk
             public long ActualBytes;
             public bool IsRecognized = true;
             public bool IsConfig;
+            public bool Enabled = true;
+            public bool Initialized;
             public string Status = string.Empty;
+            public string StatusEnabled = string.Empty;
+            public string StatusDisabled = string.Empty;
         }
 
         private sealed class DiskChoice
@@ -211,10 +217,13 @@ namespace FlyDisk
             public Panel Container = new();
             public Panel Accent = new();
             public ComboBox Disk = new();
+            public Label DiskText = new();
             public Label DiskPrompt = new();
             public ComboBox Volume = new();
+            public Label VolumeText = new();
             public TextBox Limit = new();
             public Label Used = new();
+            public CheckBox EnableBox = new();
             public Label Status = new();
             public string LastValidLimit = string.Empty;
         }
@@ -279,11 +288,14 @@ namespace FlyDisk
             _hdrVolume.Text = Locale.T("l2m.col.volume");
             _hdrLimit.Text = Locale.T("l2m.col.limit");
             _hdrUsed.Text = Locale.T("l2m.col.used");
+            _hdrEnabled.Text = Locale.T("l2m.col.enabled");
             _hdrStatus.Text = Locale.T("l2m.col.status");
 
             foreach (RowView view in _rowViews)
             {
                 bool unknown = !view.Data.IsRecognized || IsScannedUnmapped(view.Data);
+                DiskChoice? selected = _diskChoices.Find(c =>
+                    string.Equals(c.Identity, view.Data.DiskIdentity, StringComparison.Ordinal));
                 view.Disk.BeginUpdate();
                 view.Disk.Items.Clear();
                 if (unknown)
@@ -294,12 +306,13 @@ namespace FlyDisk
                 else
                 {
                     foreach (DiskChoice choice in _diskChoices) view.Disk.Items.Add(choice);
-                    DiskChoice? selected = _diskChoices.Find(c =>
-                        string.Equals(c.Identity, view.Data.DiskIdentity, StringComparison.Ordinal));
                     view.Disk.SelectedIndex = selected != null ? view.Disk.Items.IndexOf(selected) : -1;
                 }
                 view.Disk.EndUpdate();
                 view.DiskPrompt.Text = Locale.T("l2m.pickDisk");
+                view.DiskText.Text = unknown ? Locale.T("l2m.unknownDisk")
+                                             : (selected?.Text ?? Locale.T("l2m.unknownDisk"));
+                view.VolumeText.Text = view.Data.CacheVolume;
                 UpdateDiskPrompt(view);
             }
         }
@@ -358,8 +371,9 @@ namespace FlyDisk
             ConfigureHeader(_hdrVolume, 282, 106, "l2m.col.volume");
             ConfigureHeader(_hdrLimit, 392, 88, "l2m.col.limit");
             ConfigureHeader(_hdrUsed, 484, 86, "l2m.col.used");
-            ConfigureHeader(_hdrStatus, 574, 232, "l2m.col.status");
-            header.Controls.AddRange(new Control[] { _hdrDisk, _hdrVolume, _hdrLimit, _hdrUsed, _hdrStatus });
+            ConfigureHeader(_hdrEnabled, 574, 36, "l2m.col.enabled");
+            ConfigureHeader(_hdrStatus, 614, 192, "l2m.col.status");
+            header.Controls.AddRange(new Control[] { _hdrDisk, _hdrVolume, _hdrLimit, _hdrUsed, _hdrEnabled, _hdrStatus });
             Controls.Add(header);
 
             _rowsPanel.Location = new Point(12, 38);
@@ -444,7 +458,24 @@ namespace FlyDisk
                     ? SsdCacheService.GetDiskCacheDirectory(entry.CacheVolume, ownerHash)
                     : string.Empty;
                 L2CacheInfo? cache = caches.Find(c => c.Recognized && c.OwnerIdentity == ownerHash);
+                // 只有"缓存就在配置的这个卷上"才算已初始化：卷不匹配时允许用户修正配置。
+                // 但无论匹配与否都把它标记为"已认领"，避免同一块盘出现两行（配置行 + 孤儿行）。
+                bool initialized = cache != null && SameVolume(cache.DriveRoot, entry.CacheVolume);
                 if (cache != null) usedCacheDirs.Add(cache.Directory);
+
+                bool complete = !string.IsNullOrWhiteSpace(entry.CacheVolume) && entry.MaxBytes > 0;
+                bool needsVerify = initialized && cache!.LastShutdownClean != true;
+                string enabledStatus;
+                if (!complete) enabledStatus = Locale.T("l2m.statusIncomplete");
+                else if (!initialized) enabledStatus = Locale.T(choice?.Info == null ? "l2m.statusNotConnected" : "l2m.statusNoCache");
+                else if (needsVerify) enabledStatus = Locale.T("l2m.statusNeedsVerify");
+                else enabledStatus = Locale.T("l2m.statusConfigured");
+
+                string disabledStatus = !complete
+                    ? Locale.T("l2m.statusIncomplete")
+                    : needsVerify
+                        ? Locale.T("l2m.statusNeedsVerify")
+                        : Locale.T("l2m.statusDisabled");
 
                 AddRowView(new Row
                 {
@@ -452,14 +483,14 @@ namespace FlyDisk
                     OwnerHash = ownerHash,
                     CacheVolume = entry.CacheVolume,
                     MaxBytes = entry.MaxBytes,
-                    CacheDirectory = cache?.Directory ?? dir,
-                    ActualBytes = cache?.TotalBytes ?? 0,
+                    CacheDirectory = initialized ? cache!.Directory : dir,
+                    ActualBytes = initialized ? cache!.TotalBytes : 0,
                     IsConfig = true,
-                    Status = !string.IsNullOrWhiteSpace(entry.CacheVolume) && entry.MaxBytes > 0
-                        ? cache != null
-                            ? Locale.T("l2m.statusConfigured")
-                            : Locale.T(choice?.Info == null ? "l2m.statusNotConnected" : "l2m.statusNoCache")
-                        : Locale.T("l2m.statusIncomplete"),
+                    Enabled = entry.Enabled,
+                    Initialized = initialized,
+                    StatusEnabled = enabledStatus,
+                    StatusDisabled = disabledStatus,
+                    Status = entry.Enabled ? enabledStatus : disabledStatus,
                 });
             }
 
@@ -469,14 +500,19 @@ namespace FlyDisk
                 if (usedCacheDirs.Contains(cache.Directory)) continue;
                 if (cache.Recognized)
                 {
+                    string identity = FindIdentity(cache.OwnerIdentity);
                     AddRowView(new Row
                     {
-                        DiskIdentity = FindIdentity(cache.OwnerIdentity),
+                        DiskIdentity = identity,
                         OwnerHash = cache.OwnerIdentity,
                         CacheVolume = cache.DriveRoot.TrimEnd('\\'),
                         MaxBytes = cache.StoredSlots > 0 ? (long)cache.StoredSlots * ServiceConstants.BlockSize : DefaultMaxBytes,
                         CacheDirectory = cache.Directory,
                         ActualBytes = cache.TotalBytes,
+                        Enabled = identity.Length > 0,
+                        Initialized = true,
+                        StatusEnabled = Locale.T("l2m.statusUnconfigured"),
+                        StatusDisabled = Locale.T("l2m.statusUnconfigured"),
                         Status = Locale.T("l2m.statusUnconfigured"),
                     });
                 }
@@ -486,7 +522,12 @@ namespace FlyDisk
                     {
                         CacheDirectory = cache.Directory,
                         ActualBytes = cache.TotalBytes,
+                        CacheVolume = cache.DriveRoot.TrimEnd('\\'),
                         IsRecognized = false,
+                        Enabled = false,
+                        Initialized = true,
+                        StatusEnabled = Locale.T("l2m.statusUnrecognized"),
+                        StatusDisabled = Locale.T("l2m.statusUnrecognized"),
                         Status = Locale.T("l2m.statusUnrecognized"),
                     });
                 }
@@ -500,6 +541,11 @@ namespace FlyDisk
             DiskChoice? choice = _diskChoices.Find(c => c.OwnerHash == ownerHash && c.Identity.Length > 0);
             return choice?.Identity ?? string.Empty;
         }
+
+        /// <summary>缓存实际所在卷与配置卷是否是同一个（"D:" / "D:\" 视为同一个）</summary>
+        private static bool SameVolume(string driveRoot, string cacheVolume)
+            => cacheVolume.Length > 0 &&
+               string.Equals(driveRoot.TrimEnd('\\'), cacheVolume.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
 
         private static bool IsScannedUnmapped(Row row)
             => !row.IsConfig && row.CacheDirectory.Length > 0 && row.DiskIdentity.Length == 0;
@@ -538,12 +584,26 @@ namespace FlyDisk
                 Text = Locale.T("l2m.pickDisk"),
                 Cursor = Cursors.Hand,
             };
+            view.DiskText = new Label
+            {
+                Location = new Point(8, 3),
+                Size = new Size(270, 24),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+            };
             view.Volume = new ComboBox
             {
                 Location = new Point(282, 3),
                 Size = new Size(106, 24),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 FlatStyle = FlatStyle.Flat,
+            };
+            view.VolumeText = new Label
+            {
+                Location = new Point(282, 3),
+                Size = new Size(106, 24),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
             };
             view.Limit = new TextBox { Location = new Point(392, 3), Size = new Size(88, 24) };
             view.Used = new Label
@@ -554,12 +614,21 @@ namespace FlyDisk
             };
             view.Status = new Label
             {
-                Location = new Point(574, 7),
-                Size = new Size(232, 20),
+                Location = new Point(614, 7),
+                Size = new Size(192, 20),
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true,
             };
+            view.EnableBox = new CheckBox
+            {
+                Location = new Point(574, 5),
+                Size = new Size(20, 20),
+                Checked = row.Enabled,
+                CheckAlign = ContentAlignment.MiddleCenter,
+            };
 
+            DiskChoice? selected = _diskChoices.Find(c =>
+                string.Equals(c.Identity, row.DiskIdentity, StringComparison.Ordinal));
             bool unknown = !row.IsRecognized || IsScannedUnmapped(row);
             if (unknown)
             {
@@ -570,8 +639,6 @@ namespace FlyDisk
             else
             {
                 foreach (DiskChoice choice in _diskChoices) view.Disk.Items.Add(choice);
-                DiskChoice? selected = _diskChoices.Find(c =>
-                    string.Equals(c.Identity, row.DiskIdentity, StringComparison.Ordinal));
                 view.Disk.SelectedIndex = selected != null ? view.Disk.Items.IndexOf(selected) : -1;
             }
 
@@ -581,6 +648,14 @@ namespace FlyDisk
                 view.Volume.Items.Add(row.CacheVolume);
             }
             view.Volume.SelectedItem = row.CacheVolume.Length > 0 ? row.CacheVolume : null;
+
+            // 已初始化的行：盘与卷用文字展示（不能改）；未初始化才显示下拉。
+            view.DiskText.Text = unknown ? Locale.T("l2m.unknownDisk") : (selected?.Text ?? Locale.T("l2m.unknownDisk"));
+            view.VolumeText.Text = row.CacheVolume;
+            view.Disk.Visible = !row.Initialized;
+            view.Volume.Visible = !row.Initialized;
+            view.DiskText.Visible = row.Initialized;
+            view.VolumeText.Visible = row.Initialized;
 
             view.Limit.Text = row.MaxBytes > 0
                 ? ((decimal)row.MaxBytes / GiB).ToString(CultureInfo.CurrentCulture)
@@ -594,6 +669,7 @@ namespace FlyDisk
             view.Disk.Enabled = view.Disk.Enabled && !diskReadOnly;
             view.Volume.Enabled = !valueReadOnly;
             view.Limit.ReadOnly = valueReadOnly;
+            view.EnableBox.Enabled = !valueReadOnly;
 
             // 初始值设完再挂事件，避免被当成用户修改
             view.Disk.SelectionChangeCommitted += (s, e) => DiskChanged(view);
@@ -614,14 +690,24 @@ namespace FlyDisk
             view.Disk.Enter += (s, e) => SelectView(view);
             view.Volume.Enter += (s, e) => SelectView(view);
             view.Limit.Enter += (s, e) => SelectView(view);
+            view.EnableBox.Enter += (s, e) => SelectView(view);
+            view.EnableBox.CheckedChanged += (s, e) =>
+            {
+                row.Enabled = view.EnableBox.Checked;
+                row.Status = row.Enabled ? row.StatusEnabled : row.StatusDisabled;
+                view.Status.Text = row.Status;
+            };
             view.Used.Click += (s, e) => SelectView(view);
             view.Status.Click += (s, e) => SelectView(view);
+            view.DiskText.Click += (s, e) => SelectView(view);
+            view.VolumeText.Click += (s, e) => SelectView(view);
             view.Accent.Click += (s, e) => SelectView(view);
             view.Container.Click += (s, e) => SelectView(view);
 
             view.Container.Controls.AddRange(new Control[]
             {
-                view.Accent, view.Disk, view.Volume, view.Limit, view.Used, view.Status, view.DiskPrompt,
+                view.Accent, view.Disk, view.DiskText, view.Volume, view.VolumeText, view.Limit, view.Used,
+                view.EnableBox, view.Status, view.DiskPrompt,
             });
             view.DiskPrompt.BringToFront();
             StylePrompt(view);
@@ -654,17 +740,23 @@ namespace FlyDisk
         /// <summary>只有"下拉可用、尚未选择、且没展开"时才显示提示标签</summary>
         private static void UpdateDiskPrompt(RowView view)
         {
-            view.DiskPrompt.Visible = view.Disk.Enabled && view.Disk.SelectedIndex < 0 && !view.Disk.DroppedDown;
+            view.DiskPrompt.Visible = !view.Data.Initialized && view.Disk.Enabled &&
+                                      view.Disk.SelectedIndex < 0 && !view.Disk.DroppedDown;
         }
 
         private void DiskChanged(RowView view)
         {
             Row row = view.Data;
+            if (row.Initialized) return;   // 已初始化的行：盘/卷是文字，不允许改
+
             if (view.Disk.SelectedItem is not DiskChoice choice)
             {
                 row.DiskIdentity = string.Empty;
                 row.OwnerHash = 0;
-                row.Status = Locale.T("l2m.statusNew");
+                row.CacheDirectory = string.Empty;
+                row.ActualBytes = 0;
+                view.Used.Text = FormatBytes(0);
+                ResetEditedStatus(row);
                 view.Status.Text = row.Status;
                 UpdateDiskPrompt(view);
                 return;
@@ -689,14 +781,41 @@ namespace FlyDisk
             row.DiskIdentity = choice.Identity;
             row.OwnerHash = choice.OwnerHash;
             row.IsConfig = true;
-            row.Status = Locale.T("l2m.statusNew");
+
+            // 换盘后旧目录/实占不再属于这一行；按新盘 + 当前卷给出预期目录（可能尚不存在）。
+            string volume = view.Volume.SelectedItem as string ?? string.Empty;
+            row.CacheDirectory = volume.Length > 0
+                ? SsdCacheService.GetDiskCacheDirectory(volume, choice.OwnerHash)
+                : string.Empty;
+            row.ActualBytes = 0;
+            view.Used.Text = FormatBytes(0);
+            ResetEditedStatus(row);
             view.Status.Text = row.Status;
             UpdateDiskPrompt(view);
         }
 
-        private static void VolumeChanged(RowView view)
+        /// <summary>盘/卷被编辑后：该行要重新保存才生效，状态先回到「待配置」</summary>
+        private static void ResetEditedStatus(Row row)
         {
-            view.Data.CacheVolume = view.Volume.SelectedItem as string ?? string.Empty;
+            row.StatusEnabled = Locale.T("l2m.statusNew");
+            row.StatusDisabled = Locale.T("l2m.statusNew");
+            row.Status = row.Enabled ? row.StatusEnabled : row.StatusDisabled;
+        }
+
+        private void VolumeChanged(RowView view)
+        {
+            Row row = view.Data;
+            if (row.Initialized) return;
+            row.CacheVolume = view.Volume.SelectedItem as string ?? string.Empty;
+
+            // 换卷后旧目录/实占不再属于这一行；按当前盘 + 新卷给出预期目录（可能尚不存在）。
+            row.CacheDirectory = row.OwnerHash != 0 && row.CacheVolume.Length > 0
+                ? SsdCacheService.GetDiskCacheDirectory(row.CacheVolume, row.OwnerHash)
+                : string.Empty;
+            row.ActualBytes = 0;
+            view.Used.Text = FormatBytes(0);
+            ResetEditedStatus(row);
+            view.Status.Text = row.Status;
         }
 
         /// <summary>上限输入：只放行数字 + 一个当前区域的小数分隔符</summary>
@@ -762,6 +881,16 @@ namespace FlyDisk
                 view.Data.MaxBytes = 0;
                 view.Limit.Text = string.Empty;
             }
+
+            // 配置不完整时状态必须是「待配置」；补全后恢复该行原本的状态（正常 / 待校验 / 未启用）。
+            // 扫描到的未配置行（"请插入属于它的硬盘…"）不因编辑上限而改状态。
+            if (!view.Data.IsConfig) return;
+            string volume = view.Volume.SelectedItem as string ?? string.Empty;
+            bool complete = view.Data.DiskIdentity.Length > 0 && volume.Length > 0 && view.Data.MaxBytes > 0;
+            view.Data.Status = complete
+                ? (view.Data.Enabled ? view.Data.StatusEnabled : view.Data.StatusDisabled)
+                : Locale.T("l2m.statusIncomplete");
+            view.Status.Text = view.Data.Status;
         }
 
         private static bool TryReadLimit(string text, out decimal value)
@@ -773,6 +902,8 @@ namespace FlyDisk
             {
                 CacheVolume = string.Empty,
                 MaxBytes = 0,
+                StatusEnabled = Locale.T("l2m.statusNew"),
+                StatusDisabled = Locale.T("l2m.statusNew"),
                 Status = Locale.T("l2m.statusNew"),
             };
 
@@ -848,9 +979,50 @@ namespace FlyDisk
 
             row.ActualBytes = 0;
             row.CacheDirectory = string.Empty;
+            row.IsRecognized = true;   // 文件已删干净：这一行回到"可配置"状态
+
+            bool complete = row.DiskIdentity.Length > 0 && row.CacheVolume.Length > 0 && row.MaxBytes > 0;
+            row.StatusEnabled = complete ? Locale.T("l2m.statusNoCache") : Locale.T("l2m.statusIncomplete");
+            row.StatusDisabled = complete ? Locale.T("l2m.statusDisabled") : Locale.T("l2m.statusIncomplete");
             row.Status = Locale.T("l2m.statusCleared");
             view.Used.Text = FormatBytes(0);
             view.Status.Text = row.Status;
+            SetInitialized(view, false);
+        }
+
+        /// <summary>
+        /// 切换一行"已初始化 / 未初始化"的展示方式：已初始化用文字显示盘与卷（不能改），
+        /// 清空缓存内容之后恢复成下拉。
+        /// </summary>
+        private void SetInitialized(RowView view, bool initialized)
+        {
+            Row row = view.Data;
+            row.Initialized = initialized;
+            view.Disk.Visible = !initialized;
+            view.Volume.Visible = !initialized;
+            view.DiskText.Visible = initialized;
+            view.VolumeText.Visible = initialized;
+
+            if (initialized)
+            {
+                view.DiskPrompt.Visible = false;
+                return;
+            }
+
+            view.Disk.BeginUpdate();
+            view.Disk.Items.Clear();
+            foreach (DiskChoice choice in _diskChoices) view.Disk.Items.Add(choice);
+            DiskChoice? selected = _diskChoices.Find(c =>
+                string.Equals(c.Identity, row.DiskIdentity, StringComparison.Ordinal));
+            view.Disk.SelectedIndex = selected != null ? view.Disk.Items.IndexOf(selected) : -1;
+            view.Disk.EndUpdate();
+
+            view.Disk.Enabled = true;
+            view.Volume.Enabled = true;
+            view.Limit.ReadOnly = false;
+            view.EnableBox.Enabled = true;
+            StylePrompt(view);
+            UpdateDiskPrompt(view);
         }
 
         private void OpenCurrentRowDirectory()
@@ -889,8 +1061,10 @@ namespace FlyDisk
 
                 string volume = view.Volume.SelectedItem as string ?? string.Empty;
                 TryReadLimit(view.Limit.Text, out decimal gib);
+                bool enabled = view.EnableBox.Checked;
 
-                if (volume.Length > 0 && (gib < 1 || gib > 64))
+                // 停用的行只保留配置，不参与本次的上限校验（重新启用时启动前会再校验）
+                if (enabled && volume.Length > 0 && (gib < 1 || gib > 64))
                 {
                     MessageBox.Show(Locale.T("l2m.msg.limitRange", Describe(row)), Locale.T("dialog.tip"),
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -908,6 +1082,7 @@ namespace FlyDisk
                 {
                     DiskIdentity = row.DiskIdentity,
                     OwnerHash = row.OwnerHash,
+                    Enabled = enabled,
                     CacheVolume = volume,
                     // 卷为空 = 这一行还没配完：上限存 0，启动前会被拒绝（不静默当成"不启用 L2"）
                     MaxBytes = volume.Length > 0 ? (long)(gib * GiB) : 0,
@@ -917,7 +1092,7 @@ namespace FlyDisk
             // 按**卷**核对总上限：同一块缓存盘上多块盘的上限合计不能超过可用空间
             // （提示只点名卷，不点名具体盘）。
             var volumeTotals = result
-                .Where(e => !string.IsNullOrWhiteSpace(e.CacheVolume))
+                .Where(e => e.Enabled && !string.IsNullOrWhiteSpace(e.CacheVolume))
                 .GroupBy(e => e.CacheVolume.TrimEnd('\\'), StringComparer.OrdinalIgnoreCase);
 
             foreach (var group in volumeTotals)
@@ -926,6 +1101,7 @@ namespace FlyDisk
                 long used = 0;
                 foreach (RowView view in _rowViews)
                 {
+                    if (!view.EnableBox.Checked) continue;   // 停用行的占用不参与可回收预算
                     string volume = view.Volume.SelectedItem as string ?? string.Empty;
                     if (string.Equals(volume.TrimEnd('\\'), group.Key, StringComparison.OrdinalIgnoreCase))
                     {

@@ -470,6 +470,16 @@ namespace FlyDisk.Engine
             return RoundDownToSlab(slots);
         }
 
+        /// <summary>
+        /// 按上限字节数算出的**标称**占用（与引擎同口径：MIN/MAX + 整 Slab 规整，不做空间夹取）。
+        /// 供 UI 启动前把**同一缓存卷上多块盘**的上限合计起来校验。
+        /// </summary>
+        public static long ConfiguredBytesFor(long maxBytes)
+        {
+            int slots = (int)Math.Clamp(maxBytes / BLOCK_SIZE, (long)MIN_SLOTS, (long)MAX_SLOTS);
+            return (long)RoundDownToSlab(slots) * BLOCK_SIZE;
+        }
+
         /// <summary>把槽数向下规整到一个整 Slab（下限 1 Slab、上限 MAX_SLOTS）</summary>
         private static int RoundDownToSlab(int slots)
             => Math.Clamp(slots / SLOTS_PER_SLAB * SLOTS_PER_SLAB, SLOTS_PER_SLAB, MAX_SLOTS);
@@ -1391,6 +1401,30 @@ namespace FlyDisk.Engine
             long needed = BLOCK_SIZE + ((long)slot / SLOTS_PER_SLAB + 1) * SLAB_SIZE;
             if (needed <= _containerBytes) return true;
             if (_growthBlocked) return false;
+
+            // 扩容前守住缓存卷的预留空间：启动前的整批校验覆盖了"本程序本次选中的盘"，
+            // 但外部写入 / 另一个实例仍可能在运行中把卷占满。剩余空间不足"本次增量 + 1 GiB"
+            // 就只停扩容（不停 L2）——与 SetLength 失败时的降级路径完全一致。
+            long delta = needed - _containerBytes;
+            try
+            {
+                string? root = Path.GetPathRoot(_container!.Name);
+                if (!string.IsNullOrEmpty(root) &&
+                    new DriveInfo(root).AvailableFreeSpace < delta + MIN_KEEP_FREE_BYTES)
+                {
+                    _growthBlocked = true;
+                    LogService.DebugFile(
+                        $"SSD 二级缓存：缓存卷剩余空间不足（本次扩容需 {delta / 1024 / 1024} MiB + " +
+                        $"预留 {MIN_KEEP_FREE_BYTES / 1024 / 1024} MiB）⇒ 本会话不再扩容；" +
+                        "已覆盖范围继续服务，账本照常提交");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                // 查不到剩余空间不阻止扩容：保持原行为（真正写满时 SetLength 会失败并停扩容）
+                LogService.DebugFile($"SSD 二级缓存：扩容前查询可用空间失败（按原逻辑继续）：{ex.Message}");
+            }
 
             try
             {

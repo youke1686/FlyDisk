@@ -284,6 +284,7 @@ namespace FlyDisk
                 {
                     DiskIdentity = e.DiskIdentity,
                     OwnerHash = e.OwnerHash,
+                    Enabled = e.Enabled,
                     CacheVolume = e.CacheVolume,
                     MaxBytes = e.MaxBytes,
                 })
@@ -1264,6 +1265,7 @@ namespace FlyDisk
                 var l2CacheDisks = new List<int>();
                 foreach (L2DiskConfig entry in _config.L2Disks)
                 {
+                    if (!entry.Enabled) continue;   // 停用的 L2 本次不用，不必因此禁止加速那个卷
                     if (string.IsNullOrWhiteSpace(entry.CacheVolume)) continue;
                     int number = PhysicalDiskHandle.GetL2CacheDiskNumber(true, entry.CacheVolume);
                     if (number >= 0 && !l2CacheDisks.Contains(number)) l2CacheDisks.Add(number);
@@ -1282,6 +1284,9 @@ namespace FlyDisk
             // 选中的盘若有"不完整"的 L2 配置（选了盘但卷 / 上限留空），直接拒绝整批启动：
             // 不能把它静默当成"这块盘不启用 L2"——那等于用户以为配了、实际没配。
             if (!ValidateL2ConfigForStart(picked)) return;
+
+            // 同一缓存卷上多块盘的 L2 上限要合起来算一次（逐盘检查看不到彼此）
+            if (!ValidateL2SpaceForStart(picked)) return;
 
             // 记住这次的选择（**全部**）：只用于下次在选盘框里默认勾中，绝不作为启动依据
             _config.LastAcceleratedDiskIdentities = new List<string>();
@@ -1391,7 +1396,7 @@ namespace FlyDisk
             foreach (PhysicalDiskInfo disk in disks)
             {
                 L2DiskConfig? entry = L2DiskConfig.Find(_config.L2Disks, PhysicalDiskHandle.DescribeIdentity(disk));
-                if (entry == null) continue;
+                if (entry == null || !entry.Enabled) continue;   // 停用的行本次不参与，不拦启动
                 if (!string.IsNullOrWhiteSpace(entry.CacheVolume) && entry.MaxBytes > 0) continue;
 
                 incomplete.Add(Locale.T("main.msg.l2IncompleteItem", disk.DiskNumber, disk.Model));
@@ -1404,6 +1409,101 @@ namespace FlyDisk
                 Locale.T("main.msg.l2IncompleteConfig", string.Join(Environment.NewLine, incomplete)),
                 Locale.T("dialog.l2IncompleteConfig"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
+        }
+
+        /// <summary>
+        /// 启动前的**整批** L2 容量校验：同一缓存卷上**多块选中盘**的 L2 上限合计必须放得下。
+        ///
+        /// 逐盘预检（<see cref="ConfirmCapacityChange"/>）只把"自己"的已占空间加回预算，
+        /// 两块盘同卷时各自都能通过、合起来却放不下。这里只处理"同卷 ≥ 2 块盘"的情况；
+        /// 单盘（或每盘各占一卷）仍由逐盘检查负责，行为与文案都不变。
+        /// 在任何盘动手之前完成，放不下就整批拒绝。
+        /// </summary>
+        private bool ValidateL2SpaceForStart(IReadOnlyList<PhysicalDiskInfo> disks)
+        {
+            try
+            {
+                return ValidateL2SpaceForStartCore(disks);
+            }
+            catch (Exception ex)
+            {
+                // 约定：不静默。预检本身出意外 ⇒ 报错并中止（此刻还没动任何盘）
+                Log(Locale.T("main.log.l2PreflightFailed", ex.Message));
+                MessageBox.Show(Locale.T("main.msg.l2PreflightFailed", ex.Message), Locale.T("dialog.error"),
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        private bool ValidateL2SpaceForStartCore(IReadOnlyList<PhysicalDiskInfo> disks)
+        {
+            var volumes = new Dictionary<string, VolumeBudget>(StringComparer.OrdinalIgnoreCase);
+            foreach (PhysicalDiskInfo disk in disks)
+            {
+                // 顺带把"配置丢失但容器还在"的条目恢复出来，否则汇总会漏掉这块盘。
+                if (!ResolveL2(disk, out string cacheDir, out long maxBytes)) continue;
+
+                string root = Path.GetPathRoot(cacheDir) ?? string.Empty;
+                if (root.Length == 0) continue;
+
+                if (!volumes.TryGetValue(root, out VolumeBudget? budget))
+                {
+                    budget = new VolumeBudget();
+                    volumes.Add(root, budget);
+                }
+
+                budget.Disks++;
+                budget.PlannedBytes += SsdCacheService.ConfiguredBytesFor(maxBytes);
+
+                // 同一目录只加一次（正常不会发生，防配置异常时重复计算）
+                if (budget.Directories.Add(cacheDir))
+                {
+                    budget.ReclaimBytes += SsdCacheService.DescribeL2Cache(cacheDir, _config).TotalBytes;
+                }
+            }
+
+            var over = new List<string>();
+            foreach (KeyValuePair<string, VolumeBudget> pair in volumes)
+            {
+                if (pair.Value.Disks < 2) continue;   // 单盘由逐盘检查负责
+
+                long free;
+                try
+                {
+                    free = new DriveInfo(pair.Key).AvailableFreeSpace;
+                }
+                catch (Exception ex)
+                {
+                    // 读不到卷信息不拦启动：与逐盘检查保持一致（记日志、按配置值继续）
+                    LogService.DebugFile($"L2 容量合计预检：读取 {pair.Key} 可用空间失败，按配置值继续：{ex.Message}");
+                    continue;
+                }
+
+                long limit = free + pair.Value.ReclaimBytes - SsdCacheService.KeepFreeBytes;
+                if (pair.Value.PlannedBytes <= limit) continue;
+
+                over.Add(Locale.T("main.msg.l2SpaceOvercommitItem", pair.Key,
+                    ServiceConstants.FormatBytes(pair.Value.PlannedBytes),
+                    ServiceConstants.FormatBytes(Math.Max(0, limit))));
+            }
+
+            if (over.Count == 0) return true;
+
+            string detail = string.Join(Environment.NewLine, over);
+            Log(Locale.T("main.log.l2SpaceOvercommit", detail));
+            MessageBox.Show(
+                Locale.T("main.msg.l2SpaceOvercommit", detail),
+                Locale.T("dialog.l2OverCapacity"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        /// <summary>启动前容量汇总的中间结果（按缓存卷）</summary>
+        private sealed class VolumeBudget
+        {
+            public int Disks;
+            public long PlannedBytes;
+            public long ReclaimBytes;
+            public readonly HashSet<string> Directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -1549,6 +1649,8 @@ namespace FlyDisk
                 Log(Locale.T("main.log.l2Recovered", disk.DiskNumber, entry.CacheVolume));
             }
 
+            if (!entry.Enabled) return false;   // 本次只用 L1（缓存文件保留，预检会询问账本如何处置）
+
             if (entry.OwnerHash == 0)
             {
                 entry.OwnerHash = SsdCacheService.ComputeIdentity(BlockSourceInfo.FromDisk(disk, disk.IsOnline));
@@ -1601,6 +1703,9 @@ namespace FlyDisk
         /// 继续加速会让那份账本失效——加速期间盘会被写透传改写，账本随即与盘不一致；
         /// 而它下次被启用时可能因为"盘是脱机打开的"而被**直接采信** ⇒ 返回陈旧块。
         ///
+        /// **只对当前仍可信的账本提示**：已经失效 / 不可判定（`LastShutdownClean != true`）的账本
+        /// 继续被 L1-only 使用也不会更糟，下次启用时本来就要校验或重建，不再弹窗打扰。
+        ///
         /// **刻意放在 UI 层、启动之前**（而不是让引擎抛异常）：这只是"看一眼 L2 文件 + 比身份 + 问用户"，
         /// 引擎没有交互能力；放在这里还能保证用户中止时系统状态一点都没动。
         /// </summary>
@@ -1622,6 +1727,16 @@ namespace FlyDisk
 
             if (owned.Count == 0) return true;
 
+            // 只对**当前仍可信**（索引里的戳 == 容器头里的戳）的账本提示。
+            // 已经失效 / 不可判定的账本继续被 L1-only 使用也不会更糟——下次启用时本来就要校验或重建，
+            // 再弹一次"它会失效"只会打扰用户。
+            List<L2CacheInfo> trusted = owned.Where(c => c.LastShutdownClean == true).ToList();
+            if (trusted.Count == 0)
+            {
+                LogService.DebugFile($"磁盘 {target.DiskNumber} 的 L2 账本已失效或不可判定，跳过“仅 L1”提示");
+                return true;
+            }
+
             DialogResult answer = MessageBox.Show(
                 Locale.T("main.msg.l2UnusedLedger", target.DiskNumber),
                 Locale.T("dialog.l2UnusedLedger"),
@@ -1636,7 +1751,7 @@ namespace FlyDisk
             // 让账本失效：只改容器头的身份戳，索引原样不动 ⇒ 下次启用 L2 时判"需要校验"。
             // 同一块盘理论上只有一份新结构目录；逐份处理以防历史残留。
             bool invalidated = false;
-            foreach (L2CacheInfo cache in owned)
+            foreach (L2CacheInfo cache in trusted)
             {
                 if (SsdCacheService.InvalidateLedgerAt(cache.Directory)) invalidated = true;
             }
@@ -1888,6 +2003,7 @@ namespace FlyDisk
                 // 逐个停止会话（本地多盘时每块盘一个引擎；远程单会话）。
                 // "还有 iSCSI 连接就拒绝停止"的守卫仍在各引擎内部（按自己的端口判连接）。
                 int stoppedCount = 0;
+                bool anyLeftOffline = false;
                 var rejected = new List<string>();
 
                 foreach (Session session in _sessions.ToArray())
@@ -1900,7 +2016,32 @@ namespace FlyDisk
                         stoppedCount++;
                         _sessions.Remove(session);
                         if (session.Disk != null && !remoteSession)
-                            Log(Locale.T("main.log.stoppedDiskOffline", session.Disk.DiskNumber));
+                        {
+                            if (session.Config.EnableSsdCache)
+                            {
+                                // 用了 L2：盘必须保持脱机，跨重启的账本才敢采信
+                                anyLeftOffline = true;
+                                Log(Locale.T("main.log.stoppedDiskOffline", session.Disk.DiskNumber));
+                            }
+                            else
+                            {
+                                // 没用 L2：没有"保持脱机"的必要，停止成功就还给系统。
+                                // 只试一次（停止路径的重试只留给 iSCSI 登出）；失败只落主界面日志。
+                                int diskNumber = session.Disk.DiskNumber;
+                                string onlineError = string.Empty;
+                                bool online = await Task.Run(() =>
+                                    session.Engine.TryReonlineDisk(diskNumber, out onlineError));
+                                if (online)
+                                {
+                                    Log(Locale.T("main.log.stoppedDiskAutoOnline", diskNumber));
+                                }
+                                else
+                                {
+                                    anyLeftOffline = true;
+                                    Log(Locale.T("main.log.stoppedDiskAutoOnlineFailed", diskNumber, onlineError));
+                                }
+                            }
+                        }
                     }
                     else
                     {
@@ -1920,7 +2061,7 @@ namespace FlyDisk
 
                 // 「把盘还给系统」这句只在**本地**形态有意义：远程形态下那块盘在对方机器上，
                 // 脱机与否由对方管理，在本机提示"去联机"会误导用户。
-                if (stoppedCount > 0 && !remoteSession) Log(Locale.T("main.log.releaseDiskHint"));
+                if (stoppedCount > 0 && !remoteSession && anyLeftOffline) Log(Locale.T("main.log.releaseDiskHint"));
 
                 if (remoteSession && peer != null)
                 {

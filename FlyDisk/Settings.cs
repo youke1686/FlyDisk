@@ -173,7 +173,7 @@ namespace FlyDisk
         private void RefreshL2Summary()
         {
             List<L2DiskConfig> configured = _config.L2Disks
-                .Where(e => !string.IsNullOrWhiteSpace(e.CacheVolume))
+                .Where(e => e.Enabled && !string.IsNullOrWhiteSpace(e.CacheVolume))
                 .ToList();
             long total = configured.Sum(e => e.MaxBytes);
             lblL2Summary.Text = configured.Count == 0
@@ -192,7 +192,7 @@ namespace FlyDisk
         private void UpdateMemoryEstimate()
         {
             long l2Bytes = _config.L2Disks
-                .Where(e => !string.IsNullOrWhiteSpace(e.CacheVolume))
+                .Where(e => e.Enabled && !string.IsNullOrWhiteSpace(e.CacheVolume))
                 .Sum(e => e.MaxBytes / ServiceConstants.BlockSize * SsdCacheService.MetadataBytesPerBlock);
 
             long l1Bytes = 0;

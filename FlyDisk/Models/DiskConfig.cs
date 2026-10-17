@@ -19,7 +19,8 @@ namespace FlyDisk.Models
 {
     /// <summary>
     /// 一块盘的 L2 配置（阶段 3 起）：每块盘自己的 L2 卷与容量上限。
-    /// 同一条目 = 这块盘参与 L2；`CacheVolume` 为空或 `MaxBytes &lt;= 0` = 配置不完整，启动时会被拒绝
+    /// 同一条目且 <see cref="Enabled"/> = 这块盘参与 L2；停用只表示"本次不用 L2"，缓存文件保留。
+    /// `CacheVolume` 为空或 `MaxBytes &lt;= 0` = 配置不完整，启动时会被拒绝
     /// （「L2 管理」允许先留空保存，但绝不静默当成"不启用"）。
     /// </summary>
     public sealed class L2DiskConfig
@@ -29,6 +30,12 @@ namespace FlyDisk.Models
 
         /// <summary>设备身份散列（与容器头里的归属身份同一套算法）；用于拼目录名与匹配扫描结果</summary>
         public long OwnerHash { get; set; }
+
+        /// <summary>
+        /// 是否启用 L2。默认 true（旧 config.json 没有这个字段时保持原有行为）；
+        /// false = 只用 L1，缓存文件与账本保留，但本次加速会让账本失效（启动前会询问）。
+        /// </summary>
+        public bool Enabled { get; set; } = true;
 
         /// <summary>L2 缓存卷（存盘符，如 "D:"；空 = 不启用）</summary>
         public string CacheVolume { get; set; } = string.Empty;
@@ -71,6 +78,12 @@ namespace FlyDisk.Models
         /// 取值规整由 <c>FlyDisk.Localization.Locale.Normalize</c> 负责。
         /// </summary>
         public string Language { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 是否已确认**使用前请知悉**（首次打开时由 `WarningForm` 弹出）。
+        /// 默认 false：旧配置没有该字段时会再确认一次；同意后写 true，之后不再弹。
+        /// </summary>
+        public bool WarningAccepted { get; set; }
 
         /// <summary>
         /// 是否在启动加速时用 iSCSI 发起端**自动登录**目标。
