@@ -16,7 +16,7 @@ It works at the block level, meaning it **takes over an entire physical drive**:
 
 - This software is in **Beta**. It is not guaranteed to be 100% stable — **do not use it for important data**. We accept no liability for any resulting loss.
 - In theory there is a **very small possibility of a game ban**. If you use it for game acceleration, always test it first on a **new throwaway account** with **at least a week of intensive gaming**.
-- After you stop acceleration, the target drive stays **offline and invisible** to the system (this is intentional: the drive belongs to this program exclusively, which is what makes cross-reboot caching trustworthy). To give the drive back to the system, see "Re-onlining the Drive".
+- When L2 is used, the target disk stays offline and invisible after you stop acceleration; this is intentional (the disk stays owned by the program so the cache survives reboots). Disks without L2 are brought back online automatically after a successful stop. To give a disk back manually, use the \"Re-online Disk\" menu.
 - The program **must run as administrator** (the installer declares this, so double-clicking triggers UAC). Otherwise it cannot take a drive offline or open it exclusively.
 
 ## Quick Start
