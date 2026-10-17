@@ -56,6 +56,8 @@
   分页文件盘判据统一走 `PhysicalDiskHandle.DescribeTargetDiskBlockReason`（整盘脱机会让内核换页失败，直接蓝屏 `0x7A`）。
   身份串统一由 `PhysicalDiskHandle.DescribeIdentity` 产出（**没有**型号/容量回落；远程形态同样"无身份即拒绝"）。
 - **独占**：`IOCTL_DISK_SET_DISK_ATTRIBUTES`（`persist=true`）整盘脱机 + `dwShareMode=0` 独占打开。
+  脱机 / 查询用的临时探针句柄一律按 `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` 打开
+  （只要不许别人写就会撞上 `ERROR_SHARING_VIOLATION (32)`）；独占只由 `dwShareMode=0` 的那次打开保证。
 - **停止顺序（不可颠倒）**：**先确认没有发起程序还连着——有连接就拒绝停止**（判据 = 本机监听端口上还有 ESTABLISHED 的
   TCP 连接）→ 停 target → 关闭 LUN 后端 → 等在途命令跑完（**上限 2 秒**）→ 冻结 L2 → 落盘账本 → 关句柄（**盘保持脱机**）。
   自动挂载会话的登出失败时，正常停止按 **0s / 0.5s / 1s** 重试 3 次；**关机路径仍只试一次**（避免拖慢关机）。
@@ -238,7 +240,7 @@ d:\projects\FlyDisk\
 
 ## 四、重要规则（必须严格遵守）
 
-### 4.1 禁止编译与运行
+### 4.1 禁止编译、运行与 Git 操作
 
 1. **禁止执行任何形式的编译 / 构建操作**：`dotnet build` / `publish` / `run`、MSBuild、Visual Studio 构建、任何脚本化构建命令。
 2. **禁止运行项目、程序或可执行文件**：包括直接运行 `bin/` 下已生成的 `.exe`、挂载/卸载磁盘等系统级副作用操作、通过 docker 运行容器。
