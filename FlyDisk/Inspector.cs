@@ -19,6 +19,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 using FlyDisk.Engine;
@@ -42,7 +43,18 @@ namespace FlyDisk
     /// </summary>
     public partial class Inspector : ThemedForm, ILocalizable
     {
-        private readonly TargetService _target;
+        /// <summary>取当前会话引擎列表（打开期间会话可能增减，所以每秒现取）</summary>
+        private readonly Func<IReadOnlyList<TargetService>> _getEngines;
+
+        /// <summary>上一次取到的引擎列表（用来判断"会话集合变没变"，只在变化时重建下拉项）</summary>
+        private List<TargetService> _engines = new();
+
+        /// <summary>简要页当前显示的引擎</summary>
+        private TargetService? _selected;
+
+        /// <summary>重建下拉项时压住 SelectedIndexChanged，避免递归 Render</summary>
+        private bool _syncingPicker;
+
         private readonly Timer _timer;
 
         /// <summary>控件登记表（见 <see cref="ILocalizable"/>）：静态文本键 → 控件</summary>
@@ -57,27 +69,44 @@ namespace FlyDisk
         /// <summary>读速窗口（秒）：简要页上那两个方框与"最近 N 秒平均"用的窗口宽度</summary>
         internal const int SpeedWindowSeconds = 1;
 
-        // ===== 最近 1 秒的两条读速（MB/s）=====
-        // 快照里只有**累计**计数，速率必须自己差分：每次取快照采一格"这一刻的累计值"，
-        // 用最旧那格与最新那格的差除以两格的时间跨度。**2 格就够**——1 秒的跨度需要 2 个采样点。
-        // 采样在 Render() 里**无条件**做：只在简要页采的话，切到详细页再切回来这段历史就断了。
-        // 两条读速：**加速后读取** = 交付给发起程序的（`ReadSectorsTotal` 的增量，含缓存挡下的部分）；
-        //           **源盘读取**   = 真回源到源盘的（回源块数 × 4 KiB）＝缓存**没**挡住的那部分。
-        private readonly (DateTime At, long ReadSectors, long SourceBlocks)[] _throughput =
-            new (DateTime, long, long)[SpeedWindowSeconds + 1];
-        private int _throughputCount;
-        private int _throughputNext;
-        private long _lastReadSectors;      // 两个"上次值"用来识别"目标重启过"（累计计数归零）
-        private long _lastSourceBlocks;
-        private double _peakDeliveredMBps;  // 两条读速各自的"本窗口打开以来最忙"
-        private double _peakSourceMBps;
+        // ===== 每个引擎各自一份读速采样状态 =====
+        // 快照里只有**累计**计数，速率必须自己差分；多盘时每个引擎必须各算各的，不能共用一组。
+        private sealed class SpeedState
+        {
+            public readonly (DateTime At, long ReadSectors, long SourceBlocks)[] Throughput =
+                new (DateTime, long, long)[SpeedWindowSeconds + 1];
+            public int Count;
+            public int Next;
+            public long LastReadSectors;
+            public long LastSourceBlocks;
+            public double PeakDeliveredMBps;
+            public double PeakSourceMBps;
+        }
 
-        public Inspector(TargetService target)
+        private readonly Dictionary<TargetService, SpeedState> _speedStates = new();
+
+        private SpeedState GetSpeedState(TargetService engine)
+        {
+            if (!_speedStates.TryGetValue(engine, out SpeedState? state))
+            {
+                state = new SpeedState();
+                _speedStates[engine] = state;
+            }
+            return state;
+        }
+
+        public Inspector(Func<IReadOnlyList<TargetService>> getEngines)
         {
             InitializeComponent();
-            _target = target;
+            _getEngines = getEngines;
 
             tabPages.SelectedIndexChanged += (s, e) => Render();
+            cmbDisk.SelectedIndexChanged += (s, e) =>
+            {
+                if (_syncingPicker) return;
+                _selected = (cmbDisk.SelectedItem as DiskItem)?.Engine;
+                Render();
+            };
 
             _timer = new Timer { Interval = 1000 };
             _timer.Tick += (s, e) => Render();
@@ -89,6 +118,7 @@ namespace FlyDisk
             Bind("insp.tab.brief", pageBrief);
             Bind("insp.tab.detail", pageDetail);
             Bind("insp.topMost", chkTopMost);
+            Bind("insp.b.diskPicker", lblDiskPicker);
 
             LocalizationManager.Apply(this);
         }
@@ -115,31 +145,141 @@ namespace FlyDisk
             briefView.Invalidate();
         }
 
+        private readonly record struct Frame(
+            TargetService Engine, CacheStats? Stats, ReadSpeeds Speeds, string? Error);
+
+        /// <summary>下拉项：显示文字与引擎绑在一起（ComboBox 直接放引擎对象只会显示类型名）</summary>
+        private sealed class DiskItem
+        {
+            public required TargetService Engine { get; init; }
+            public required string Text { get; init; }
+            public override string ToString() => Text;
+        }
+
         private void Render()
         {
-            CacheStats? stats = null;
-            string? error = null;
-            try
+            List<TargetService> engines = _getEngines().ToList();
+            SyncDiskPicker(engines);
+
+            var frames = new List<Frame>(engines.Count);
+            foreach (TargetService engine in engines)
             {
-                stats = _target.CreateSnapshot();
-            }
-            catch (Exception ex)
-            {
-                error = ex.Message;
+                SpeedState state = GetSpeedState(engine);
+                CacheStats? stats = null;
+                string? error = null;
+                try
+                {
+                    stats = engine.CreateSnapshot();
+                }
+                catch (Exception ex)
+                {
+                    error = ex.Message;
+                }
+
+                ReadSpeeds speeds = stats != null ? SampleReadSpeeds(stats, state) : CurrentSpeeds(state, 0, 0);
+                frames.Add(new Frame(engine, stats, speeds, error));
             }
 
-            ReadSpeeds speeds = stats != null ? SampleReadSpeeds(stats) : CurrentSpeeds(0, 0);
-            _lastSpeeds = speeds;
-            SyncSpeedTile(speeds);
+            // 已经消失的会话：丢掉它的采样状态，避免字典越攒越大
+            foreach (TargetService gone in _speedStates.Keys.Where(e => !engines.Contains(e)).ToList())
+            {
+                _speedStates.Remove(gone);
+            }
+
+            Frame? selected = null;
+            if (_selected != null)
+            {
+                foreach (Frame frame in frames)
+                {
+                    if (ReferenceEquals(frame.Engine, _selected)) { selected = frame; break; }
+                }
+            }
+            if (selected == null && frames.Count > 0) selected = frames[0];
+
+            _lastSpeeds = selected?.Speeds ?? new ReadSpeeds(0, 0, 0, 0);
+            SyncSpeedTile(_lastSpeeds);
 
             if (tabPages.SelectedIndex == 0)
             {
-                briefView.SetFrame(stats, error, speeds);
+                if (selected == null) briefView.SetEmpty();
+                else briefView.SetFrame(selected.Value.Stats, selected.Value.Error, selected.Value.Speeds);
             }
             else
             {
-                SetDetailText(error != null ? Locale.T("insp.b.snapshotFailed", error) : RenderDetail(stats!, speeds));
+                SetDetailText(frames.Count == 0
+                    ? Locale.T("insp.b.clickStart")
+                    : RenderDetailAll(frames));
             }
+        }
+
+        /// <summary>
+        /// 会话集合变化时重建「选择盘」下拉；只选中/显示一块盘，不改变任何引擎状态。
+        /// </summary>
+        private void SyncDiskPicker(List<TargetService> engines)
+        {
+            bool changed = engines.Count != _engines.Count;
+            if (!changed)
+            {
+                for (int i = 0; i < engines.Count; i++)
+                {
+                    if (!ReferenceEquals(engines[i], _engines[i])) { changed = true; break; }
+                }
+            }
+
+            if (changed)
+            {
+                _syncingPicker = true;
+                cmbDisk.Items.Clear();
+                foreach (TargetService engine in engines)
+                {
+                    cmbDisk.Items.Add(new DiskItem { Engine = engine, Text = DescribeEngine(engine) });
+                }
+
+                int index = _selected == null ? -1 : engines.FindIndex(e => ReferenceEquals(e, _selected));
+                if (index < 0 && engines.Count > 0) index = 0;
+                cmbDisk.SelectedIndex = index;
+                _selected = index >= 0 ? engines[index] : null;
+                _syncingPicker = false;
+                _engines = engines;
+            }
+
+            // 只有一块盘时把整条选择栏藏起来，界面与单盘时完全一致
+            bool showPicker = engines.Count > 1;
+            diskBar.Visible = showPicker;
+            lblDiskPicker.Visible = showPicker;
+            cmbDisk.Visible = showPicker;
+        }
+
+        private static string DescribeEngine(TargetService engine)
+        {
+            BlockSourceInfo? info = engine.SourceInfo;
+            if (engine.LocalDiskNumber < 0 || info == null)
+                return Locale.T("insp.b.remoteTarget");
+
+            string model = info.Model.Length > 0 ? info.Model : Locale.T("insp.w.unknownModel");
+            return Locale.T("insp.b.diskItem", engine.LocalDiskNumber, model);
+        }
+
+        /// <summary>详细页：把每个会话的完整文本依次拼起来，块之间空行 + 分隔线 + 盘名，整段可复制</summary>
+        private string RenderDetailAll(List<Frame> frames)
+        {
+            var sb = new StringBuilder();
+            for (int i = 0; i < frames.Count; i++)
+            {
+                if (i > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine(new string('-', 48));
+                    sb.AppendLine();
+                }
+
+                Frame frame = frames[i];
+                sb.AppendLine(DescribeEngine(frame.Engine));
+                sb.AppendLine(frame.Error != null
+                    ? Locale.T("insp.b.snapshotFailed", frame.Error)
+                    : RenderDetail(frame.Stats!, frame.Speeds));
+            }
+            return sb.ToString();
         }
 
         /// <summary>
@@ -176,8 +316,8 @@ namespace FlyDisk
         }
 
         /// <summary>读快照失败时也要把峰值带出去（方框的刻度不该因为一拍读失败就归零）</summary>
-        private ReadSpeeds CurrentSpeeds(double delivered, double source)
-            => new(delivered, _peakDeliveredMBps, source, _peakSourceMBps);
+        private static ReadSpeeds CurrentSpeeds(SpeedState state, double delivered, double source)
+            => new(delivered, state.PeakDeliveredMBps, source, state.PeakSourceMBps);
 
         /// <summary>
         /// 采一格，返回两条读速（最近 <see cref="SpeedWindowSeconds"/> 秒平均 MB/s）与各自的历史峰值。
@@ -185,40 +325,41 @@ namespace FlyDisk
         /// **单位是 MB/s（10^6 字节/秒）**，不是 MiB/s——吞吐按通行口径走 10 进制，容量才用 1024 进制的
         /// GiB（盘厂商标称的 TB/GB 也是 10 进制，两者本就不是一套）。
         /// 窗口没满时用已有的那几格算（头几秒是短窗口平均，1 秒后自动收敛）。
+        /// 每个引擎各自一份 <see cref="SpeedState"/>：多盘时互不污染，切换显示也不会串读数。
         /// </summary>
-        private ReadSpeeds SampleReadSpeeds(CacheStats s)
+        private static ReadSpeeds SampleReadSpeeds(CacheStats s, SpeedState state)
         {
             long readSectors = s.ReadSectorsTotal;
             long sourceBlocks = StatText.SessionWindow(s).Source;
 
             // 目标重启过 ⇒ 累计计数归零，整段历史作废（否则会算出一个大负数）
-            if (_throughputCount > 0 && (readSectors < _lastReadSectors || sourceBlocks < _lastSourceBlocks))
+            if (state.Count > 0 && (readSectors < state.LastReadSectors || sourceBlocks < state.LastSourceBlocks))
             {
-                _throughputCount = 0;
-                _throughputNext = 0;
+                state.Count = 0;
+                state.Next = 0;
             }
-            _lastReadSectors = readSectors;
-            _lastSourceBlocks = sourceBlocks;
+            state.LastReadSectors = readSectors;
+            state.LastSourceBlocks = sourceBlocks;
 
-            _throughput[_throughputNext] = (s.Timestamp, readSectors, sourceBlocks);
-            _throughputNext = (_throughputNext + 1) % _throughput.Length;
-            if (_throughputCount < _throughput.Length) _throughputCount++;
+            state.Throughput[state.Next] = (s.Timestamp, readSectors, sourceBlocks);
+            state.Next = (state.Next + 1) % state.Throughput.Length;
+            if (state.Count < state.Throughput.Length) state.Count++;
 
-            if (_throughputCount < 2) return CurrentSpeeds(0, 0);
+            if (state.Count < 2) return CurrentSpeeds(state, 0, 0);
 
             (DateTime at0, long read0, long source0) =
-                _throughput[(_throughputNext - _throughputCount + _throughput.Length) % _throughput.Length];
+                state.Throughput[(state.Next - state.Count + state.Throughput.Length) % state.Throughput.Length];
             double seconds = (s.Timestamp - at0).TotalSeconds;
-            if (seconds <= 0) return CurrentSpeeds(0, 0);
+            if (seconds <= 0) return CurrentSpeeds(state, 0, 0);
 
             long bytesPerSector = s.BytesPerSector > 0 ? s.BytesPerSector : 512;
             double delivered = (readSectors - read0) * (double)bytesPerSector / 1_000_000.0 / seconds;
             double source = (sourceBlocks - source0) * (double)ServiceConstants.BlockSize / 1_000_000.0 / seconds;
 
-            if (delivered > _peakDeliveredMBps) _peakDeliveredMBps = delivered;
-            if (source > _peakSourceMBps) _peakSourceMBps = source;
+            if (delivered > state.PeakDeliveredMBps) state.PeakDeliveredMBps = delivered;
+            if (source > state.PeakSourceMBps) state.PeakSourceMBps = source;
 
-            return new ReadSpeeds(delivered, _peakDeliveredMBps, source, _peakSourceMBps);
+            return new ReadSpeeds(delivered, state.PeakDeliveredMBps, source, state.PeakSourceMBps);
         }
 
         /// <summary>
@@ -586,6 +727,7 @@ namespace FlyDisk
         private CacheStats? _stats;
         private string? _error;
         private ReadSpeeds _speeds;
+        private bool _empty;   // true = 当前没有会话（显示"点启动"提示，而不是"正在读取快照"）
 
         // 标签列与右侧数值列的宽度**按语言量出来**：中文的「加速后读取」与英文的 "Accelerated read" 差得远，
         // 写死一个常量必然有一边错位。量一次按语言缓存（见 EnsureMetrics），窗口宽度仍完全交给用户。
@@ -660,6 +802,17 @@ namespace FlyDisk
             _stats = stats;
             _error = error;
             _speeds = speeds;
+            _empty = false;
+            Invalidate();
+        }
+
+        /// <summary>没有任何会话：显示"点启动"提示（与"正在读取快照"区分开）</summary>
+        public void SetEmpty()
+        {
+            _stats = null;
+            _error = null;
+            _speeds = new ReadSpeeds(0, 0, 0, 0);
+            _empty = true;
             Invalidate();
         }
 
@@ -675,8 +828,10 @@ namespace FlyDisk
 
             if (_stats == null)
             {
-                Draw(g, _error == null ? Locale.T("insp.b.loading") : Locale.T("insp.b.snapshotFailed", _error),
-                     PadX, y, SubTextColor);
+                string text = _empty
+                    ? Locale.T("insp.b.clickStart")
+                    : _error == null ? Locale.T("insp.b.loading") : Locale.T("insp.b.snapshotFailed", _error);
+                Draw(g, text, PadX, y, SubTextColor);
                 return;
             }
 

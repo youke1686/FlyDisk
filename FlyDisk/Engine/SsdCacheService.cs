@@ -363,6 +363,31 @@ namespace FlyDisk.Engine
             return unchecked((long)h);
         }
 
+        /// <summary>块源的设备身份散列（与容器头里记的归属身份同一套算法）</summary>
+        public static long ComputeIdentity(BlockSourceInfo info)
+            => ComputeDeviceIdentity(info.Model, info.SerialNumber, info.SizeBytes, info.BytesPerSector);
+
+        /// <summary>每块盘在 `FlyDisk.Cache` 下的子目录名：设备身份散列的 16 位大写十六进制</summary>
+        public static string GetDirectoryName(long identity) => unchecked((ulong)identity).ToString("X16");
+
+        /// <summary>某块盘在指定 L2 卷上的缓存目录：<c>&lt;卷根&gt;\FlyDisk.Cache\&lt;身份散列&gt;</c></summary>
+        public static string GetDiskCacheDirectory(string volumeRoot, long identity)
+            => Path.Combine(NormalizeVolumeRoot(volumeRoot), ServiceConstants.SsdCacheDirectoryName, GetDirectoryName(identity));
+
+        /// <summary>旧布局目录：<c>&lt;卷根&gt;\FlyDisk.Cache</c>（容器/索引直接放在这里；新版已不支持，仅用于启动期探测清理）</summary>
+        public static string GetLegacyCacheDirectory(string volumeRoot)
+            => Path.Combine(NormalizeVolumeRoot(volumeRoot), ServiceConstants.SsdCacheDirectoryName);
+
+        /// <summary>"D:" / "D:\" / "D:\FlyDisk.Cache" → "D:\"（统一成卷根，供目录拼接）</summary>
+        public static string NormalizeVolumeRoot(string volume)
+        {
+            string value = (volume ?? string.Empty).Trim();
+            if (value.Length == 0) return string.Empty;
+            if (value.Length == 2 && value[1] == ':') return value + "\\";
+            string? root = Path.GetPathRoot(value);
+            return string.IsNullOrEmpty(root) ? value.TrimEnd('\\') + "\\" : root;
+        }
+
         /// <summary>容量（字节）→ 槽位数：下限 1 Slab（64 MiB）、上限 64 GiB，为**缓存盘**留 1 GiB，**并规整为整 Slab**</summary>
         public static int ComputeSlotCount(string dir, long maxBytes)
         {
@@ -537,12 +562,18 @@ namespace FlyDisk.Engine
         /// <returns>成功标记返回 true；没有可标记的账本（不存在 / 头部不合法 / 打不开 / 写失败）返回 false</returns>
         public static bool InvalidateLedger(DiskConfig config)
         {
+            if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return false;
+            return InvalidateLedgerAt(config.SsdCachePath);
+        }
+
+        /// <summary>按**目录**标记账本失效（每盘独立目录后，预检手里的不止一个路径）</summary>
+        public static bool InvalidateLedgerAt(string dir)
+        {
             try
             {
-                if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return false;
+                if (string.IsNullOrWhiteSpace(dir)) return false;
 
-                string containerPath = Path.Combine(
-                    Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), ContainerFileName);
+                string containerPath = Path.Combine(Path.GetFullPath(dir).TrimEnd('\\'), ContainerFileName);
                 if (!File.Exists(containerPath)) return false;
 
                 using var fs = new FileStream(containerPath, FileMode.Open, FileAccess.ReadWrite,
@@ -572,6 +603,50 @@ namespace FlyDisk.Engine
                 LogService.DebugFile($"标记 L2 账本失效失败（按“未能标记”处理）：{ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 启动期只读探测：所有固定卷上仍存在**旧布局**文件
+        /// （`&lt;卷根&gt;\FlyDisk.Cache\cache.dat|index.bin`）的目录。
+        ///
+        /// 新版**不再支持旧布局、也不再迁移**；这些目录只用于启动时询问用户是否删除，
+        /// **不参与任何加速 / 扫描 / 校验逻辑**。
+        /// </summary>
+        public static List<string> FindLegacyCacheDirectories()
+        {
+            var list = new List<string>();
+            foreach (DriveInfo drive in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+
+                    string dir = GetLegacyCacheDirectory(drive.RootDirectory.FullName);
+                    if (File.Exists(Path.Combine(dir, ContainerFileName)) ||
+                        File.Exists(Path.Combine(dir, IndexFileName)))
+                    {
+                        list.Add(dir);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // 单个卷探测失败不影响其它卷
+                    LogService.DebugFile($"旧 L2 缓存探测：枚举卷 {drive.Name} 失败：{ex.Message}");
+                }
+            }
+            return list;
+        }
+
+        /// <summary>找出**归属这块盘**的所有 L2 目录（按目录去重）</summary>
+        public static List<L2CacheInfo> FindCacheDirectoriesForDisk(DiskConfig config, BlockSourceInfo source)
+        {
+            long identity = ComputeIdentity(source);
+            var result = new List<L2CacheInfo>();
+            foreach (L2CacheInfo cache in DescribeAllL2Caches(config))
+            {
+                if (cache.Recognized && cache.OwnerIdentity == identity) result.Add(cache);
+            }
+            return result;
         }
 
         /// <summary>
@@ -615,11 +690,9 @@ namespace FlyDisk.Engine
         /// <summary>
         /// 【管理 L2】扫出**整机上所有的 L2 缓存目录**（只读，不改动任何东西）。
         ///
-        /// 为什么"扫"是靠得住的：`SsdCachePath` 永远由「缓存盘根 + 固定目录名
-        /// <see cref="ServiceConstants.SsdCacheDirectoryName"/>」拼出来（见 <c>Settings</c>），
-        /// 所以每个固定卷只需查一个位置；配置里那份额外补进来（手工改过 <c>config.json</c> 也能看到）。
-        ///
-        /// 用途：用户**忘了**某块盘上还留着 L2 时，能自己找出来删掉（见 TODO「缓存的手动管理」）。
+        /// 两种位置都扫：① 每个固定卷 `FlyDisk.Cache` 下的**一级子目录**（每盘独立容器）；
+        /// ② 配置里登记的目录（卷暂时枚举不到 / 手工改过配置也能看到）。
+        /// **旧布局（根目录下的容器/索引）不再扫描**：新版已不支持，启动时另行提示删除。
         /// </summary>
         public static List<L2CacheInfo> DescribeAllL2Caches(DiskConfig config)
         {
@@ -645,7 +718,13 @@ namespace FlyDisk.Engine
                 try
                 {
                     if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
-                    TryAdd(Path.Combine(drive.RootDirectory.FullName, ServiceConstants.SsdCacheDirectoryName));
+
+                    string root = Path.Combine(drive.RootDirectory.FullName, ServiceConstants.SsdCacheDirectoryName);
+                    // `FlyDisk.Cache` 下的一级子目录 = 每块盘一份
+                    if (Directory.Exists(root))
+                    {
+                        foreach (string sub in Directory.GetDirectories(root)) TryAdd(sub);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -653,7 +732,13 @@ namespace FlyDisk.Engine
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(config.SsdCachePath)) TryAdd(config.SsdCachePath);
+            // 配置里登记的目录：固定卷扫描通常已经覆盖；这里兜底"卷暂时枚举不到 / 手工改过配置"
+            foreach (L2DiskConfig entry in config.L2Disks)
+            {
+                if (entry.OwnerHash == 0 || string.IsNullOrWhiteSpace(entry.CacheVolume)) continue;
+                TryAdd(GetDiskCacheDirectory(entry.CacheVolume, entry.OwnerHash));
+            }
+
             return list;
         }
 
@@ -723,29 +808,11 @@ namespace FlyDisk.Engine
                 }
             }
 
-            // 属主盘：容器里只存了身份的**散列**（不可逆），所以枚举本机盘重算比对
-            string ownerText = recognized ? Locale.T("l2m.ownerUnknown") : string.Empty;
-            if (recognized)
-            {
-                try
-                {
-                    foreach (PhysicalDiskInfo disk in PhysicalDiskHandle.Enumerate())
-                    {
-                        if (L2Verifier.Identify(disk) != ownerIdentity) continue;
-                        ownerText = Locale.T("l2m.ownerDisk", disk.DiskNumber,
-                            disk.Model.Length > 0 ? disk.Model : Locale.T("selectDisk.modelUnknown"),
-                            disk.SizeText);
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LogService.DebugFile($"管理 L2：比对属主盘失败：{ex.Message}");
-                }
-            }
-
-            bool isConfigured = !string.IsNullOrWhiteSpace(config.SsdCachePath) &&
-                string.Equals(Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), full, StringComparison.OrdinalIgnoreCase);
+            // 是否是配置里登记的目录：按容器头归属散列匹配
+            L2DiskConfig? configuredEntry = recognized
+                ? config.L2Disks.Find(e => e.OwnerHash != 0 && e.OwnerHash == ownerIdentity)
+                : null;
+            bool isConfigured = configuredEntry != null && !string.IsNullOrWhiteSpace(configuredEntry.CacheVolume);
 
             return new L2CacheInfo
             {
@@ -760,9 +827,11 @@ namespace FlyDisk.Engine
                 IndexBytes = indexBytes,
                 Recognized = recognized,
                 StoredSlots = storedSlots,
-                OwnerText = ownerText,
+                OwnerIdentity = ownerIdentity,
                 LastShutdownClean = lastClean,
                 IsConfigured = isConfigured,
+                ConfiguredDiskIdentity = configuredEntry?.DiskIdentity ?? string.Empty,
+                ConfiguredMaxBytes = configuredEntry?.MaxBytes ?? 0,
             };
         }
 
@@ -1981,8 +2050,14 @@ namespace FlyDisk.Engine
         /// <summary>容器头记的槽位数（0 = 未知；仅 <see cref="Recognized"/> 为真时有意义）</summary>
         public int StoredSlots { get; init; }
 
-        /// <summary>属主盘的描述（"磁盘 N：型号，容量"）；认不出时是"未知盘"，<see cref="Recognized"/> 为假时为空串</summary>
-        public string OwnerText { get; init; } = string.Empty;
+        /// <summary>容器头记的**归属身份散列**（0 = 未知）；用来和配置里每盘条目匹配</summary>
+        public long OwnerIdentity { get; init; }
+
+        /// <summary>配置里对应条目的盘身份串（`型号|序列号`）；未登记时为空串</summary>
+        public string ConfiguredDiskIdentity { get; init; } = string.Empty;
+
+        /// <summary>配置里对应条目的容量上限（字节）；未登记时为 0</summary>
+        public long ConfiguredMaxBytes { get; init; }
 
         /// <summary>
         /// 上次是否**正常关服**（索引里的身份戳 == 容器头当前的戳）。

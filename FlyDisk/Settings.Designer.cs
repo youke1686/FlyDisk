@@ -46,6 +46,8 @@ namespace FlyDisk
         private void InitializeComponent()
         {
             chkEnableCache = new CheckBox();
+            lblBasicHeader = new Label();
+            lblAdvancedHeader = new Label();
             lblEviction = new Label();
             trackEviction = new TrackBar();
             lblStop = new Label();
@@ -54,42 +56,73 @@ namespace FlyDisk
             btnDocs = new Button();
             lblEvictionVal = new Label();
             lblStopVal = new Label();
-            groupBoxDisk = new GroupBox();
-            numListenPort = new NumericUpDown();
-            label2 = new Label();
             groupBoxCache = new GroupBox();
             groupBoxSsd = new GroupBox();
-            chkEnableSsdCache = new CheckBox();
-            lblSsdDrive = new Label();
-            cmbSsdCacheDrive = new ComboBox();
-            lblSsdSize = new Label();
-            numSsdCacheGb = new NumericUpDown();
+            lblL2Summary = new Label();
+            btnL2Manage = new Button();
+            lblMemEstimate = new Label();
+            groupBoxDisk = new GroupBox();
+            label2 = new Label();
+            txtListenAddress = new TextBox();
+            lblListenPort = new Label();
+            numListenPort = new NumericUpDown();
+            chkAutoIscsiLogin = new CheckBox();
+            groupBoxAdvancedL1 = new GroupBox();
+            lblEvictionWindow = new Label();
+            numEvictionWindow = new NumericUpDown();
+            lblEvictionGrace = new Label();
+            numEvictionGrace = new NumericUpDown();
+            lblEvictionBatch = new Label();
+            numEvictionBatch = new NumericUpDown();
+            groupBoxAdvancedL2 = new GroupBox();
             lblSsdConservative = new Label();
             trackSsdConservative = new TrackBar();
             lblSsdConservativeVal = new Label();
-            btnL2Manage = new Button();
-            lblMemEstimate = new Label();
-            groupBoxStartup = new GroupBox();
-            chkRunAtStartup = new CheckBox();
-            chkKeepOfflineOnBoot = new CheckBox();
-            lblDriveLetters = new Label();
-            txtDriveLetters = new TextBox();
-            btnAddByDrive = new Button();
-            btnPickStartupDisks = new Button();
-            lblStartupDisks = new Label();
+            lblGhostFraction = new Label();
+            numGhostFraction = new NumericUpDown();
+            groupBoxRemote = new GroupBox();
+            lblRemotePort = new Label();
+            numRemotePort = new NumericUpDown();
+            lblRemoteAddress = new Label();
+            txtRemoteAddress = new TextBox();
             ((System.ComponentModel.ISupportInitialize)trackEviction).BeginInit();
             ((System.ComponentModel.ISupportInitialize)trackStop).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)trackSsdConservative).BeginInit();
             ((System.ComponentModel.ISupportInitialize)numListenPort).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)numSsdCacheGb).BeginInit();
-            groupBoxDisk.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)numEvictionWindow).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)numEvictionGrace).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)numEvictionBatch).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)trackSsdConservative).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)numGhostFraction).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)numRemotePort).BeginInit();
             groupBoxCache.SuspendLayout();
             groupBoxSsd.SuspendLayout();
-            groupBoxStartup.SuspendLayout();
+            groupBoxDisk.SuspendLayout();
+            groupBoxAdvancedL1.SuspendLayout();
+            groupBoxAdvancedL2.SuspendLayout();
+            groupBoxRemote.SuspendLayout();
             SuspendLayout();
             // 
-            // chkEnableCache
+            // 基础（左栏）
             // 
+            // lblBasicHeader
+            lblBasicHeader.AutoSize = true;
+            lblBasicHeader.Font = new Font(lblBasicHeader.Font, FontStyle.Bold);
+            lblBasicHeader.Location = new Point(20, 2);
+            lblBasicHeader.Name = "lblBasicHeader";
+            lblBasicHeader.Size = new Size(35, 17);
+            lblBasicHeader.TabIndex = 0;
+            lblBasicHeader.Text = "基础";
+            // 
+            // lblAdvancedHeader
+            lblAdvancedHeader.AutoSize = true;
+            lblAdvancedHeader.Font = new Font(lblAdvancedHeader.Font, FontStyle.Bold);
+            lblAdvancedHeader.Location = new Point(440, 2);
+            lblAdvancedHeader.Name = "lblAdvancedHeader";
+            lblAdvancedHeader.Size = new Size(35, 17);
+            lblAdvancedHeader.TabIndex = 1;
+            lblAdvancedHeader.Text = "高级";
+            // 
+            // chkEnableCache
             chkEnableCache.AutoSize = true;
             chkEnableCache.Location = new Point(20, 30);
             chkEnableCache.Name = "chkEnableCache";
@@ -100,7 +133,6 @@ namespace FlyDisk
             chkEnableCache.CheckedChanged += chkCacheToggle_CheckedChanged;
             // 
             // lblEviction
-            // 
             lblEviction.AutoSize = true;
             lblEviction.Location = new Point(20, 65);
             lblEviction.Name = "lblEviction";
@@ -109,7 +141,6 @@ namespace FlyDisk
             lblEviction.Text = "开始淘汰阈值 (内存):";
             // 
             // trackEviction
-            // 
             trackEviction.Location = new Point(20, 90);
             trackEviction.Maximum = 100;
             trackEviction.Name = "trackEviction";
@@ -119,330 +150,347 @@ namespace FlyDisk
             trackEviction.Value = 80;
             trackEviction.Scroll += trackEviction_Scroll;
             // 
-            // lblStop
-            // 
-            lblStop.AutoSize = true;
-            lblStop.Location = new Point(20, 145);
-            lblStop.Name = "lblStop";
-            lblStop.Size = new Size(119, 17);
-            lblStop.TabIndex = 3;
-            lblStop.Text = "停止缓存阈值 (内存):";
-            // 
-            // trackStop
-            // 
-            trackStop.Location = new Point(20, 170);
-            trackStop.Maximum = 100;
-            trackStop.Name = "trackStop";
-            trackStop.Size = new Size(300, 45);
-            trackStop.TabIndex = 4;
-            trackStop.TickFrequency = 5;
-            trackStop.Value = 90;
-            trackStop.Scroll += trackStop_Scroll;
-            // 
-            // btnSave
-            // 
-            btnSave.Location = new Point(310, 768);
-            btnSave.Name = "btnSave";
-            btnSave.Size = new Size(100, 35);
-            btnSave.TabIndex = 5;
-            btnSave.Text = "确定并保存";
-            btnSave.UseVisualStyleBackColor = true;
-            btnSave.Click += btnSave_Click;
-            // 
-            // btnDocs
-            // 
-            // 底部左下角：与「确定并保存」同一行、分居两端（风险动作在右，轻量入口在左）
-            btnDocs.Location = new Point(20, 768);
-            btnDocs.Name = "btnDocs";
-            btnDocs.Size = new Size(100, 35);
-            btnDocs.TabIndex = 21;
-            btnDocs.Text = "文档";
-            btnDocs.UseVisualStyleBackColor = true;
-            btnDocs.Click += btnDocs_Click;
-            // 
             // lblEvictionVal
-            // 
             lblEvictionVal.AutoSize = true;
             lblEvictionVal.Location = new Point(325, 90);
             lblEvictionVal.Name = "lblEvictionVal";
             lblEvictionVal.Size = new Size(32, 17);
-            lblEvictionVal.TabIndex = 6;
+            lblEvictionVal.TabIndex = 3;
             lblEvictionVal.Text = "80%";
             // 
-            // lblStopVal
+            // lblStop
+            lblStop.AutoSize = true;
+            lblStop.Location = new Point(20, 145);
+            lblStop.Name = "lblStop";
+            lblStop.Size = new Size(119, 17);
+            lblStop.TabIndex = 4;
+            lblStop.Text = "停止缓存阈值 (内存):";
             // 
+            // trackStop
+            trackStop.Location = new Point(20, 170);
+            trackStop.Maximum = 100;
+            trackStop.Name = "trackStop";
+            trackStop.Size = new Size(300, 45);
+            trackStop.TabIndex = 5;
+            trackStop.TickFrequency = 5;
+            trackStop.Value = 90;
+            trackStop.Scroll += trackStop_Scroll;
+            // 
+            // lblStopVal
             lblStopVal.AutoSize = true;
             lblStopVal.Location = new Point(325, 170);
             lblStopVal.Name = "lblStopVal";
             lblStopVal.Size = new Size(32, 17);
-            lblStopVal.TabIndex = 7;
+            lblStopVal.TabIndex = 6;
             lblStopVal.Text = "90%";
             // 
-            // groupBoxDisk
-            // 
-            groupBoxDisk.Controls.Add(numListenPort);
-            groupBoxDisk.Controls.Add(label2);
-            groupBoxDisk.Location = new Point(20, 20);
-            groupBoxDisk.Name = "groupBoxDisk";
-            groupBoxDisk.Size = new Size(390, 76);
-            groupBoxDisk.TabIndex = 8;
-            groupBoxDisk.TabStop = false;
-            groupBoxDisk.Text = "iSCSI 监听端口（只监听回环，供本机发起程序连接）";
-            // 
-            // label2
-            // 
-            label2.AutoSize = true;
-            label2.Location = new Point(15, 32);
-            label2.Name = "label2";
-            label2.Size = new Size(71, 17);
-            label2.TabIndex = 3;
-            label2.Text = "监听端口:";
-            // 
-            // numListenPort
-            // 
-            numListenPort.Location = new Point(110, 29);
-            numListenPort.Maximum = new decimal(new int[] { 65535, 0, 0, 0 });
-            numListenPort.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
-            numListenPort.Name = "numListenPort";
-            numListenPort.Size = new Size(80, 23);
-            numListenPort.TabIndex = 14;
-            numListenPort.Value = new decimal(new int[] { 3260, 0, 0, 0 });
-            // 
             // groupBoxCache
-            // 
             groupBoxCache.Controls.Add(chkEnableCache);
             groupBoxCache.Controls.Add(lblEviction);
-            groupBoxCache.Controls.Add(lblStopVal);
-            groupBoxCache.Controls.Add(trackEviction);
             groupBoxCache.Controls.Add(lblEvictionVal);
+            groupBoxCache.Controls.Add(trackEviction);
             groupBoxCache.Controls.Add(lblStop);
+            groupBoxCache.Controls.Add(lblStopVal);
             groupBoxCache.Controls.Add(trackStop);
-            groupBoxCache.Location = new Point(20, 106);
+            groupBoxCache.Location = new Point(20, 20);
             groupBoxCache.Name = "groupBoxCache";
-            groupBoxCache.Size = new Size(390, 230);
-            groupBoxCache.TabIndex = 9;
+            groupBoxCache.Size = new Size(400, 220);
+            groupBoxCache.TabIndex = 0;
             groupBoxCache.TabStop = false;
-            groupBoxCache.Text = "内存缓存设置";
+            groupBoxCache.Text = "内存缓存（L1）";
             // 
-            // chkEnableSsdCache
+            // groupBoxSsd
+            groupBoxSsd.Controls.Add(lblL2Summary);
+            groupBoxSsd.Controls.Add(btnL2Manage);
+            groupBoxSsd.Location = new Point(20, 250);
+            groupBoxSsd.Name = "groupBoxSsd";
+            groupBoxSsd.Size = new Size(400, 110);
+            groupBoxSsd.TabIndex = 1;
+            groupBoxSsd.TabStop = false;
+            groupBoxSsd.Text = "SSD 二级缓存（L2，每盘独立配置）";
             // 
-            chkEnableSsdCache.AutoSize = true;
-            chkEnableSsdCache.Location = new Point(20, 30);
-            chkEnableSsdCache.Name = "chkEnableSsdCache";
-            chkEnableSsdCache.Size = new Size(131, 21);
-            chkEnableSsdCache.TabIndex = 10;
-            chkEnableSsdCache.Text = "启用 SSD 二级缓存";
-            chkEnableSsdCache.UseVisualStyleBackColor = true;
-            chkEnableSsdCache.CheckedChanged += chkCacheToggle_CheckedChanged;
-            // 
-            // lblSsdDrive
-            // 
-            lblSsdDrive.AutoSize = true;
-            lblSsdDrive.Location = new Point(15, 68);
-            lblSsdDrive.Name = "lblSsdDrive";
-            lblSsdDrive.Size = new Size(59, 17);
-            lblSsdDrive.TabIndex = 11;
-            lblSsdDrive.Text = "缓存盘:";
-            // 
-            // cmbSsdCacheDrive
-            // 
-            cmbSsdCacheDrive.DropDownStyle = ComboBoxStyle.DropDownList;
-            cmbSsdCacheDrive.FormattingEnabled = true;
-            cmbSsdCacheDrive.Location = new Point(120, 65);
-            cmbSsdCacheDrive.Name = "cmbSsdCacheDrive";
-            cmbSsdCacheDrive.Size = new Size(150, 25);
-            cmbSsdCacheDrive.TabIndex = 12;
-            // 
-            // lblSsdSize
-            // 
-            lblSsdSize.AutoSize = true;
-            lblSsdSize.Location = new Point(15, 103);
-            lblSsdSize.Name = "lblSsdSize";
-            lblSsdSize.Size = new Size(95, 17);
-            lblSsdSize.TabIndex = 13;
-            lblSsdSize.Text = "容量预算(GiB):";
-            // 
-            // numSsdCacheGb
-            // 
-            numSsdCacheGb.Location = new Point(120, 100);
-            // 上限 64 GiB：与引擎侧的 MAX_SLOTS（SsdCacheService.MAX_CAPACITY_BYTES = 64 GiB）保持一致，
-            // 避免填了 200 GiB 却被静默夹取。**上限的实质是内存**，代价见窗口底部的「预计额外内存」提示。
-            numSsdCacheGb.Maximum = new decimal(new int[] { 64, 0, 0, 0 });
-            numSsdCacheGb.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
-            numSsdCacheGb.Name = "numSsdCacheGb";
-            numSsdCacheGb.Size = new Size(80, 23);
-            numSsdCacheGb.TabIndex = 14;
-            numSsdCacheGb.Value = new decimal(new int[] { 8, 0, 0, 0 });
-            numSsdCacheGb.ValueChanged += numSsdCacheGb_ValueChanged;
-            // 
-            // lblSsdConservative
-            // 
-            lblSsdConservative.AutoSize = true;
-            lblSsdConservative.Location = new Point(15, 133);
-            lblSsdConservative.Name = "lblSsdConservative";
-            lblSsdConservative.Size = new Size(119, 17);
-            lblSsdConservative.TabIndex = 16;
-            lblSsdConservative.Text = "保守线(占用率):";
-            // 
-            // trackSsdConservative
-            // 
-            // 下界 50%：定得太低会让 L2 几乎一直保守（学不动）；上界 99% 对应引擎的夹取区间
-            trackSsdConservative.Location = new Point(15, 158);
-            trackSsdConservative.Maximum = 99;
-            trackSsdConservative.Minimum = 50;
-            trackSsdConservative.Name = "trackSsdConservative";
-            trackSsdConservative.Size = new Size(300, 45);
-            trackSsdConservative.TabIndex = 17;
-            trackSsdConservative.TickFrequency = 5;
-            trackSsdConservative.Value = 80;
-            trackSsdConservative.Scroll += trackSsdConservative_Scroll;
-            // 
-            // lblSsdConservativeVal
-            // 
-            lblSsdConservativeVal.AutoSize = true;
-            lblSsdConservativeVal.Location = new Point(325, 158);
-            lblSsdConservativeVal.Name = "lblSsdConservativeVal";
-            lblSsdConservativeVal.Size = new Size(32, 17);
-            lblSsdConservativeVal.TabIndex = 18;
-            lblSsdConservativeVal.Text = "80%";
+            // lblL2Summary
+            lblL2Summary.AutoSize = false;
+            lblL2Summary.Location = new Point(15, 32);
+            lblL2Summary.Name = "lblL2Summary";
+            lblL2Summary.Size = new Size(370, 40);
+            lblL2Summary.TabIndex = 0;
+            lblL2Summary.Text = "尚未配置 L2";
             // 
             // btnL2Manage
-            // 
-            // 「L2 管理」：紧挨着 L2 缓存盘下拉框（见 L2Manage）——用来清理那些"忘了的" L2 缓存
-            btnL2Manage.Location = new Point(280, 64);
+            btnL2Manage.Location = new Point(15, 72);
             btnL2Manage.Name = "btnL2Manage";
-            btnL2Manage.Size = new Size(95, 27);
-            btnL2Manage.TabIndex = 13;
+            btnL2Manage.Size = new Size(120, 28);
+            btnL2Manage.TabIndex = 1;
             btnL2Manage.Text = "L2 管理";
             btnL2Manage.UseVisualStyleBackColor = true;
             btnL2Manage.Click += btnL2Manage_Click;
             // 
             // lblMemEstimate
-            // 
-            // 窗口底部的"预计额外内存"提示：文本由 Settings.UpdateMemoryEstimate() 动态生成（含数字，不登记静态绑定）
             lblMemEstimate.AutoSize = false;
             lblMemEstimate.ForeColor = SystemColors.GrayText;
-            lblMemEstimate.Location = new Point(20, 716);
+            lblMemEstimate.Location = new Point(20, 370);
             lblMemEstimate.Name = "lblMemEstimate";
-            lblMemEstimate.Size = new Size(285, 44);
-            lblMemEstimate.TabIndex = 20;
+            lblMemEstimate.Size = new Size(400, 44);
+            lblMemEstimate.TabIndex = 2;
             lblMemEstimate.TextAlign = ContentAlignment.MiddleLeft;
             // 
-            // groupBoxStartup
+            // 高级（右栏）
             // 
-            groupBoxStartup.Controls.Add(chkRunAtStartup);
-            groupBoxStartup.Controls.Add(chkKeepOfflineOnBoot);
-            groupBoxStartup.Controls.Add(lblDriveLetters);
-            groupBoxStartup.Controls.Add(txtDriveLetters);
-            groupBoxStartup.Controls.Add(btnAddByDrive);
-            groupBoxStartup.Controls.Add(btnPickStartupDisks);
-            groupBoxStartup.Controls.Add(lblStartupDisks);
-            groupBoxStartup.Location = new Point(20, 566);
-            groupBoxStartup.Name = "groupBoxStartup";
-            groupBoxStartup.Size = new Size(390, 150);
-            groupBoxStartup.TabIndex = 22;
-            groupBoxStartup.TabStop = false;
-            groupBoxStartup.Text = "开机与自动化";
+            // groupBoxDisk
+            groupBoxDisk.Controls.Add(label2);
+            groupBoxDisk.Controls.Add(txtListenAddress);
+            groupBoxDisk.Controls.Add(lblListenPort);
+            groupBoxDisk.Controls.Add(numListenPort);
+            groupBoxDisk.Controls.Add(chkAutoIscsiLogin);
+            groupBoxDisk.Location = new Point(440, 20);
+            groupBoxDisk.Name = "groupBoxDisk";
+            groupBoxDisk.Size = new Size(400, 150);
+            groupBoxDisk.TabIndex = 3;
+            groupBoxDisk.TabStop = false;
+            groupBoxDisk.Text = "iSCSI 端点";
             // 
-            // chkRunAtStartup
+            // label2
+            label2.AutoSize = true;
+            label2.Location = new Point(15, 32);
+            label2.Name = "label2";
+            label2.Size = new Size(71, 17);
+            label2.TabIndex = 0;
+            label2.Text = "监听地址:";
             // 
-            chkRunAtStartup.AutoSize = true;
-            chkRunAtStartup.Location = new Point(15, 22);
-            chkRunAtStartup.Name = "chkRunAtStartup";
-            chkRunAtStartup.Size = new Size(250, 21);
-            chkRunAtStartup.TabIndex = 0;
-            chkRunAtStartup.Text = "登录后自动启动本程序（计划任务，无 UAC 提示）";
-            chkRunAtStartup.UseVisualStyleBackColor = true;
+            // txtListenAddress
+            txtListenAddress.Location = new Point(130, 29);
+            txtListenAddress.Name = "txtListenAddress";
+            txtListenAddress.Size = new Size(240, 23);
+            txtListenAddress.TabIndex = 1;
             // 
-            // chkKeepOfflineOnBoot
+            // lblListenPort
+            lblListenPort.AutoSize = true;
+            lblListenPort.Location = new Point(15, 67);
+            lblListenPort.Name = "lblListenPort";
+            lblListenPort.Size = new Size(71, 17);
+            lblListenPort.TabIndex = 2;
+            lblListenPort.Text = "监听端口:";
             // 
-            chkKeepOfflineOnBoot.AutoSize = true;
-            chkKeepOfflineOnBoot.Location = new Point(15, 48);
-            chkKeepOfflineOnBoot.Name = "chkKeepOfflineOnBoot";
-            chkKeepOfflineOnBoot.Size = new Size(300, 21);
-            chkKeepOfflineOnBoot.TabIndex = 1;
-            chkKeepOfflineOnBoot.Text = "开机（含未登录）把下列硬盘保持脱机，避免被占用";
-            chkKeepOfflineOnBoot.UseVisualStyleBackColor = true;
-            chkKeepOfflineOnBoot.CheckedChanged += chkKeepOffline_CheckedChanged;
+            // numListenPort
+            numListenPort.Location = new Point(130, 64);
+            numListenPort.Maximum = new decimal(new int[] { 65535, 0, 0, 0 });
+            numListenPort.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+            numListenPort.Name = "numListenPort";
+            numListenPort.Size = new Size(90, 23);
+            numListenPort.TabIndex = 3;
+            numListenPort.Value = new decimal(new int[] { 3260, 0, 0, 0 });
             // 
-            // lblDriveLetters
+            // chkAutoIscsiLogin
+            chkAutoIscsiLogin.AutoSize = true;
+            chkAutoIscsiLogin.Location = new Point(15, 105);
+            chkAutoIscsiLogin.Name = "chkAutoIscsiLogin";
+            chkAutoIscsiLogin.Size = new Size(330, 21);
+            chkAutoIscsiLogin.TabIndex = 4;
+            chkAutoIscsiLogin.Text = "启用自动 iSCSI 登录（关闭后需手动挂载）";
+            chkAutoIscsiLogin.UseVisualStyleBackColor = true;
             // 
-            lblDriveLetters.AutoSize = true;
-            lblDriveLetters.Location = new Point(15, 77);
-            lblDriveLetters.Name = "lblDriveLetters";
-            lblDriveLetters.Size = new Size(38, 17);
-            lblDriveLetters.TabIndex = 2;
-            lblDriveLetters.Text = "盘符:";
+            // groupBoxAdvancedL1
+            groupBoxAdvancedL1.Controls.Add(lblEvictionWindow);
+            groupBoxAdvancedL1.Controls.Add(numEvictionWindow);
+            groupBoxAdvancedL1.Controls.Add(lblEvictionGrace);
+            groupBoxAdvancedL1.Controls.Add(numEvictionGrace);
+            groupBoxAdvancedL1.Controls.Add(lblEvictionBatch);
+            groupBoxAdvancedL1.Controls.Add(numEvictionBatch);
+            groupBoxAdvancedL1.Location = new Point(440, 180);
+            groupBoxAdvancedL1.Name = "groupBoxAdvancedL1";
+            groupBoxAdvancedL1.Size = new Size(400, 145);
+            groupBoxAdvancedL1.TabIndex = 4;
+            groupBoxAdvancedL1.TabStop = false;
+            groupBoxAdvancedL1.Text = "L1 调参";
             // 
-            // txtDriveLetters
+            // lblEvictionWindow
+            lblEvictionWindow.AutoSize = true;
+            lblEvictionWindow.Location = new Point(15, 32);
+            lblEvictionWindow.Name = "lblEvictionWindow";
+            lblEvictionWindow.Size = new Size(95, 17);
+            lblEvictionWindow.TabIndex = 0;
+            lblEvictionWindow.Text = "淘汰窗口 (秒):";
             // 
-            // 允许直接敲盘符（如 `Y,Z`）来添加：这是"选盘支持盘符"的入口（见 Settings.btnAddByDrive_Click）
-            txtDriveLetters.Location = new Point(58, 74);
-            txtDriveLetters.Name = "txtDriveLetters";
-            txtDriveLetters.Size = new Size(90, 23);
-            txtDriveLetters.TabIndex = 3;
+            // numEvictionWindow
+            numEvictionWindow.Location = new Point(170, 29);
+            numEvictionWindow.Maximum = new decimal(new int[] { 86400, 0, 0, 0 });
+            numEvictionWindow.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+            numEvictionWindow.Name = "numEvictionWindow";
+            numEvictionWindow.Size = new Size(100, 23);
+            numEvictionWindow.TabIndex = 1;
+            numEvictionWindow.Value = new decimal(new int[] { 3600, 0, 0, 0 });
             // 
-            // btnAddByDrive
+            // lblEvictionGrace
+            lblEvictionGrace.AutoSize = true;
+            lblEvictionGrace.Location = new Point(15, 67);
+            lblEvictionGrace.Name = "lblEvictionGrace";
+            lblEvictionGrace.Size = new Size(95, 17);
+            lblEvictionGrace.TabIndex = 2;
+            lblEvictionGrace.Text = "淘汰宽限 (秒):";
             // 
-            btnAddByDrive.Location = new Point(152, 73);
-            btnAddByDrive.Name = "btnAddByDrive";
-            btnAddByDrive.Size = new Size(85, 27);
-            btnAddByDrive.TabIndex = 4;
-            btnAddByDrive.Text = "按盘符添加";
-            btnAddByDrive.UseVisualStyleBackColor = true;
-            btnAddByDrive.Click += btnAddByDrive_Click;
+            // numEvictionGrace
+            numEvictionGrace.Location = new Point(170, 64);
+            numEvictionGrace.Maximum = new decimal(new int[] { 3600, 0, 0, 0 });
+            numEvictionGrace.Minimum = new decimal(new int[] { 0, 0, 0, 0 });
+            numEvictionGrace.Name = "numEvictionGrace";
+            numEvictionGrace.Size = new Size(100, 23);
+            numEvictionGrace.TabIndex = 3;
+            numEvictionGrace.Value = new decimal(new int[] { 2, 0, 0, 0 });
             // 
-            // btnPickStartupDisks
+            // lblEvictionBatch
+            lblEvictionBatch.AutoSize = true;
+            lblEvictionBatch.Location = new Point(15, 102);
+            lblEvictionBatch.Name = "lblEvictionBatch";
+            lblEvictionBatch.Size = new Size(95, 17);
+            lblEvictionBatch.TabIndex = 4;
+            lblEvictionBatch.Text = "单次淘汰块数:";
             // 
-            btnPickStartupDisks.Location = new Point(243, 73);
-            btnPickStartupDisks.Name = "btnPickStartupDisks";
-            btnPickStartupDisks.Size = new Size(95, 27);
-            btnPickStartupDisks.TabIndex = 5;
-            btnPickStartupDisks.Text = "选择硬盘…";
-            btnPickStartupDisks.UseVisualStyleBackColor = true;
-            btnPickStartupDisks.Click += btnPickStartupDisks_Click;
+            // numEvictionBatch
+            numEvictionBatch.Location = new Point(170, 99);
+            numEvictionBatch.Maximum = new decimal(new int[] { 65536, 0, 0, 0 });
+            numEvictionBatch.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+            numEvictionBatch.Name = "numEvictionBatch";
+            numEvictionBatch.Size = new Size(100, 23);
+            numEvictionBatch.TabIndex = 5;
+            numEvictionBatch.Value = new decimal(new int[] { 256, 0, 0, 0 });
             // 
-            // lblStartupDisks
+            // groupBoxAdvancedL2
+            groupBoxAdvancedL2.Controls.Add(lblSsdConservative);
+            groupBoxAdvancedL2.Controls.Add(trackSsdConservative);
+            groupBoxAdvancedL2.Controls.Add(lblSsdConservativeVal);
+            groupBoxAdvancedL2.Controls.Add(lblGhostFraction);
+            groupBoxAdvancedL2.Controls.Add(numGhostFraction);
+            groupBoxAdvancedL2.Location = new Point(440, 335);
+            groupBoxAdvancedL2.Name = "groupBoxAdvancedL2";
+            groupBoxAdvancedL2.Size = new Size(400, 140);
+            groupBoxAdvancedL2.TabIndex = 5;
+            groupBoxAdvancedL2.TabStop = false;
+            groupBoxAdvancedL2.Text = "L2 调参";
             // 
-            // 已选目标盘的摘要（含当前盘符，由 Settings.RefreshStartupDiskSummary 动态生成）
-            lblStartupDisks.AutoSize = false;
-            lblStartupDisks.ForeColor = SystemColors.GrayText;
-            lblStartupDisks.Location = new Point(15, 106);
-            lblStartupDisks.Name = "lblStartupDisks";
-            lblStartupDisks.Size = new Size(360, 36);
-            lblStartupDisks.TabIndex = 6;
-            lblStartupDisks.TextAlign = ContentAlignment.TopLeft;
+            // lblSsdConservative
+            lblSsdConservative.AutoSize = true;
+            lblSsdConservative.Location = new Point(15, 30);
+            lblSsdConservative.Name = "lblSsdConservative";
+            lblSsdConservative.Size = new Size(95, 17);
+            lblSsdConservative.TabIndex = 0;
+            lblSsdConservative.Text = "保守线 (占用率):";
             // 
-            // groupBoxSsd
+            // trackSsdConservative
+            trackSsdConservative.Location = new Point(15, 55);
+            trackSsdConservative.Maximum = 99;
+            trackSsdConservative.Minimum = 50;
+            trackSsdConservative.Name = "trackSsdConservative";
+            trackSsdConservative.Size = new Size(300, 45);
+            trackSsdConservative.TabIndex = 1;
+            trackSsdConservative.TickFrequency = 5;
+            trackSsdConservative.Value = 80;
+            trackSsdConservative.Scroll += trackSsdConservative_Scroll;
             // 
-            groupBoxSsd.Controls.Add(chkEnableSsdCache);
-            groupBoxSsd.Controls.Add(lblSsdDrive);
-            groupBoxSsd.Controls.Add(cmbSsdCacheDrive);
-            groupBoxSsd.Controls.Add(btnL2Manage);
-            groupBoxSsd.Controls.Add(lblSsdSize);
-            groupBoxSsd.Controls.Add(numSsdCacheGb);
-            groupBoxSsd.Controls.Add(lblSsdConservative);
-            groupBoxSsd.Controls.Add(trackSsdConservative);
-            groupBoxSsd.Controls.Add(lblSsdConservativeVal);
-            groupBoxSsd.Location = new Point(20, 346);
-            groupBoxSsd.Name = "groupBoxSsd";
-            groupBoxSsd.Size = new Size(390, 213);
-            groupBoxSsd.TabIndex = 19;
-            groupBoxSsd.TabStop = false;
-            groupBoxSsd.Text = "SSD 二级缓存（须与目标盘不同盘；异常终止会使整层作废）";
+            // lblSsdConservativeVal
+            lblSsdConservativeVal.AutoSize = true;
+            lblSsdConservativeVal.Location = new Point(325, 55);
+            lblSsdConservativeVal.Name = "lblSsdConservativeVal";
+            lblSsdConservativeVal.Size = new Size(32, 17);
+            lblSsdConservativeVal.TabIndex = 2;
+            lblSsdConservativeVal.Text = "80%";
+            // 
+            // lblGhostFraction
+            lblGhostFraction.AutoSize = true;
+            lblGhostFraction.Location = new Point(15, 105);
+            lblGhostFraction.Name = "lblGhostFraction";
+            lblGhostFraction.Size = new Size(75, 17);
+            lblGhostFraction.TabIndex = 3;
+            lblGhostFraction.Text = "ghost 倍率:";
+            // 
+            // numGhostFraction
+            numGhostFraction.DecimalPlaces = 2;
+            numGhostFraction.Increment = new decimal(new int[] { 1, 0, 0, 65536 });
+            numGhostFraction.Location = new Point(170, 102);
+            numGhostFraction.Maximum = new decimal(new int[] { 4, 0, 0, 0 });
+            numGhostFraction.Minimum = new decimal(new int[] { 0, 0, 0, 0 });
+            numGhostFraction.Name = "numGhostFraction";
+            numGhostFraction.Size = new Size(100, 23);
+            numGhostFraction.TabIndex = 4;
+            numGhostFraction.Value = new decimal(new int[] { 1, 0, 0, 0 });
+            // 
+            // groupBoxRemote
+            groupBoxRemote.Controls.Add(lblRemotePort);
+            groupBoxRemote.Controls.Add(numRemotePort);
+            groupBoxRemote.Controls.Add(lblRemoteAddress);
+            groupBoxRemote.Controls.Add(txtRemoteAddress);
+            groupBoxRemote.Location = new Point(440, 485);
+            groupBoxRemote.Name = "groupBoxRemote";
+            groupBoxRemote.Size = new Size(400, 105);
+            groupBoxRemote.TabIndex = 6;
+            groupBoxRemote.TabStop = false;
+            groupBoxRemote.Text = "远程";
+            // 
+            // lblRemotePort
+            lblRemotePort.AutoSize = true;
+            lblRemotePort.Location = new Point(15, 32);
+            lblRemotePort.Name = "lblRemotePort";
+            lblRemotePort.Size = new Size(71, 17);
+            lblRemotePort.TabIndex = 0;
+            lblRemotePort.Text = "监听端口:";
+            // 
+            // numRemotePort
+            numRemotePort.Location = new Point(130, 29);
+            numRemotePort.Maximum = new decimal(new int[] { 65535, 0, 0, 0 });
+            numRemotePort.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+            numRemotePort.Name = "numRemotePort";
+            numRemotePort.Size = new Size(90, 23);
+            numRemotePort.TabIndex = 1;
+            numRemotePort.Value = new decimal(new int[] { 10808, 0, 0, 0 });
+            // 
+            // lblRemoteAddress
+            lblRemoteAddress.AutoSize = true;
+            lblRemoteAddress.Location = new Point(15, 67);
+            lblRemoteAddress.Name = "lblRemoteAddress";
+            lblRemoteAddress.Size = new Size(71, 17);
+            lblRemoteAddress.TabIndex = 2;
+            lblRemoteAddress.Text = "对端地址:";
+            // 
+            // txtRemoteAddress
+            txtRemoteAddress.Location = new Point(130, 64);
+            txtRemoteAddress.Name = "txtRemoteAddress";
+            txtRemoteAddress.Size = new Size(240, 23);
+            txtRemoteAddress.TabIndex = 3;
+            // 
+            // 底部按钮
+            // 
+            btnDocs.Location = new Point(20, 615);
+            btnDocs.Name = "btnDocs";
+            btnDocs.Size = new Size(100, 35);
+            btnDocs.TabIndex = 7;
+            btnDocs.Text = "文档";
+            btnDocs.UseVisualStyleBackColor = true;
+            btnDocs.Click += btnDocs_Click;
+            // 
+            btnSave.Location = new Point(740, 615);
+            btnSave.Name = "btnSave";
+            btnSave.Size = new Size(100, 35);
+            btnSave.TabIndex = 8;
+            btnSave.Text = "确定并保存";
+            btnSave.UseVisualStyleBackColor = true;
+            btnSave.Click += btnSave_Click;
             // 
             // Settings
             // 
             AutoScaleDimensions = new SizeF(7F, 17F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(430, 820);
-            Controls.Add(groupBoxStartup);
-            Controls.Add(groupBoxSsd);
+            ClientSize = new Size(860, 670);
+            Controls.Add(lblBasicHeader);
+            Controls.Add(lblAdvancedHeader);
             Controls.Add(groupBoxCache);
+            Controls.Add(groupBoxSsd);
+            Controls.Add(lblMemEstimate);
             Controls.Add(groupBoxDisk);
+            Controls.Add(groupBoxAdvancedL1);
+            Controls.Add(groupBoxAdvancedL2);
+            Controls.Add(groupBoxRemote);
             Controls.Add(btnDocs);
             Controls.Add(btnSave);
-            Controls.Add(lblMemEstimate);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -452,23 +500,33 @@ namespace FlyDisk
             Load += Settings_Load;
             ((System.ComponentModel.ISupportInitialize)trackEviction).EndInit();
             ((System.ComponentModel.ISupportInitialize)trackStop).EndInit();
-            ((System.ComponentModel.ISupportInitialize)trackSsdConservative).EndInit();
             ((System.ComponentModel.ISupportInitialize)numListenPort).EndInit();
-            ((System.ComponentModel.ISupportInitialize)numSsdCacheGb).EndInit();
-            groupBoxDisk.ResumeLayout(false);
-            groupBoxDisk.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)numEvictionWindow).EndInit();
+            ((System.ComponentModel.ISupportInitialize)numEvictionGrace).EndInit();
+            ((System.ComponentModel.ISupportInitialize)numEvictionBatch).EndInit();
+            ((System.ComponentModel.ISupportInitialize)trackSsdConservative).EndInit();
+            ((System.ComponentModel.ISupportInitialize)numGhostFraction).EndInit();
+            ((System.ComponentModel.ISupportInitialize)numRemotePort).EndInit();
             groupBoxCache.ResumeLayout(false);
             groupBoxCache.PerformLayout();
             groupBoxSsd.ResumeLayout(false);
             groupBoxSsd.PerformLayout();
-            groupBoxStartup.ResumeLayout(false);
-            groupBoxStartup.PerformLayout();
+            groupBoxDisk.ResumeLayout(false);
+            groupBoxDisk.PerformLayout();
+            groupBoxAdvancedL1.ResumeLayout(false);
+            groupBoxAdvancedL1.PerformLayout();
+            groupBoxAdvancedL2.ResumeLayout(false);
+            groupBoxAdvancedL2.PerformLayout();
+            groupBoxRemote.ResumeLayout(false);
+            groupBoxRemote.PerformLayout();
             ResumeLayout(false);
         }
 
         #endregion
 
         private CheckBox chkEnableCache;
+        private Label lblBasicHeader;
+        private Label lblAdvancedHeader;
         private Label lblEviction;
         private TrackBar trackEviction;
         private Label lblStop;
@@ -477,28 +535,34 @@ namespace FlyDisk
         private Button btnDocs;
         private Label lblEvictionVal;
         private Label lblStopVal;
-        private GroupBox groupBoxDisk;
-        private Label label2;
-        private NumericUpDown numListenPort;
         private GroupBox groupBoxCache;
         private GroupBox groupBoxSsd;
-        private CheckBox chkEnableSsdCache;
-        private Label lblSsdDrive;
-        private ComboBox cmbSsdCacheDrive;
-        private Label lblSsdSize;
-        private NumericUpDown numSsdCacheGb;
+        private Label lblL2Summary;
+        private Button btnL2Manage;
+        private Label lblMemEstimate;
+        private GroupBox groupBoxDisk;
+        private Label label2;
+        private TextBox txtListenAddress;
+        private Label lblListenPort;
+        private NumericUpDown numListenPort;
+        private CheckBox chkAutoIscsiLogin;
+        private GroupBox groupBoxAdvancedL1;
+        private Label lblEvictionWindow;
+        private NumericUpDown numEvictionWindow;
+        private Label lblEvictionGrace;
+        private NumericUpDown numEvictionGrace;
+        private Label lblEvictionBatch;
+        private NumericUpDown numEvictionBatch;
+        private GroupBox groupBoxAdvancedL2;
         private Label lblSsdConservative;
         private TrackBar trackSsdConservative;
         private Label lblSsdConservativeVal;
-        private Button btnL2Manage;
-        private Label lblMemEstimate;
-        private GroupBox groupBoxStartup;
-        private CheckBox chkRunAtStartup;
-        private CheckBox chkKeepOfflineOnBoot;
-        private Label lblDriveLetters;
-        private TextBox txtDriveLetters;
-        private Button btnAddByDrive;
-        private Button btnPickStartupDisks;
-        private Label lblStartupDisks;
+        private Label lblGhostFraction;
+        private NumericUpDown numGhostFraction;
+        private GroupBox groupBoxRemote;
+        private Label lblRemotePort;
+        private NumericUpDown numRemotePort;
+        private Label lblRemoteAddress;
+        private TextBox txtRemoteAddress;
     }
 }

@@ -344,9 +344,10 @@ namespace FlyDisk.Engine
         /// 写进系统的，**进程退出后盘仍然保持脱机**——这正是「开机保持脱机」能由一个短命进程完成的原因。
         /// 幂等：盘本来就是脱机时直接返回成功（<c>SetOnlineStatus</c> 内部先查当前状态）。
         ///
-        /// 调用前提（由调用方保证，见 <c>BootDiskPreparation</c>）：**必须**先过
+        /// 调用前提（由调用方保证）：**必须**先过
         /// <see cref="DescribeTargetDiskBlockReason"/>——脱机系统盘 / 本程序所在盘 / 分页文件所在盘
         /// 分别会把 Windows 送走、把本程序送走、让内核换页失败而**当场蓝屏**（0x7A）。
+        /// （当前唯一的使用者是已归档的「开机保持脱机」，见 <c>docs/未启用-开机自动化/</c>。）
         /// </summary>
         /// <returns>成功 <c>true</c>；失败 <c>false</c> 且 <paramref name="error"/> 给出可读原因（不抛）</returns>
         public static bool TryOffline(int diskNumber, out string error)
@@ -767,13 +768,17 @@ namespace FlyDisk.Engine
         /// <summary>
         /// 配置里持久化的**盘身份**——用于启动时反查到当前盘号。
         ///
-        /// 有序列号时用 `型号|序列号`（跨插拔、跨重启都稳）；序列号为空（部分 USB 桥 / 虚拟盘 / RAM 盘）
-        /// 时回落到 `型号|容量|扇区`，此时**同型号多块会分不开**——UI 必须如实提示该设备没有稳定身份。
+        /// 统一为 `型号|序列号`，**没有例外**：没有序列号时返回**空串**（fail-closed）。
+        /// 以前会回落到 `型号|容量|扇区`，但那种"弱身份"在同型号同容量的两块盘之间会**指错盘**——
+        /// 而本程序对目标盘做的是整盘脱机，指错盘的后果不可接受。现在无稳定身份的盘
+        /// 根本不允许作为加速目标（选盘框 / 引擎校验 / 远程授权前都会拒绝）。
+        ///
+        /// **与容器归属散列是两套表示**（见 <see cref="SsdCacheService"/> 的 ComputeDeviceIdentity）：
+        /// 那个散列额外混入了容量与扇区，用于容器头与 L2 目录名，**刻意不动**。
+        /// 以后改 <see cref="PhysicalDiskInfo.Model"/> 的构造或序列号取值时，两处都要检查。
         /// </summary>
         public static string DescribeIdentity(PhysicalDiskInfo info)
-            => info.SerialNumber.Length > 0
-                ? $"{info.Model}|{info.SerialNumber}"
-                : $"{info.Model}|{info.SizeBytes}|{info.BytesPerSector}";
+            => info.SerialNumber.Length > 0 ? $"{info.Model}|{info.SerialNumber}" : string.Empty;
 
         /// <summary>该设备是否有稳定身份（即有没有序列号）</summary>
         public static bool HasStableIdentity(PhysicalDiskInfo info) => info.SerialNumber.Length > 0;

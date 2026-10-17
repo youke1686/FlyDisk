@@ -1009,6 +1009,16 @@ namespace FlyDisk.Engine
                 return;
             }
 
+            // 无稳定身份（无序列号）的盘不能提供出去：身份是远程选盘 / 配对的唯一依据，
+            // 同型号多块时无法区分。与本地加速的硬拦同源，且同样在**弹授权框之前**拒掉
+            //（不该让本机用户对着一个注定无法正确识别设备的请求去点"同意"）。
+            if (!PhysicalDiskHandle.HasStableIdentity(target))
+            {
+                LogService.DebugFile($"远程对端：拒绝把磁盘 {target.DiskNumber}（{target.Model}）提供出去 — 它没有稳定身份（无序列号）");
+                SendSelectResult(channel, null, Locale.T("engine.remote.noIdentity"));
+                return;
+            }
+
             // 分页文件（pagefile.sys）所在盘**绝不能**提供出去：本端会把它整盘脱机，而分页文件正是
             // 本机内核运行时随时读写的内存交换区——盘一脱机，本机当场蓝屏
             // KERNEL_DATA_INPAGE_ERROR (0x7A)。判据与本地加速的硬拦同源

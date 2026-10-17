@@ -590,53 +590,56 @@
 <pre><code>磁盘 0（C: , D:）    型号字样    （容量）</code></pre>
 <p>括号里是该盘上的<strong>盘符</strong>（一块盘可能对应多个卷、多个盘符，用英文逗号分隔）；脱机的盘通常是由于你加速过，没有盘符，那一格显示「<em>脱机</em>」。</p>
 <p>目前仅能同时加速一整块物理硬盘，不单卷加速 。</p>
-<p><strong>可以一次选多块盘</strong>：按住 <kbd>Ctrl</kbd> / <kbd>Shift</kbd> 点选（或拖动框选），确定后这些盘会<strong>同时</strong>被加速——每块盘各用各的 iSCSI 端口（从配置端口开始依次递增）与各自的目标名，互不干扰；哪块失败不影响其它块，日志会汇总"成功 N/M"。多盘时主按钮变成「停止加速（全部 N 块）」一键收尾；<strong>L2 二级缓存只作用于第一块盘</strong>（其余盘只用 L1 内存缓存 + 写透传），因为一份 L2 容器只能属于一块盘。</p>
+<p><strong>可以一次选多块盘</strong>：在列表里<strong>勾选每行前面的复选框</strong>，确定后这些盘会<strong>同时</strong>被加速——每块盘各用各的 iSCSI 端口（从配置端口开始依次递增）与各自的目标名，互不干扰。多盘是<strong>全成或全不成</strong>：任何一块失败都会把本次已经起来的会话全部停掉并汇总弹出原因（不会出现"一部分在加速、一部分没加速"）；多盘时主按钮变成「停止加速（全部 N 块）」一键收尾；<strong>每块盘都可以有自己的 L2</strong>（各自的 L2 卷与上限，在「L2 管理」里按盘配置；没配置的盘只用 L1 + 写透传）。</p>
 <h3>盘信息区</h3>
 <p>选中一行后，下方会显示：</p>
 <ul>
     <li>第一行基本信息：<strong>字节/扇区 · 容量 · 序列号</strong>。</li>
-    <li>接下来是「不能加速」的 ❌ 原因及排查方法（如果有）。</li>
+    <li>接下来是「不能加速」的 ❌ 原因及排查方法（如果有）。其中<strong>没有序列号的盘不能作为加速目标</strong>：同型号设备无法可靠区分，可能指错盘。</li>
     <li>再往下是一些性能相关的提示，建议关注一下。</li>
 </ul>
 
 <h2 id="settings-zh">设置界面</h2>
-<p>通过菜单「<strong>设置</strong>」打开。配置只在「启动加速」那一刻被实际应用，加速运行中不能修改设置。</p>
+<p>通过菜单「<strong>设置</strong>」打开。配置只在「启动加速」那一刻被实际应用，加速运行中不能修改设置。窗口分「<strong>基础</strong>」（左）与「<strong>高级</strong>」（右）两栏。</p>
 
-<h3 id="set-disk-zh">iSCSI 监听端口</h3>
+<h3>基础（左栏）</h3>
 <ul>
-    <li><strong>监听端口</strong>：除非特殊需求否则一般不用改。默认 <code>3260</code>，范围 1–65535。只监听回环地址 <code>127.0.0.1</code>，供本机 iSCSI 发起程序连接。</li>
-</ul>
-
-<h3 id="set-l1-zh">L1 缓存设置（内存缓存）</h3>
-<ul>
-    <li><strong>启用 L1 缓存</strong>：默认<strong>开启</strong>。关掉后不再用L1缓存，不影响 L2。</li>
+    <li><strong>启用 L1 缓存</strong>：默认<strong>开启</strong>。关掉后不再用 L1 缓存，不影响 L2。</li>
     <li><strong>开始淘汰阈值（内存使用率）</strong>：默认 <code>80%</code>。系统内存使用率超过它时，开始淘汰冷块以释放内存。</li>
     <li><strong>停止缓存阈值（内存使用率）</strong>：默认 <code>90%</code>。若数据量过大无法及时淘汰，超过它时暂停接受新的缓存数据。需保持「淘汰 &lt; 停止」。</li>
+    <li><strong>L2 摘要 + 「L2 管理」</strong>：这里只显示"已为几块盘配置 L2、合计上限"，具体的 L2 卷与上限在「L2 管理」里按盘维护（见下）。</li>
+    <li><strong>预计额外内存</strong>：窗口底部给出估算，请对照内存余量合理决策。</li>
 </ul>
 
-<h3 id="set-l2-zh">L2 缓存设置（硬盘缓存）</h3>
+<h3>高级（右栏）</h3>
 <ul>
-    <li><strong>启用 L2 缓存</strong>：默认<strong>关闭</strong>。</li>
-    <li><strong>L2 缓存盘</strong>：下拉列出当前可用的盘符。请选一块速度快性能好的 SSD。</li>
-    <li><strong>容量预算（GiB）</strong>：默认 <code>8</code>，范围 1–64。这是 L2 在缓存盘上最多占用的空间。可以随时修改：改大或改小时，程序会在启动加速前弹窗确认，已有缓存按新容量缩放保留（缩容会丢弃位置靠后的部分块，扩容则全部保留），无需清空重建。</li>
-    <p class="tip">&nbsp;L2 不会预先占满空间：它以 64 MiB 的整块随实际写入逐步增长，用多少占多少，未用到的空间仍可交给缓存盘上的其他内容使用。</p>
-<li><strong>保守线（L2 缓存占用率）</strong>：默认 <code>80%</code>，范围 50–99%。L2 占用率超过它后缓存接收策略转为保守。</li>
+    <li><strong>iSCSI 端点</strong>：监听地址（默认 <code>127.0.0.1</code>）与端口（默认 <code>3260</code>，范围 1–65535）。只监听回环；除非与已有 iSCSI 冲突，否则不用改。</li>
+    <li><strong>启用自动 iSCSI 登录</strong>：默认<strong>开启</strong>。开启时程序启动 target 后会自动连接，盘符直接回来。关闭后 target 照常监听，但需要你到「iSCSI 发起程序」手动连接；<strong>自动登录失败会直接按启动失败处理</strong>并引导你关闭本项后重试。</li>
+    <li><strong>L1 调参</strong>：淘汰窗口、淘汰宽限、单次淘汰块数。一般无需修改。</li>
+    <li><strong>L2 调参</strong>：保守线（默认 <code>80%</code>，范围 50–99%）与 ghost 倍率。一般无需修改。</li>
+    <li><strong>远程</strong>：远程服务监听端口与上次的对端地址（仅「远程」实验性功能使用）。</li>
 </ul>
-<p><strong>预计额外内存</strong>：有些缓存以外的必要内存开销会随着缓存增多而增大，窗口底部会给出估算，请对照内存余量合理决策。</p>
-<h3 id="set-startup-zh">开机与自动化</h3>
+
+<h3 id="set-l2-zh">L2 管理（每盘独立配置）</h3>
+<p>从「设置 → 基础 → L2 管理」打开，一张表维护每块盘的 L2：</p>
 <ul>
-    <li><strong>登录后自动启动本程序</strong>：默认<strong>关闭</strong>。开启后程序会创建一个计划任务，在<strong>你登录 Windows 时</strong>以最高权限启动本程序——不会弹 UAC（这正是它不用「启动」文件夹 / 注册表自启的原因，那种方式对管理员程序每次开机都要弹一次）。</li>
-    <li><strong>开机（含未登录）把下列硬盘保持脱机</strong>：默认<strong>关闭</strong>。开启后会再创建一个<strong>开机触发</strong>的计划任务：系统启动约 1 分钟后把这批硬盘整盘脱机，然后立即退出（<strong>不需要你登录</strong>）。此后这些盘在系统里看不到、也不会被其它程序占用，直到你在主界面点「启动加速」把它们接管回来。</li>
-    <li><strong>目标盘怎么选</strong>：点「<strong>选择硬盘…</strong>」在列表里勾选（可多选）；也可以直接把盘符敲进输入框（如 <code>Y,Z</code>）后点「<strong>按盘符添加</strong>」。列表按<strong>设备身份</strong>（型号 + 序列号）保存，所以<strong>换盘符、换接口都不影响</strong>。</li>
-    <p class="tip">&nbsp;盘已脱机时<strong>没有盘符</strong>（整盘脱机后卷会消失），这种情形请用「选择硬盘…」；「按盘符添加」只在你此刻还能看到盘符（盘处于联机状态）时可用。</p>
-    <li><strong>系统盘 / 本程序所在盘 / 分页文件所在盘永远不能作为目标盘</strong>：把它们整盘脱机分别会让 Windows 失去系统盘、让本程序自己消失、让内核换页失败而蓝屏。选择时会被标红拦住，开机流程同样不会碰它们。</li>
+    <li>列：<strong>盘 | L2 卷 | 上限 | 实占 | 状态</strong>。L2 卷是行内下拉，上限是行内输入（GiB，1–64）。</li>
+    <li><strong>新建</strong>：末尾加一行空行，从下拉里选盘、选 L2 卷、填上限。</li>
+    <li><strong>删除</strong>：移除这一行<strong>并删除它的缓存文件</strong>（会二次确认）。</li>
+    <li><strong>清空缓存内容</strong>：保留配置，只删缓存内容，实占归 0；下次加速会自动重建。</li>
+    <li><strong>未识别</strong>的目录只读显示（盘=未知、状态=未识别）。<strong>旧版布局</strong>（<code>FlyDisk.Cache</code> 根目录下的 <code>cache.dat</code> / <code>index.bin</code>）新版已不支持：程序启动时会提示删除，选「否」则退出。</li>
+    <li>未接上的盘也会显示，卷与上限仍可编辑。</li>
+    <li>上限<strong>超过该卷可用空间</strong>时，启动会被<strong>阻止</strong>并提示该卷最多能放多少；请回来把上限调小（不再静默夹取）。</li>
+    <li><strong>配置不完整</strong>（选了盘，但 L2 卷为空 / 上限无效）：允许先留空保存，但<strong>启动时会被拒绝</strong>；请补全该行，或删除这一行。</li>
+    <li>关闭窗口点「确定」保存，「取消」不生效。</li>
 </ul>
-<p><strong>本程序不做「运行期盯守」</strong>：它只保证「开机那一刻这些盘是脱机的」；如果你之后在「磁盘管理」里手动把盘联机，程序不会再自动把它脱机。</p>
+<p class="tip">&nbsp;L2 不会预先占满空间：它以 64 MiB 的整块随实际写入逐步增长，用多少占多少，未用到的空间仍可交给缓存盘上的其他内容使用。</p>
 <h2 id="inspector-zh">检查器</h2>
 <p>菜单「<strong>检查器</strong>」打开，用来观察当前运行状态、统计数据，以便确定加速有没有效果。顶部有两个页签：</p>
 
 <h3>简要页</h3>
 <ul>
+    <li><strong>选择盘</strong>：多盘同时加速时，顶部出现下拉框，用来选择简要页显示哪一块盘；只有一块盘时自动隐藏。</li>
     <li><strong>两个速度方框</strong>：「加速后读取」指加速后各种软件读取硬盘的速度；「源盘读取」指实际硬盘的繁忙程度/所有回源读取的速度</li>
     <li><strong>命中情况指示条</strong>：L1 命中 / L2 命中 / 源盘读取的块数在不同时间尺度下的统计。源盘读取越少代表这段时间加速效果越好。</li>
     <li><strong>L1 内存水位条</strong>与<strong>L2 占用条</strong>。</li>
@@ -645,7 +648,7 @@
 </ul>
 
 <h3>详细页</h3>
-<p>使用时通常不需要关注，纯文字，排查问题时方便直接复制粘贴给 AI。</p>
+<p>使用时通常不需要关注，纯文字，排查问题时方便直接复制粘贴给 AI。多盘同时加速时，会依次列出<strong>所有盘</strong>的完整信息。</p>
 
 <h3>悬浮窗与置顶</h3>
 <ul>
@@ -737,13 +740,13 @@
 <p>拿不准时：在「不匹配」弹窗选「否」中止启动，再到菜单「校验 L2」逐块比对、修复后再启动，是最稳的一步。</p>
 
 <h3>启动时提示 L2 容量要放大 / 缩小，或说受缓存盘空间限制？</h3>
-<p>当你把「容量预算」改成与上次不同的值时，程序会在启动加速前让你确认：</p>
+<p>当你把某块盘的「L2 上限」改成与上次不同的值时，程序会在启动加速前让你确认：</p>
 <ul>
     <li><strong>改小</strong>：缓存缩到新容量，超出部分（缓存中位置靠后的那些块）会被丢弃，其余保留。</li>
     <li><strong>改大</strong>：已有缓存全部保留，新增的容量会在使用中逐步启用。</li>
-    <li><strong>受空间限制</strong>：缓存盘可用空间不足时，程序会为它保留约 1 GiB 空闲后再决定实际容量，可能比你设定的值小。留这段空闲是必要的——SSD 快满时读写会明显变慢，留出一些空间才能保证加速运行流畅。</li>
+    <li><strong>超过可用空间</strong>：程序会<strong>阻止启动</strong>，并告诉你该卷在上限设置下最多只能放多少（会为缓存盘保留约 1 GiB 空闲——SSD 快满时读写会明显变慢）。请到「L2 管理」把该卷上的上限调到不超过提示值后重试。<strong>不会静默夹取</strong>。</li>
 </ul>
-<p>以上情况都只是按新容量缩放、<strong>不会清空</strong>已有缓存；选「否」则中止启动、不改动任何东西。</p>
+<p>容量缩放只是按新上限缩放、<strong>不会清空</strong>已有缓存；选「否」则中止启动、不改动任何东西。</p>
 
 <h3>提示「抢不到 L2 单实例锁」？</h3>
 <p>目标正在运行，或另一个 FlyDisk 实例正在使用这份缓存。请先点「停止加速」。</p>
@@ -751,8 +754,8 @@
 <h3>启动失败，说盘被占用 / 无法独占打开？</h3>
 <p>说明盘正在被使用，确认没有别的程序（备份软件、杀毒软件、另一个 FlyDisk 实例）正在使用该盘，再重试。</p>
 
-<h3>提示启动成功，但 iSCSI 没有自动挂载导致看不到盘？</h3>
-<p>可以到「开始菜单 → Windows 管理工具 → iSCSI 发起程序」手动连接启动，首次使用 iSCSI 发起程序 方法如下：</p>
+<h3>提示自动 iSCSI 登录失败（或你已关闭自动登录）？</h3>
+<p>先到「设置」关闭「启用自动 iSCSI 登录」并重新启动加速；启动成功后，到「开始菜单 → Windows 管理工具 → iSCSI 发起程序」手动连接目标（错误提示里会给出目标 IQN 与端点）。首次使用 iSCSI 发起程序的方法如下：</p>
 <ol>
   <li> 打开&nbsp;iSCSI 发起程序</li>
   <li>点击发现选项卡 → 发现门户(P) → IP地址填写“127.0.0.1”→ 确定(O)</li>
@@ -967,7 +970,7 @@
 <p>For now we only support read caching. When the system needs to read data from the disk:</p>
 <p>Default system behavior: read straight from the source disk (there is a small amount of memory caching, usually negligible).</p>
 <p>Our behavior: prefer reading from L1 / L2; only when the data is in neither do we fall back to the source disk, and then we store it directly into L1 and, as needed, into L2, so that reading the same data next time is accelerated.</p>
-<p>The L2 cache grows on demand: only data that is actually read is written into it, and the container expands as it is written to — it does not occupy the whole budget up front.</p>
+<p>The L2 cache grows on demand: only data that is actually read is written into it, and the container expands as it is written to — it does not occupy the whole limit up front.</p>
 <div class="note">L2 survives reboots, but after an abnormal exit last time, the target disk being manually brought online, or similar cases, a full verification is needed to make sure the data is correct. If a problem is found at startup, the program shows a dialog for you to choose.</div>
 <div class="warn"> <strong>⚠ Note:</strong> while L2 is enabled, <strong>it is your responsibility to avoid</strong> operations that make <strong>L2 and the actual data inconsistent</strong>, such as manually taking the disk offline or using the disk from another computer / another OS in a dual-boot setup. The program cannot reliably detect such operations automatically, so you should <strong>manually trigger a round of L2 verification</strong>. If you are unsure whether your operation could cause the above problem, you should also <strong>manually trigger a round of L2 verification</strong>.</div>
 
@@ -990,55 +993,58 @@
 <pre><code>Disk 0 (C: , D:)    Model    (Capacity)</code></pre>
 <p>The parentheses hold the <strong>drive letters</strong> on that disk (a disk may map to several volumes and letters, separated by English commas). An offline disk usually means you accelerated it before, so it has no letters and that slot shows "<em>offline</em>".</p>
 <p>For now you can accelerate only a whole physical disk at once; per-volume acceleration is not supported.</p>
-<p><strong>You can select several disks at once</strong>: use <kbd>Ctrl</kbd> / <kbd>Shift</kbd> click (or drag a selection box), and after confirming they are accelerated <strong>simultaneously</strong> — each disk gets its own iSCSI port (incrementing from the configured port) and its own target name, so they do not interfere. One disk failing does not affect the others, and the log summarises "N/M succeeded". With multiple disks the main button becomes "Stop acceleration (all N)" for one-shot teardown. <strong>L2 caching applies to the first disk only</strong> (the rest use L1 + write-through), because one L2 container can belong to a single disk.</p>
+<p><strong>You can select several disks at once</strong>: <strong>tick the checkbox in front of each row</strong>; after confirming they are accelerated <strong>simultaneously</strong> — each disk gets its own iSCSI port (incrementing from the configured port) and its own target name, so they do not interfere. Multiple disks are <strong>all or nothing</strong>: if any disk fails, every session started by this attempt is stopped and the reasons are shown in one dialog (you never end up with "some accelerating, some not"). With multiple disks the main button becomes "Stop acceleration (all N)" for one-shot teardown. <strong>Every disk can have its own L2</strong> (its own L2 volume and limit, configured per disk in "L2 Management"; disks without a configuration use L1 + write-through only).</p>
 
 <h3>Disk info area</h3>
 <p>After selecting a row, the area below shows:</p>
 <ul>
     <li>The first line of basic info: <strong>bytes per sector · capacity · serial number</strong>.</li>
-    <li>Then the ❌ reasons why it <strong>cannot</strong> be accelerated and how to troubleshoot them (if any).</li>
+    <li>Then the ❌ reasons why it <strong>cannot</strong> be accelerated and how to troubleshoot them (if any). A disk <strong>without a serial number cannot be the acceleration target</strong>: devices of the same model could not be told apart reliably, so the wrong disk might be picked.</li>
     <li>Then a few performance-related hints — worth a look.</li>
 </ul>
 
 <h2 id="settings-en">Settings</h2>
-<p>Open it from the "<strong>Settings</strong>" menu. The configuration is actually applied at the moment you press "Start Acceleration"; settings cannot be changed while acceleration is running.</p>
+<p>Open it from the "<strong>Settings</strong>" menu. The configuration is actually applied at the moment you press "Start Acceleration"; settings cannot be changed while acceleration is running. The window has two columns: <strong>Basic</strong> (left) and <strong>Advanced</strong> (right).</p>
 
-<h3 id="set-disk-en">iSCSI listen port</h3>
-<ul>
-    <li><strong>Listen port</strong>: normally no need to change unless you have a special requirement. Default <code>3260</code>, range 1–65535. It listens only on loopback <code>127.0.0.1</code>, for the local iSCSI initiator to connect.</li>
-</ul>
-
-<h3 id="set-l1-en">L1 cache settings (memory cache)</h3>
+<h3>Basic (left)</h3>
 <ul>
     <li><strong>Enable L1 cache</strong>: <strong>on</strong> by default. Turning it off stops using the L1 cache; it does not affect L2.</li>
     <li><strong>Eviction start threshold (memory usage)</strong>: default <code>80%</code>. When system memory usage exceeds it, cold blocks start being evicted to free memory.</li>
     <li><strong>Stop caching threshold (memory usage)</strong>: default <code>90%</code>. If too much data cannot be evicted in time and usage exceeds it, new cache data stops being accepted. Keep "eviction &lt; stop".</li>
+    <li><strong>L2 summary + "L2 Management"</strong>: only shows how many disks have L2 configured and their total limit; per-disk volumes and limits are maintained in "L2 Management" (see below).</li>
+    <li><strong>Estimated extra memory</strong>: shown at the bottom of the window; decide the limits sensibly against your free memory.</li>
 </ul>
 
-<h3 id="set-l2-en">L2 cache settings (disk cache)</h3>
+<h3>Advanced (right)</h3>
 <ul>
-    <li><strong>Enable L2 cache</strong>: <strong>off</strong> by default.</li>
-    <li><strong>L2 cache drive</strong>: a drop-down of the currently available drive letters. Choose a fast, high-performance SSD.</li>
-    <li><strong>Size budget (GiB)</strong>: default <code>8</code>, range 1–64. The most L2 may occupy on the cache disk. You can change it at any time: when you grow or shrink it, the program asks for confirmation before starting, and the existing cache is resized to the new budget (shrinking drops the blocks at the tail end; growing keeps everything). No clear-and-rebuild is required.</li>
-    <p class="tip">&nbsp;L2 does not occupy the space up front: it grows in 64 MiB whole blocks as data is actually written — it only uses what it needs, and the unused space stays available to other content on the cache disk.</p>
-    <li><strong>Conservative line (L2 usage)</strong>: default <code>80%</code>, range 50–99%. Once L2 usage exceeds it, the admission policy switches to conservative.</li>
+    <li><strong>iSCSI endpoint</strong>: listen address (default <code>127.0.0.1</code>) and port (default <code>3260</code>, range 1–65535). Loopback only; leave it alone unless it conflicts with an existing iSCSI setup.</li>
+    <li><strong>Log in to iSCSI automatically</strong>: <strong>on</strong> by default. When on, the program connects automatically right after starting the target, so the drive letters come back immediately. When off, the target still listens, but you must connect manually from the iSCSI Initiator. <strong>An auto-login failure is treated as a startup failure</strong> and the program guides you to turn this option off and retry.</li>
+    <li><strong>L1 tuning</strong>: eviction window, eviction grace, blocks per eviction. Normally no need to change.</li>
+    <li><strong>L2 tuning</strong>: conservative line (default <code>80%</code>, range 50–99%) and ghost ratio. Normally no need to change.</li>
+    <li><strong>Remote</strong>: remote service listen port and the last peer address (used only by the experimental "Remote" feature).</li>
 </ul>
-<p><strong>Estimated extra memory</strong>: some necessary memory overhead beyond the cache itself grows as the cache grows; the bottom of the window gives an estimate — decide the budget sensibly against your free memory.</p>
 
-<h3 id="set-startup-en">Startup &amp; Automation</h3>
+<h3 id="set-l2-en">L2 Management (per-disk)</h3>
+<p>Open it from "Settings → Basic → L2 Management". One table maintains L2 for every disk:</p>
 <ul>
-    <li><strong>Start FlyDisk at logon</strong>: off by default. When enabled, FlyDisk creates a scheduled task that starts the program with highest privileges <strong>when you log on to Windows</strong> — no UAC prompt (this is exactly why it does not use the Startup folder or the registry Run key: for an administrator program those would trigger a UAC prompt at every boot).</li>
-    <li><strong>Keep the disks below offline at boot (even before logon)</strong>: off by default. When enabled, a second <strong>boot-triggered</strong> scheduled task takes those disks entirely offline about one minute after Windows starts and then exits immediately (<strong>no logon required</strong>). From then on the disks are invisible to the system and cannot be occupied by other programs, until you click "Start Acceleration" in the main window to take them over.</li>
-    <li><strong>Choosing target disks</strong>: click "<strong>Choose disks…</strong>" and tick as many as you like; or type drive letters (e.g. <code>Y,Z</code>) and click "<strong>Add by letter</strong>". The list is stored by <strong>device identity</strong> (model + serial), so changing drive letters or ports does not matter.</li>
-    <p class="tip">&nbsp;An offline disk <strong>has no drive letter</strong> (offlining removes its volumes), so use "Choose disks…" in that case; "Add by letter" only works while the disk is online and still shows a letter.</p>
-    <li><strong>The system disk, the disk holding the program, and the page-file disk can never be targets</strong>: taking them offline would respectively remove the Windows system disk, remove FlyDisk itself, or make the kernel fail to page out (blue screen). They are flagged in red during selection, and the boot steps never touch them.</li>
+    <li>Columns: <strong>Disk | L2 volume | Limit | Used | Status</strong>. The volume is an in-row drop-down; the limit is an in-row input (GiB, 1–64).</li>
+    <li><strong>New</strong>: appends an empty row; choose a disk, a volume and a limit.</li>
+    <li><strong>Delete</strong>: removes the row <strong>and deletes its cache files</strong> (confirmation required).</li>
+    <li><strong>Clear cache content</strong>: keeps the configuration, deletes only the cached content, and resets "Used" to 0; it is rebuilt on the next start.</li>
+    <li><strong>Unrecognized</strong> folders are shown read-only (disk = unknown, status = unrecognized). The <strong>old layout</strong> (<code>cache.dat</code> / <code>index.bin</code> directly under <code>FlyDisk.Cache</code>) is no longer supported: startup asks whether to delete it; choosing "No" exits the program.</li>
+    <li>Disks that are not connected are still listed; their volume and limit remain editable.</li>
+    <li>If the limit <strong>exceeds the volume's free space</strong>, startup is <strong>blocked</strong> and the message tells you the maximum this volume can hold; lower the limit here (no more silent clamping).</li>
+    <li><strong>Incomplete configuration</strong> (a disk is selected but the L2 volume is empty / the limit is invalid): you may save it as a draft, but <strong>startup will be refused</strong>; complete the row or delete it.</li>
+    <li>Click "OK" to save; "Cancel" discards the changes.</li>
 </ul>
-<p><strong>No runtime watchdog</strong>: FlyDisk only guarantees those disks are offline <em>at boot</em>; if you later bring a disk online in Disk Management, it will not force it offline again.</p>
+<p class="tip">&nbsp;L2 does not occupy the space up front: it grows in 64 MiB whole blocks as data is actually written — it only uses what it needs, and the unused space stays available to other content on the cache disk.</p>
+
 <h2 id="inspector-en">Inspector</h2>
 <p>Open it from the "<strong>Inspector</strong>" menu to watch the current run state and statistics, so you can tell whether acceleration is doing its job. There are two tabs at the top:</p>
 
 <h3>Brief tab</h3>
 <ul>
+    <li><strong>Disk picker</strong>: when several disks are accelerated at once, a drop-down appears at the top to choose which disk the brief tab shows; it is hidden when only one disk is running.</li>
     <li><strong>Two speed boxes</strong>: "accelerated read" is the speed at which various software reads the disk after acceleration; "source read" reflects how busy the actual disk is / the speed of all fallback reads.</li>
     <li><strong>Hit indicator bars</strong>: L1 hits / L2 hits / source reads by block count over different time scales. Fewer source reads means better acceleration over that period.</li>
     <li><strong>L1 memory watermark bar</strong> and <strong>L2 usage bar</strong>.</li>
@@ -1046,7 +1052,7 @@
 </ul>
 
 <h3>Detail tab</h3>
-<p>Usually nothing to worry about during use; it is plain text, handy for copying and pasting to an AI when troubleshooting.</p>
+<p>Usually nothing to worry about during use; it is plain text, handy for copying and pasting to an AI when troubleshooting. When several disks are accelerated at once, it lists the full information for <strong>every disk</strong> in sequence.</p>
 
 <h3>Floating window and top-most</h3>
 <ul>
@@ -1138,13 +1144,13 @@
 <p>If unsure: in the "mismatch" dialog choose No to abort startup, then run "Verify L2" from the menu to compare block by block and repair before starting — that is the safest step.</p>
 
 <h3>At startup it says the L2 size will grow / shrink, or is limited by free space on the cache disk?</h3>
-<p>When you change the "size budget" to a value different from last time, the program asks you to confirm before starting acceleration:</p>
+<p>When you change a disk's "L2 limit" to a value different from last time, the program asks you to confirm before starting acceleration:</p>
 <ul>
-    <li><strong>Shrinking</strong>: the cache is resized to the new budget; the part beyond it (the blocks toward the tail of the cache) is dropped and the rest is kept.</li>
+    <li><strong>Shrinking</strong>: the cache is resized to the new limit; the part beyond it (the blocks toward the tail of the cache) is dropped and the rest is kept.</li>
     <li><strong>Growing</strong>: the existing cache is fully kept, and the new capacity is brought into use gradually as you use it.</li>
-    <li><strong>Limited by space</strong>: when the cache disk has too little free space, the program keeps about 1 GiB free for it before deciding the actual size, which may be smaller than the value you set. That free margin is necessary — an SSD that is nearly full slows down noticeably, so leaving some free space keeps acceleration smooth.</li>
+    <li><strong>Exceeds free space</strong>: startup is <strong>blocked</strong>, and the message tells you the maximum this volume can hold under the configured limit (about 1 GiB is kept free for the cache disk — an SSD that is nearly full slows down noticeably). Open "L2 Management" and lower the limit for that volume to no more than the suggested value, then retry. It is <strong>never silently clamped</strong>.</li>
 </ul>
-<p>All of these only resize the cache to the new budget and <strong>never clear</strong> the existing cache; choosing "No" aborts startup and changes nothing.</p>
+<p>Resizing only adjusts the cache to the new limit and <strong>never clears</strong> the existing cache; choosing "No" aborts startup and changes nothing.</p>
 
 <h3>"Could not acquire the L2 single-instance lock"?</h3>
 <p>The target is running, or another FlyDisk instance is using this cache. Click "Stop Acceleration" first.</p>
@@ -1152,8 +1158,8 @@
 <h3>Startup fails, saying the disk is busy / cannot be opened exclusively?</h3>
 <p>The disk is in use. Make sure no other program (backup software, antivirus, another FlyDisk instance) is using it, then retry.</p>
 
-<h3>It says startup succeeded, but iSCSI did not auto-mount so the disk is invisible?</h3>
-<p>You can go to "Start menu → Windows Administrative Tools → iSCSI Initiator" and connect manually. For first-time use of the iSCSI Initiator, the steps are:</p>
+<h3>It says automatic iSCSI login failed (or you turned auto-login off)?</h3>
+<p>First turn off "Log in to iSCSI automatically" in Settings and start acceleration again. Once startup succeeds, go to "Start menu → Windows Administrative Tools → iSCSI Initiator" and connect to the target manually (the error message includes the target IQN and endpoint). For first-time use of the iSCSI Initiator, the steps are:</p>
 <ol>
   <li> Open the iSCSI Initiator.</li>
   <li>Click the Discovery tab → Discover Portal (P) → enter "127.0.0.1" as the IP address → OK (O).</li>

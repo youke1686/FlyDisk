@@ -29,14 +29,16 @@
 
 | 层 | 命名空间 | 主要内容 |
 | --- | --- | --- |
-| 界面层 | `FlyDisk` | `Form1`（启停 + 状态栏 + 菜单 + 日志 + **L2 启动前预检**）、`Settings`、`Inspector`、`RemoteForm`、`PickerForm`（通用选择框，可选多选）、`L2Manage`、`L2Verify` 的 UI 部分、`HelpDocument`、`UpdateService`、`StartupService`（开机计划任务）、`BootDiskPreparation`（开机保持脱机）、`Program` |
+| 界面层 | `FlyDisk` | `Form1`（启停 + 状态栏 + 菜单 + 日志 + **L2 启动前预检**）、`Settings`（基础/高级两栏）、`Inspector`（多盘可选盘）、`RemoteForm`、`PickerForm`（通用选择框；「启动加速」的多选模式带复选框）、`L2Manage`（每盘 L2 配置表）、`L2Verify` 的 UI 部分、`HelpDocument`、`UpdateService`、`Program` |
 | 引擎层 | `FlyDisk.Engine` | `TargetService`、`CachedPhysicalDisk`、`PhysicalDiskHandle`、`IBlockSource`、`CacheService`（L1）、`SsdCacheService`（L2）、`RemotePeer` / `RemoteProtocol`、`IscsiInitiator`、`LogService`、`SystemMemory`、`L2Verifier` |
 | 模型层 | `FlyDisk.Models` | `DiskConfig`、`CacheStats`、`ConfigService`、`ServiceConstants` |
 | 主题层 | `FlyDisk.Theming` | `ThemeManager` / `ThemePalette` / `ThemedForm` / `ThemedTabControl` / `AppIcon` / `ShortcutIcon`（浅色 / 深色） |
 | 本地化 | `FlyDisk.Localization` | `Locale` / `LocalizationManager`（zh-CN / en-US） |
 
 - 主按钮是一条链：「启动加速 → 取消请求 → 停止加速」。启动 = **校验 → 整盘脱机 → 独占打开 → 装缓存 → 起 target →
-  `IscsiInitiator` 自动登录**；任一步失败会把盘恢复成打开前的样子，不把用户的盘留在"看不见"的状态。
+  `IscsiInitiator` 自动登录**；启动失败时盘默认恢复成打开前的样子，**唯一例外是克隆盘类失败**——源盘刻意保持脱机
+  （整套重试必须从脱机起步才能绕开 Windows 的"冗余路径"判定）；多盘时"全成或全不成"——本次已起来的其它会话会被停掉，
+  那些盘按既定口径**保持脱机**，可用菜单「重新联机硬盘」还回。
 - **用户可见的过程信息一律由界面层自己说**（主界面日志框 / 状态栏 / 弹窗）；引擎内部的异常、自检失败、降级处置只落盘诊断日志。
 
 ***
@@ -47,12 +49,15 @@
 
 ### 2.1 目标盘与启停
 
-- **启动校验**：块大小 4 KB / 非系统盘 / 非本程序所在盘 / **非分页文件（pagefile.sys）所在盘** / 非只读为**硬拦**；
+- **启动校验**：块大小 4 KB / 非系统盘 / 非本程序所在盘 / **非分页文件（pagefile.sys）所在盘** / 非只读 /
+  **必须有稳定身份（`型号|序列号`，无序列号直接拒绝）** 为**硬拦**；
   机械盘、可移动介质只**警告**；L2 缓存目录必须与被加速盘**不同盘**（启动即拒绝同盘，纯写放大）。
   分页文件盘判据统一走 `PhysicalDiskHandle.DescribeTargetDiskBlockReason`（整盘脱机会让内核换页失败，直接蓝屏 `0x7A`）。
+  身份串统一由 `PhysicalDiskHandle.DescribeIdentity` 产出（**没有**型号/容量回落；远程形态同样"无身份即拒绝"）。
 - **独占**：`IOCTL_DISK_SET_DISK_ATTRIBUTES`（`persist=true`）整盘脱机 + `dwShareMode=0` 独占打开。
 - **停止顺序（不可颠倒）**：**先确认没有发起程序还连着——有连接就拒绝停止**（判据 = 本机监听端口上还有 ESTABLISHED 的
   TCP 连接）→ 停 target → 关闭 LUN 后端 → 等在途命令跑完（**上限 2 秒**）→ 冻结 L2 → 落盘账本 → 关句柄（**盘保持脱机**）。
+  自动挂载会话的登出失败时，正常停止按 **0s / 0.5s / 1s** 重试 3 次；**关机路径仍只试一次**（避免拖慢关机）。
   关命令入口与在途计数必须**原子同步**；若等在途超时，**不提交本次账本**，后台等在途命令实际退出后再释放资源，
   此期间 `TargetService.IsStopping=true`，**禁止重入、改设置、校验、重新联机**。
 - **关机 / 重启 / 注销**：`Form1.OnFormClosing` 会走 `TargetService.TryStopForShutdown()`。它与 `Stop()` 的**唯一区别是不做
@@ -61,22 +66,28 @@
   运行中点「停止加速」则**绝不**这样干。
 - **自动挂载**（`Engine/IscsiInitiator.cs`）：`MSiSCSI 服务在跑 → AddIScsiSendTargetPortalW → LoginIScsiTargetW`；
   **只清理本程序的会话/门户，不停止系统 MSiSCSI 服务**。两处硬约束：`IsInformationalSession = false`（为真 PnP 不枚举 LUN）、
-  `IsPersistent = false`（为真会写持久登录、与本程序全权管生管死冲突）。任一步失败**不硬失败**，只记录 + 提示手动挂载。
+  `IsPersistent = false`（为真会写持久登录、与本程序全权管生管死冲突）。
+  **登录失败 = 启动失败（不可恢复）**：`TargetService` 抛 `IscsiAutoLoginException`，整批启动终止、盘恢复成打开前的样子，
+  消息里引导用户到设置关闭「启用自动 iSCSI 登录」后重试并手动挂载。设置项 `DiskConfig.EnableAutoIscsiLogin`
+  （默认开）关闭时 target 照常 listen、不做登录也不做克隆盘检查，由用户到「iSCSI 发起程序」手动连接。
 - **多盘同时加速（2026-10-13 落地；路线 A：多实例）**：主界面「启动加速」的选盘框可**多选**，选几块就同时加速几块。
   口径（改动集中在 `Form1`，引擎只改一处必须改的）：
-  - **一块盘 = 一个 `TargetService` 实例**（`Form1.LocalSession`）：第一块盘用主实例（配置原值），第二块起各自
-    `new TargetService(config 副本)`；副本由 `Form1.BuildSessionConfig` 派生——**端口 = 配置端口 + 序号、
+  - **一块盘 = 一个 `TargetService` 实例**（`Form1.Session`）：所有盘（**包括第一块**）都走同一个 `CreateSession`，
+    各自持有一份 `DiskConfig.Clone()` 副本（第一块不再直接持有全局 `_config`）——**端口 = 配置端口 + 序号、
     IQN = 配置 IQN + 后缀**（每块盘各用各的端点，互不干扰）。
-  - **L2 只给第一块盘**：L2 容器头记着归属盘身份、一个容器只能属于一块盘，而当前口径是"不动 L2 代码"
-    ⇒ 其余盘 `EnableSsdCache = false`（仅 L1 + 写透传）。"每盘独立 L2 容器"见 TODO.md 后续项。
-  - **逐块独立成败**：一块失败/被拒**不影响**其它块，末尾汇总"成功 N/M"；已成功的会话不回滚，
-    由「停止加速（全部 N 块）」统一收尾（每个会话按**自己的端口**判"还有连接就拒绝停止"）。
-  - **克隆盘检查必须按身份配对**：`CheckCloneDisk` 的"登录前后盘号差集"是**全机**的，多会话下会看到别人的克隆盘
-    ⇒ `TargetService.LooksLikeCloneOfThisSource`（型号 + 容量与本源盘一致）先滤一遍，否则会张冠李戴地告警。
-  - **克隆盘自动恢复（整套停止再重来）只给第一块盘做**：那套流程会牵动别的会话；额外会话遇到克隆盘问题
-    只**单独停掉自己**并如实告知（`main.log.multiDiskCloneProblem`）。
-  - **检查器只显示主会话**（第一块盘），多盘时打开会明确告知（`main.log.inspectorPrimaryOnly`）。
+  - **每块盘各自一份 L2**：`DiskConfig.L2Disks` 按盘身份（`型号|序列号`）记录该盘的 L2 卷与上限，
+    容器放在 `<卷根>\FlyDisk.Cache\<设备身份散列>\`；**没有条目**的盘只跑 L1 + 写透传；
+    有条目但 `CacheVolume` 为空 / `MaxBytes <= 0` = **配置不完整**，启动会被拒绝（见 §2.3）。
+  - **全成或全不成**：依次启动，任何一块失败即停止后续；已起来的会话**全部停掉**（盘保持脱机、不自动联机），
+    失败原因**聚合成一次弹窗**。**不允许"部分成功"**——那等于静默回退，用户会以为整批都加速了。
+  - **克隆盘检查是会话级的**：每个会话登录后立刻检查"本次登录新出现的盘"（≥1 块且全部 online、非只读）；
+    自己登录的那块盘没出现 ⇒ `engine.start.cloneDiskNotAppeared`；出现但被判脱机/只读 ⇒ `cloneDiskOffline` / `cloneDiskReadOnly`。
+  - **整套重试只针对克隆盘类失败**（`IscsiCloneCheckException`）：停止全部已起会话 → 等 1 秒 → **不重跑 L2 预检**
+    （用户已拍过板）→ 重跑整批一次；其余失败（含登录失败）一律直接终止。
+  - **检查器覆盖所有会话**：简要页顶部有「选择盘」下拉（只有一块盘时隐藏）；详细页依次列出**所有盘**的完整信息，
+    整段可复制。
   - 与远程形态的关系不变：远程仍是**单会话**，且与本地加速互斥（本地有会话在跑时「远程」置灰）。
+    远程的 L2 暂沿用旧版单盘字段（`EnableSsdCache` / `SsdCachePath` / `SsdCacheMaxBytes`）作兼容兜底。
 
 ### 2.2 L1（内存缓存）
 
@@ -113,22 +124,36 @@
   **终止启动**。**L2 初始化失败也不再静默降级为"仅 L1"**，而是报错并引导用户到设置里关闭 L2、
   或去「L2 管理」清理。只读探测（`DetectLedgerMismatch` / `LedgerStampMismatch` / `DescribeAllL2Caches` 等）
   仍留在引擎（二进制格式知识不外泄），但它们**只输出事实**；探测本身出意外时上抛，由 UI 报错中止。
-- **「L2 管理」**（`L2Manage.cs`；入口 = 设置里 L2 缓存盘右侧的「L2 管理」按钮）：扫出整机上的 L2 缓存目录
-  （`<卷根>\FlyDisk.Cache`，见 `SsdCacheService.DescribeAllL2Caches`）→ 选一份（`PickerForm` 的「L2 缓存」模式）
-  → 操作窗口（清空 / 打开目录 / 设为当前缓存盘）。用途是清理"用户忘了的"缓存（不自动删是设计：
-  用户可能只是临时关掉 L2），也是 TODO「缓存的手动管理」（快照等）的落点。
-- **启动前预检的顺序**：① 容器属于本盘吗 → ② 账本可信吗（盘原本联机 / 上次未正常关服；**远程不支持逐块校验**，
-  只能清空）→ ③ 容量变化 / 被缓存盘可用空间夹取（缩 / 扩分别说明）。**校验没跑干净 ⇒ 中止启动、不做任何补救动作**。
+- **「L2 管理」**（`L2Manage.cs`；入口 = 设置基础栏的「L2 管理」按钮）：**一扇窗的配置表**，
+  列 = `盘 | L2 卷 | 上限 | 实占 | 状态`；L2 卷是行内下拉、上限是行内输入（GiB）；新建 = 末尾加**空行**
+  （卷与上限留空，不预填任何卷）；删除 = 移除条目**并删除缓存文件**（二次确认）；
+  「清空缓存内容」= 保留配置、只删内容、实占归 0；未识别行只读；未接上的盘也能编辑卷与上限。
+  **选了盘但卷为空 / 上限无效的行 = 配置不完整**：允许留空保存，但启动前统一拦截、拒绝启动
+  （`Form1.ValidateL2ConfigForStart`），绝不静默当成"这块盘不启用"。
+  关闭时「确定」保存、「取消」不生效。
+  目录统一为 `<卷根>\FlyDisk.Cache\<设备身份散列>\`，`SsdCacheService.DescribeAllL2Caches` 只扫
+  `FlyDisk.Cache` 下的**一级子目录**（旧布局不再扫描）。
+- **旧布局不再支持、不再迁移**：`<卷根>\FlyDisk.Cache\cache.dat|index.bin` 是历史布局；
+  `Program.Main` 在创建主窗口前扫描各固定卷，发现就弹窗询问是否删除——
+  **「否」= 退出程序**；删除失败只报错、不拦启动（旧文件已不再被任何代码读取）。
+- **每盘一份 L2 配置**：`DiskConfig.L2Disks`（`DiskIdentity` + `OwnerHash` + `CacheVolume` + `MaxBytes`）。
+  同一条目 = 该盘参与 L2；`CacheVolume` 为空或 `MaxBytes <= 0` = **配置不完整**（启动会被拒绝）。
+  旧版单盘字段（`EnableSsdCache` / `SsdCachePath` / `SsdCacheMaxBytes`）**仅用于远程兜底**；
+  本地形态不再读取它们（升级不再自动继承旧配置）。
+- **启动前预检的顺序**：**先做配置完整性检查**（选中盘若有"有盘但卷为空 / 上限无效"的条目 ⇒
+  `Form1.ValidateL2ConfigForStart` 整批拒绝启动）→ ① 容器属于本盘吗 → ② 账本可信吗（盘原本联机 / 上次未正常关服；**远程不支持逐块校验**，
+  只能清空）→ ③ 容量超限阻止启动 / 容量变化（缩 / 扩分别说明）。**校验没跑干净 ⇒ 中止启动、不做任何补救动作**。
   另外**本次不用 L2 却还留着这块盘的账本**时，仍先问一次（`ConfirmL2LedgerUnused`）：它只把身份戳改掉让账本失效，
   比清空保守——防的是用户误操作。
 - **容量 / ghost 参数与本次配置不一致不再清空，改为缩放保留**：缩容**按位置截断**（保留低槽位那批块，与热度无关；
   按热度保留需要 compaction，会在启动时重新制造卡顿），扩容保留全部；**启动前由 UI 弹窗确认**（缩 / 扩分别说明），
-  引擎只按"已确认"执行（确认在 UI 层，引擎不再拦）。详见 `docs/L2容器按需增长与容量缩放_设计.md`。
-  容量还会被**缓存盘可用空间夹取**（`MIN_KEEP_FREE_BYTES = 1 GiB`，避免 SSD 快满时掉速；判据把 L2 已占用空间加回预算，
-  否则同一份空间被扣两次）；**发生夹取时同样弹窗说明原因与后果**。
+  引擎只按"已确认"执行（确认在 UI 层，引擎不再拦）。
+  容量**超过缓存盘可用空间时不再静默夹取，而是阻止启动**并提示该卷最多能放多少
+  （`MIN_KEEP_FREE_BYTES = 1 GiB` 仍参与"最多能放多少"的计算；判据把 L2 已占用空间加回预算，否则同一份空间被扣两次）。
 - **L2 校验 / 修复**（`L2Verify.cs`，整个功能单文件）：**绝不构造 `SsdCacheService`**（其构造器会轮换身份戳 ⇒ 账本当场作废）；
-  槽位数以盘上记录为准；源盘只读句柄 + 保持脱机；修复只回写 L2 容器。入口先 `TryReadOwnerIdentity` 只读 peek 容器头归属身份，
-  把候选收窄到身份匹配的那块盘（散列不可逆 ⇒ 枚举本地盘重算比对；0 匹配则拒绝）。容器长度校验已放宽为"覆盖账本最大占用槽"。
+  槽位数以盘上记录为准；源盘只读句柄 + 保持脱机；修复只回写 L2 容器。入口先扫出所有 L2 目录、按容器头的归属散列
+  把候选收窄到匹配的那块盘（多盘/多容器都适用；0 匹配则拒绝），再把该盘目录交给校验器。容器长度校验已放宽为
+  "覆盖账本最大占用槽"。
 - **L2 运行期读写 IO 故障**：停用 L2、读取回源、写入失败作废受影响映射，未登记的新槽退回空闲栈；本次停止跳过账本提交，
   下一次启动要求校验或重建。源盘写请求失败可能已部分完成，必须作废整个请求涉及的 L1/L2 范围。
 
@@ -154,35 +179,6 @@
 - 高频成功痕迹默认不落盘（前缀表 `LogService.TracePrefixes`），失败 / 异常 / 探针行始终落盘；
   需要完整逐笔账本时把 `config.json` 的 `TraceFileLogging` 设为 `true` 并重启（启动时界面日志会报当前模式）。
 
-### 2.7 开机自动化（自启 / 保持脱机）
-
-- **自启一律用计划任务，绝不用注册表 Run 键**：本程序 `requireAdministrator`，Run 键在登录时启动会弹 UAC（或被静默拒绝）。
-  计划任务可声明"以最高权限运行"，由系统直接拉起，**无 UAC 提示**（实现见 `StartupService`）。
-- **两条任务，各管一件事**（"无需登录也要脱机"与"登录后要看到界面"不可能由同一个进程完成——
-  以 SYSTEM 在无人登录时启动的进程，其窗口不会出现在任何用户桌面上）：
-
-  | 任务 | 触发器 | 身份 | 命令 | 作用 |
-  | --- | --- | --- | --- | --- |
-  | `\FlyDisk\KeepOffline` | 开机（`BootTrigger`，延迟 `PT1M`） | `SYSTEM` | `FlyDisk.exe --keep-offline-only` | 把「开机目标盘」脱机后**立刻退出**，不建界面 |
-  | `\FlyDisk\AutoStart` | 用户登录（`LogonTrigger`） | 创建时的当前用户 | `FlyDisk.exe` | 带界面启动（登录后可见），启动期再幂等确认一次脱机 |
-
-  两条都设 `MultipleInstancesPolicy = IgnoreNew`；主程序的单实例互斥体逻辑**不变**（仍是按登录会话作用域），
-  开机那条走独立互斥体 `Global\FlyDisk.KeepOffline`，两条路径互不干扰（见 `BootDiskPreparation`）。
-- **`--keep-offline-only` 分支（`Program.Main`）**：不建窗体、不初始化主题/快捷方式/帮助文档，
-  只读配置 → 逐盘保持脱机 → 写 `debug-security.log` → 用退出码表达结果。**该分支绝不外抛**。
-- **「保持脱机」的唯一执行处是 `BootDiskPreparation.Prepare`**（GUI 启动期与上述分支共用），其不变量：
-  1. 只处理 `DiskConfig.StartupDiskIdentities` 里**被选中的盘**，绝不自动挑盘；
-  2. **硬拦不可绕过**：动手前必须过 `PhysicalDiskHandle.DescribeTargetDiskBlockReason`——
-     脱机系统盘 / 本程序所在盘 / **分页文件所在盘**分别是"送走 Windows / 送走本程序 / 当场蓝屏 0x7A"，
-     判据与选盘对话框、引擎启动校验共用同一份，**不得另写一套**；
-  3. 幂等 + 失败重试（盘可能被短暂占用）；失败只如实上报（界面日志框 / 诊断日志），不抛、不拦启动；
-  4. 调 `PhysicalDiskHandle.TryOffline`（`persist=true`、**不**开独占句柄）：脱机属性写进系统后进程退出也依然有效，
-     所以"短命进程也能长期保持脱机"成立（与「停止加速后盘保持脱机」同一机制）。
-- **目标盘存的是设备身份串**（`型号|序列号`），**不存盘号也不存盘符**：盘号只是枚举顺序；盘符属于卷，
-  而整盘脱机后卷消失、盘符根本不存在（开机时目标盘恰恰就是"已脱机"）。盘符只作为**选择/展示**入口
-  （设置窗口「按盘符添加」与已选摘要，见 `Settings.RefreshStartupDiskSummary`）。
-- **本功能不做"运行期盯守"**：只保证"开机那一刻是脱机的"；用户在运行中手动把盘联机（磁盘管理）程序不会自动再脱机。
-
 ***
 
 ## 三、目录结构
@@ -199,7 +195,9 @@ d:\projects\FlyDisk\
 ├── docs/
 │   ├── README_en.md               # README 英文版
 │   ├── res/                       # README 用到的截图
-│   ├── L2容器按需增长与容量缩放_设计.md     # ★ L2 按需按 Slab 增长 + 容量缩放的设计与决策（D1–D9）
+│   ├── PR13整改施工计划.md                  # ★ 多盘同时加速 / 全成或全不成 / 无身份拒绝的实施计划（D1–D19）
+│   ├── PR13阶段2-4施工计划.md               # ★ 会话平等化 / 每盘独立 L2 / 新 L2 管理与设置两栏
+│   ├── 未启用-开机自动化/                   # ★ 已停用的「开机自启 + 开机保持脱机」（不参与编译；见其中 README）
 │   └── iSCSI克隆盘被判冗余路径_排障记录.md   # ★ 已知缺陷的排障记录（根因待查明，见 TODO）
 ├── FlyDisk/                       # ★ 唯一项目：WinForms 管理员程序 + 引擎层
 │   ├── FlyDisk.slnx / FlyDisk.csproj
@@ -209,8 +207,6 @@ d:\projects\FlyDisk\
 │   ├── L2Verify.cs                # L2 校验/修复（Engine.L2Verifier + L2VerifyForm，单文件）
 │   ├── HelpDocument.cs / 帮助文档.html   # 帮助文档（单文件双语，嵌入 exe + 每次启动覆盖落盘）
 │   ├── UpdateService.cs           # 检查更新（只比 csproj 里的 <Version> 是否不同）
-│   ├── StartupService.cs          # ★ 开机自启与「开机保持脱机」的计划任务管理（见 §2.7）
-│   ├── BootDiskPreparation.cs     # ★ 开机把「开机目标盘」保持脱机（GUI 与 --keep-offline-only 共用，见 §2.7）
 │   ├── Engine/                    # namespace FlyDisk.Engine
 │   ├── Models/                    # namespace FlyDisk.Models
 │   ├── Theming/                   # 浅色 / 深色主题
@@ -275,7 +271,7 @@ d:\projects\FlyDisk\
 - **容量 = 1024 进制标 MiB / GiB / TiB，吞吐 = 10 进制标 MB/s**。要守的是**"标注必须与进制一致"**
   ——1024 进制的值不能写 `GB`（设置对话框那处已从 `(GB)` 改为 `(GiB)`）。
 - 检查器里读速是 **UI 侧按秒采样差分**出来的（快照只有累计计数）：`加速后读取` = `ReadSectorsTotal` 增量，
-  `原盘读取` = 回源块数 × 4 KiB；窗口 5 秒，单位 MB/s（10⁶）。
+  `原盘读取` = 回源块数 × 4 KiB；窗口 **1 秒**，单位 MB/s（10⁶）。
 
 ***
 
@@ -287,5 +283,5 @@ d:\projects\FlyDisk\
 | 语言特性 | nullable、隐式 using；`AllowUnsafeBlocks` **必需**（`CacheService` 的指针操作 + `PhysicalDiskHandle` 的原始扇区读写） |
 | 外部依赖 | NuGet `ISCSI` 1.5.6（iSCSI 协议层）+ `DiskAccessLibrary.Win32` 1.6.3（`Disk` 基类与 Win32 助手），均 LGPL-3.0；`System.ServiceProcess.ServiceController` 10.0.12（拉起 MSiSCSI 服务） |
 | 管理员权限 | `app.manifest` 声明 `requireAdministrator` |
-| 数据目录 | `%ProgramData%\FlyDisk\`：`config.json` + `debug-security.log` + `crash.log` + 落盘的帮助文档；L2 容器与索引在其下的 `FlyDisk.Cache\`（`cache.dat` / `index.bin`） |
+| 数据目录 | `%ProgramData%\FlyDisk\`：`config.json` + `debug-security.log` + `crash.log` + 落盘的帮助文档；L2 容器与索引在各缓存卷的 `FlyDisk.Cache\<设备身份散列>\`（`cache.dat` / `index.bin`）。旧布局（`FlyDisk.Cache` 根目录下的同名文件）不再支持，启动时提示删除 |
 | 解决方案 | `FlyDisk/FlyDisk.slnx`（只含一个项目） |

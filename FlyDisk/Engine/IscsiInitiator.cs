@@ -35,8 +35,9 @@ namespace FlyDisk.Engine
     ///        → ③ LoginIScsiTargetW（建会话 ⇒ PnP 枚举 LUN ⇒ 盘符回来）
     ///   摘除 ① LogoutIScsiTarget（设备先从设备栈安全移除）→ ② RemoveIScsiSendTargetPortalW（注销门户）
     ///
-    /// **失败不硬失败**（2026-10-02 决策）：任一步失败都只记日志 + 把可读原因交给界面提示
-    /// "请手动到 iSCSI 发起程序里挂"，不抛异常、不拦启动。
+    /// **本类只负责"尝试 + 如实汇报"**：任一步失败都返回 `false` 并给出可读原因，不抛异常、不自行决定是否拦启动。
+    /// 是否把它当致命错误由调用方决定——`TargetService` 现在的口径是**登录失败 = 启动失败（不可恢复）**
+    /// （见 `IscsiAutoLoginException`），并在消息里引导用户关掉「启用自动 iSCSI 登录」后手动挂载。
     ///
     /// 已定的两处语义约束：
     /// - `IsInformationalSession = false`：**必须**。真值只建"信息会话"，PnP 不会枚举 LUN，盘符不出现。
@@ -250,8 +251,11 @@ namespace FlyDisk.Engine
         /// 用户只能去 iSCSI 发起程序里手动断。留着它，下次 <see cref="Disconnect"/>（或
         /// <see cref="Connect"/> 开头的幂等清理）会再试一次。
         /// </summary>
-        public void Disconnect()
+        /// <returns><c>true</c> = 会话已摘除（或本来就没有会话）；<c>false</c> = 登出失败，需要重试</returns>
+        public bool Disconnect()
         {
+            bool sessionGone = true;
+
             if (_hasSession)
             {
                 ISCSI_UNIQUE_SESSION_ID id = _session;
@@ -273,6 +277,10 @@ namespace FlyDisk.Engine
                     _hasSession = false;
                     _session = default;
                 }
+                else
+                {
+                    sessionGone = false;
+                }
             }
 
             if (_hasPortal)
@@ -291,6 +299,8 @@ namespace FlyDisk.Engine
                 _hasPortal = false;
                 _portal = default;
             }
+
+            return sessionGone;
         }
 
         #endregion

@@ -40,50 +40,49 @@ namespace FlyDisk
     /// </summary>
     public partial class Form1 : ThemedForm, ILocalizable
     {
-        private readonly DiskConfig _config;
+        private DiskConfig _config;
 
         /// <summary>
-        /// **主会话**引擎：远程形态与"第一块盘"都用它（它的配置就是 <see cref="_config"/>，端口/IQN 用配置原值）。
-        /// 多盘同时加速时，第二块起各自新建实例放进 <see cref="_extraSessions"/>（见 <see cref="LocalSession"/>）。
-        /// </summary>
-        private readonly TargetService _target;
-
-        /// <summary>
-        /// 一次「启动加速」里的单个**本地会话**：一块盘 = 一个引擎实例。
+        /// 一次「启动加速」里的单个会话：一块盘 = 一个引擎实例；远程形态是 `Disk == null` 的单会话。
         ///
         /// 为什么每块盘要独立实例（路线 A，见 AGENTS.md §2.1）：`TargetService` 的
         /// 设备 / 缓存 / LUN / target / server / 发起端全是单份字段，一个实例只能管一块盘；
         /// 而 iSCSI 是"一个 server 监听一个端点"，所以每块盘用**自己的端口**（配置里的端口 + 序号）
         /// 与**自己的 IQN**（配置里的 IQN + 后缀），互不干扰。
+        ///
+        /// **列表是所有会话的唯一真相**：第一块盘不再有特权，UI 的"主会话"只是列表里的第一项。
         /// </summary>
-        private sealed class LocalSession
+        private sealed class Session
         {
-            public required PhysicalDiskInfo Disk { get; init; }
+            public PhysicalDiskInfo? Disk { get; init; }   // null = 远程会话
             public required DiskConfig Config { get; init; }
-            public required TargetService Target { get; init; }
+            public required TargetService Engine { get; init; }
+            public bool IsRemote => Disk == null;
         }
 
-        /// <summary>第一块盘以外的本地会话（第一块盘就是 <see cref="_target"/>，不在此列表里）</summary>
-        private readonly List<LocalSession> _extraSessions = new();
+        /// <summary>本次已建立的会话（本地多盘按启动顺序；远程形态只有一项且 <see cref="Session.Disk"/> 为 null）</summary>
+        private readonly List<Session> _sessions = new();
 
-        /// <summary>
-        /// 启动期的「开机与自动化」维护任务（见 <see cref="RunStartupMaintenance"/>）。
-        /// 它的"保持脱机"也会用临时句柄打开目标盘；与「启动加速」并发时会让独占打开撞上
-        /// <c>ERROR_SHARING_VIOLATION(32)</c>，所以启动加速前要等它做完。
-        /// </summary>
-        private Task? _startupMaintenanceTask;
+        /// <summary>UI 默认显示的会话（列表第一项）；没有会话时为 null</summary>
+        private Session? PrimarySession => _sessions.Count > 0 ? _sessions[0] : null;
 
         private bool _targetOperationPending;
         private bool _targetOperationStarting;
 
-        /// <summary>**任意**本地会话正在运行（多盘时只要有一块在跑就为真）</summary>
-        private bool IsAnyTargetRunning => _target.IsRunning || _extraSessions.Exists(s => s.Target.IsRunning);
+        /// <summary>上一次成功读到的引擎快照：读失败时用它继续刷新，避免按钮/菜单/状态栏整块停更。</summary>
+        private CacheStats? _lastStats;
 
-        /// <summary>**任意**本地会话在收尾（多盘时用来禁设置/禁重入）</summary>
-        private bool IsAnyTargetStopping => _target.IsStopping || _extraSessions.Exists(s => s.Target.IsStopping);
+        /// <summary>**任意**会话正在运行</summary>
+        private bool IsAnyTargetRunning => _sessions.Exists(s => s.Engine.IsRunning);
 
-        /// <summary>本次已建立的本地会话数（含第一块盘）</summary>
-        private int SessionCount => 1 + _extraSessions.Count;
+        /// <summary>**任意**会话在收尾（用来禁设置/禁重入）</summary>
+        private bool IsAnyTargetStopping => _sessions.Exists(s => s.Engine.IsStopping);
+
+        /// <summary>已建立的会话数</summary>
+        private int SessionCount => _sessions.Count;
+
+        /// <summary>其中正在运行的会话数</summary>
+        private int RunningCount => _sessions.FindAll(s => s.Engine.IsRunning).Count;
 
         private bool HasTargetWork => _targetOperationPending || IsAnyTargetStopping;
 
@@ -137,14 +136,8 @@ namespace FlyDisk
             txtLog.BackColor = ThemeManager.IsDark ? Color.Black : Color.White;
             txtLog.ForeColor = ThemeManager.IsDark ? Color.White : Color.Black;
 
-            // 配置在启动那一刻被读进 TargetService，运行中改配置不生效 ⇒ 设置入口在运行时会锁住
+            // 配置在启动那一刻被读进引擎；运行中改配置不生效 ⇒ 设置入口在运行时会锁住
             _config = ConfigService.Load();
-            _target = new TargetService(_config);
-
-            // 发起程序登录（iSCSI 连接成功）：引擎在工作线程上抛事件，这里直接交给 Log——
-            // Log 自身会切回 UI 线程（InvokeRequired），且文案在 UI 侧现取（Locale.T），跟随当前语言。
-            _target.OnInitiatorConnected += (initiator, endpoint) =>
-                Log(Locale.T("main.log.iscsiConnected", initiator, endpoint));
 
             设置ToolStripMenuItem.Click += 设置ToolStripMenuItem_Click;
             检查器ToolStripMenuItem.Click += 检查器ToolStripMenuItem_Click;
@@ -283,25 +276,31 @@ namespace FlyDisk
                 return;
             }
 
-            using (var settingsForm = new Settings(_config))
+            // 在**副本**上编辑：设置窗口里点「取消」不能改到正在使用的配置对象。
+            // L2Disks 是引用类型列表，必须逐项深拷贝，否则 L2 管理里的修改仍会漏回全局配置。
+            DiskConfig working = _config.Clone();
+            working.L2Disks = _config.L2Disks
+                .Select(e => new L2DiskConfig
+                {
+                    DiskIdentity = e.DiskIdentity,
+                    OwnerHash = e.OwnerHash,
+                    CacheVolume = e.CacheVolume,
+                    MaxBytes = e.MaxBytes,
+                })
+                .ToList();
+
+            using (var settingsForm = new Settings(working))
             {
                 if (settingsForm.ShowDialog() != DialogResult.OK) return;
             }
+
+            _config = working;
 
             // 配置写入 %ProgramData%\FlyDisk\config.json；写失败必须如实报错——
             // 不能说"已保存"却什么都没写进去（用户会以为配置生效了，见 未解决的疑点.md TD-10）
             if (ConfigService.Save(_config, out string error))
             {
                 Log(Locale.T("main.log.configSaved", ServiceConstants.ConfigFilePath));
-
-                // 开机行为（计划任务）在**配置落盘成功之后**再同步：它改的是系统里的计划任务，
-                // 与配置是两份状态；失败不能静默（否则用户以为"勾了就生效"，见 AGENTS.md §2.7）。
-                if (!StartupService.Apply(_config.RunAtStartup, _config.KeepOfflineOnBoot, out string taskError))
-                {
-                    Log(Locale.T("main.log.taskSyncFailed", taskError));
-                    MessageBox.Show(Locale.T("main.msg.taskSyncFailed", taskError),
-                        Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
             }
             else
             {
@@ -316,14 +315,8 @@ namespace FlyDisk
         {
             if (_inspector == null || _inspector.IsDisposed)
             {
-                _inspector = new Inspector(_target);
-
-                // 多盘同时加速时检查器只显示**主会话**（第一块盘）：它的统计面板是单引擎的。
-                // 如实说清楚，别让用户把"只显示一块"当成"其它盘没在跑"。
-                if (_extraSessions.Count > 0)
-                {
-                    Log(Locale.T("main.log.inspectorPrimaryOnly", _target.LocalDiskNumber, SessionCount));
-                }
+                // 传"取当前会话引擎列表"的闭包：检查器打开期间会话可能增减，它每秒现取一次
+                _inspector = new Inspector(() => _sessions.ConvertAll(s => s.Engine));
             }
             _inspector.Show();
             _inspector.BringToFront();
@@ -342,10 +335,10 @@ namespace FlyDisk
                 return;
             }
 
-            // 校验要针对**某一块具体的盘**。容器头里记着它的归属身份（型号|序列号|容量|扇区 的散列），
-            // 所以候选直接收窄到"身份匹配的那块盘"——用户不必从一堆盘里去认。标记是散列、不可逆，
-            // 只能枚举本地盘重算比对（见 L2Verifier.TryReadOwnerIdentity）。
-            PhysicalDiskInfo? target;
+            // 校验要针对**某一块具体的盘**。先扫出所有 L2 目录，按容器头里的归属散列
+            // 把候选收窄到"身份匹配的那些盘"（按容器头的归属散列）。
+            PhysicalDiskInfo? target = null;
+            L2CacheInfo? cache = null;
             try
             {
                 List<PhysicalDiskInfo> disks = PhysicalDiskHandle.Enumerate();
@@ -355,25 +348,37 @@ namespace FlyDisk
                     return;
                 }
 
-                long? owner = L2Verifier.TryReadOwnerIdentity(_config);
-                if (owner.HasValue)
+                List<L2CacheInfo> caches = SsdCacheService.DescribeAllL2Caches(_config);
+                var owners = new HashSet<long>(caches.Where(c => c.Recognized).Select(c => c.OwnerIdentity));
+                if (owners.Count == 0)
                 {
-                    List<PhysicalDiskInfo> owned = disks.Where(d => L2Verifier.Identify(d) == owner.Value).ToList();
-                    if (owned.Count == 0)
-                    {
-                        // 容器在、但归属的那块盘不在本机：没接上 / 已在别处联机 / 远程形态（本地校验只支持本地盘）。
-                        // 此时**不回退到完整清单**——本机没有任何正确的候选，让用户从盘堆里挑只会挑错。
-                        MessageBox.Show(Locale.T("main.msg.verifyNoOwnerDisk"),
-                            Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                    disks = owned;
+                    MessageBox.Show(Locale.T("main.msg.verifyNoOwnerDisk"),
+                        Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
                 }
 
-                using var pick = new PickerForm(disks, _config.PhysicalDiskIdentity,
-                    l2CacheDiskNumber: PhysicalDiskHandle.GetL2CacheDiskNumber(_config.EnableSsdCache, _config.SsdCachePath));
+                List<PhysicalDiskInfo> owned = disks.Where(d => owners.Contains(L2Verifier.Identify(d))).ToList();
+                if (owned.Count == 0)
+                {
+                    // 容器在、但归属的那块盘不在本机：没接上 / 已在别处联机 / 远程形态（本地校验只支持本地盘）。
+                    // 此时**不回退到完整清单**——本机没有任何正确的候选，让用户从盘堆里挑只会挑错。
+                    MessageBox.Show(Locale.T("main.msg.verifyNoOwnerDisk"),
+                        Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                using var pick = new PickerForm(owned, _config.PhysicalDiskIdentity);
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisk == null) return;
                 target = pick.SelectedDisk;
+
+                long owner = L2Verifier.Identify(target);
+                cache = caches.Find(c => c.Recognized && c.OwnerIdentity == owner);
+                if (cache == null)
+                {
+                    MessageBox.Show(Locale.T("main.msg.verifyNoOwnerDisk"),
+                        Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
             }
             catch (Exception ex)
             {
@@ -381,7 +386,13 @@ namespace FlyDisk
                 return;
             }
 
-            using (var dialog = new L2VerifyForm(_config, target.DiskNumber))
+            if (target == null || cache == null) return;
+
+            // L2Verifier 只读 config.SsdCachePath：给它一份指向"这块盘自己的目录"的副本
+            DiskConfig verifyConfig = _config.Clone();
+            verifyConfig.EnableSsdCache = true;
+            verifyConfig.SsdCachePath = cache.Directory;
+            using (var dialog = new L2VerifyForm(verifyConfig, target.DiskNumber))
             {
                 dialog.ShowDialog(this);
             }
@@ -426,7 +437,10 @@ namespace FlyDisk
                 return;
             }
 
-            if (_target.TryReonlineDisk(picked.DiskNumber, out string error))
+            // 会话可以没有（未启动）：此时随便用一个临时引擎做只读状态判断即可，
+            // 真正的"能不能联机"判据在 TargetService 内部（未运行 + 没连接才允许）。
+            TargetService reonlineEngine = PrimarySession?.Engine ?? new TargetService(_config);
+            if (reonlineEngine.TryReonlineDisk(picked.DiskNumber, out string error))
             {
                 Log(Locale.T("main.log.reonlineDone", picked.DiskNumber));
                 Log(Locale.T("main.log.reonlineCacheWarn"));
@@ -901,11 +915,14 @@ namespace FlyDisk
             RefreshStatus();
             try
             {
-                if (await StartRemoteTargetCore(peer, info))
+                // 远程也是一个普通会话（Disk == null），与本地会话共用同一套启停/检查器逻辑
+                Session session = CreateSession(disk: null, index: 0);
+                if (await StartRemoteTargetCore(session, peer, info))
                 {
+                    _sessions.Add(session);
                     _remoteStatus = Locale.T("main.remote.accelerating", info.Model);
                     Log(Locale.T("main.log.remoteDiskReady", info.Model, ((double)info.SizeBytes / 1024 / 1024 / 1024).ToString("F1")));
-                    LogAutoMountResult(_target, Locale.T("main.log.iscsiConnectRemoteHint"));
+                    LogAutoMountResult(session.Engine, isPrimary: true);
                 }
                 else
                 {
@@ -923,14 +940,25 @@ namespace FlyDisk
         /// 远程形态的启动。**L2 账本的一切已经在 <see cref="PrepareL2BeforeStart"/> 里问完了**
         /// （远程与本地共用同一份本地 L2，所以口径一致），这里只剩"起引擎 + 处理返回值"。
         /// </summary>
-        private async Task<bool> StartRemoteTargetCore(RemotePeer peer, BlockSourceInfo info)
+        private async Task<bool> StartRemoteTargetCore(Session session, RemotePeer peer, BlockSourceInfo info)
         {
-            EngineResult result = await Task.Run(() => _target.StartRemote(peer, info));
-            if (result.Ok) return true;
+            try
+            {
+                EngineResult result = await Task.Run(() => session.Engine.StartRemote(peer, info));
+                if (result.Ok) return true;
 
-            Log(Locale.T("main.log.startFailed", result.Message));
-            MessageBox.Show(result.Message, Locale.T("dialog.remoteStartFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
+                Log(Locale.T("main.log.startFailed", result.Message));
+                MessageBox.Show(result.Message, Locale.T("dialog.remoteStartFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                // 真异常（例如自动 iSCSI 登录失败、L2 初始化失败）：同样按"启动失败"处理，
+                // 由调用方收回远端服务；异常消息里已带可读的处置建议。
+                Log(Locale.T("main.log.startFailed", ex.Message));
+                MessageBox.Show(ex.Message, Locale.T("dialog.remoteStartFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
         }
 
         /// <summary>对端宣告"我没法继续提供了"（盘被拔等）：**停掉本地 target**，让上层干净地看到设备消失</summary>
@@ -954,10 +982,12 @@ namespace FlyDisk
             RefreshStatus();
             try
             {
-                if (_target.IsRunning)
+                Session? session = _sessions.Find(s => s.IsRemote);
+                if (session != null && session.Engine.IsRunning)
                 {
-                    EngineResult stopped = await Task.Run(_target.Stop);
-                    if (!stopped.Ok) Log(Locale.T("main.log.stopLocalFailed", stopped.Message));
+                    EngineResult stopped = await Task.Run(session.Engine.Stop);
+                    if (stopped.Ok) _sessions.Remove(session);
+                    else Log(Locale.T("main.log.stopLocalFailed", stopped.Message));
                 }
             }
             catch (Exception ex)
@@ -999,75 +1029,6 @@ namespace FlyDisk
 
             // 右下角的 GitHub 徽标：同样后台下载，失败就保持隐藏（见 LoadGitHubBadge）。
             LoadGitHubBadge();
-
-            // 开机相关的维护（后台线程，不阻塞界面）：
-            // ① 校正计划任务（开关开了而任务缺失 / 指向的不是当前 exe ⇒ 重建；开关关了而任务还在 ⇒ 删除）；
-            // ② 「保持脱机」再幂等确认一次——开机那条（SYSTEM、无需登录）可能因为"盘还没枚举出来"而失败。
-            RunStartupMaintenance();
-        }
-
-        /// <summary>
-        /// 等启动期的「开机与自动化」维护跑完（见 <see cref="RunStartupMaintenance"/>）。
-        ///
-        /// 为什么不并行：那次维护里 app 有"保持脱机"，它会用**临时句柄**打开目标盘（改属性）；
-        /// 用户若在它跑完之前就点「启动加速」，我们对同一块盘的**独占打开**会直接撞
-        /// <c>ERROR_SHARING_VIOLATION(32)</c>（"无法独占打开 \\.\PhysicalDriveN"）。等它做完即可，
-        /// 通常只差几百毫秒；等待过程如实写进日志框。
-        /// </summary>
-        private async Task WaitForStartupMaintenanceAsync()
-        {
-            Task? task = _startupMaintenanceTask;
-            if (task == null || task.IsCompleted) return;
-
-            Log(Locale.T("main.log.waitingBootPreparation"));
-            try
-            {
-                await task;
-            }
-            catch (Exception ex)
-            {
-                // 维护本身失败不该拦住启动（它自己已经把原因写进日志框了）
-                LogService.DebugFile($"等待开机维护结束失败（已忽略）：{ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// 启动期的「开机与自动化」维护（见 AGENTS.md §2.7）。
-        ///
-        /// 为什么放在主窗体而不是 <see cref="Program"/> 里：两件事都要把过程写进**主界面日志框**，
-        /// 而日志框属于主窗体；且它们都不该拖慢启动，所以整体丢到后台线程，失败也只写日志—— 
-        /// 开机配置没弄好不该拦住用户正常使用主界面。
-        /// </summary>
-        private void RunStartupMaintenance()
-        {
-            DiskConfig config = _config;
-
-            _startupMaintenanceTask = Task.Run(() =>
-            {
-                try
-                {
-                    if (!StartupService.Ensure(config.RunAtStartup, config.KeepOfflineOnBoot, out string error))
-                    {
-                        Log(Locale.T("startup.task.syncFailed", error));
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LogService.DebugFile($"开机任务校正失败（已忽略）：{ex.Message}");
-                }
-
-                if (!config.KeepOfflineOnBoot) return;
-
-                try
-                {
-                    List<string> lines = BootDiskPreparation.Prepare(config, out _);
-                    foreach (string line in lines) Log(line);
-                }
-                catch (Exception ex)
-                {
-                    Log(Locale.T("boot.offline.failedUnexpected", ex.Message));
-                }
-            });
         }
 
         /// <summary>
@@ -1284,15 +1245,10 @@ namespace FlyDisk
 
         private async void StartTarget()
         {
-            // 启动期的「保持脱机」维护可能还在跑（它用临时句柄打开同一批盘）：两者并发时，
-            // 独占打开会撞 ERROR_SHARING_VIOLATION(32)——现象正是"无法独占打开 \\.\PhysicalDriveN"。
-            // 先等它做完（通常一瞬间），再进选盘与启动。
-            await WaitForStartupMaintenanceAsync();
-
             // **每次启动都要选盘**（见 后续待办.md 第一节的"选盘时机"）：
             // 用户改过配置后可能隔几天才点启动，很容易忘了当时选的是哪块；把选择放在启动的同一刻，做到所见即所选。
             // **可以多选**（2026-10-13 起）：选几块就同时加速几块 —— 每块一个独立引擎实例，
-            // 各用各的端口 / IQN（见 LocalSession 与 BuildSessionConfig）。
+            // 各用各的端口 / IQN（见 <see cref="Session"/> 与 <see cref="BuildSessionConfig"/>）。
             List<PhysicalDiskInfo> picked;
             try
             {
@@ -1303,8 +1259,17 @@ namespace FlyDisk
                     return;
                 }
 
-                using var pick = new PickerForm(disks, _config.LastAcceleratedDiskIdentities,
-                    PhysicalDiskHandle.GetL2CacheDiskNumber(_config.EnableSsdCache, _config.SsdCachePath));
+                // 每块盘各有自己的 L2 卷：把所有已配置的 L2 卷所在的物理盘都标成不能加速
+                // （加速会把那块盘整盘脱机，L2 也就跟着没了）。
+                var l2CacheDisks = new List<int>();
+                foreach (L2DiskConfig entry in _config.L2Disks)
+                {
+                    if (string.IsNullOrWhiteSpace(entry.CacheVolume)) continue;
+                    int number = PhysicalDiskHandle.GetL2CacheDiskNumber(true, entry.CacheVolume);
+                    if (number >= 0 && !l2CacheDisks.Contains(number)) l2CacheDisks.Add(number);
+                }
+
+                using var pick = new PickerForm(disks, _config.LastAcceleratedDiskIdentities, l2CacheDisks);
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisks.Count == 0) return;
                 picked = pick.SelectedDisks;
             }
@@ -1313,6 +1278,10 @@ namespace FlyDisk
                 MessageBox.Show(Locale.T("main.msg.enumerateFailed", ex.Message), Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
+
+            // 选中的盘若有"不完整"的 L2 配置（选了盘但卷 / 上限留空），直接拒绝整批启动：
+            // 不能把它静默当成"这块盘不启用 L2"——那等于用户以为配了、实际没配。
+            if (!ValidateL2ConfigForStart(picked)) return;
 
             // 记住这次的选择（**全部**）：只用于下次在选盘框里默认勾中，绝不作为启动依据
             _config.LastAcceleratedDiskIdentities = new List<string>();
@@ -1327,37 +1296,50 @@ namespace FlyDisk
             _targetOperationStarting = true;
             RefreshStatus();
 
-            int succeeded = 0;
             try
             {
-                for (int index = 0; index < picked.Count; index++)
-                {
-                    PhysicalDiskInfo disk = picked[index];
-                    bool isPrimary = index == 0;   // 第一块盘用主引擎（配置原值），其余各建一个实例
-                    DiskConfig config = isPrimary ? _config : BuildSessionConfig(index);
-                    TargetService engine = isPrimary ? _target : new TargetService(config);
+                var started = new List<Session>();
+                var failures = new List<string>();
+                StartFailKind kind = await StartAllAsync(picked, runL2Preflight: true, started, failures);
 
-                    try
+                if (kind == StartFailKind.CloneDisk)
+                {
+                    // 克隆盘类失败是"可恢复"的（已知 workaround：重启登录常能绕开"冗余路径"判定）：
+                    // 整套停止 → 等 1 秒 → **不再重跑 L2 预检**（用户刚才已经拍过板）→ 再试一次。
+                    Log(Locale.T("main.log.cloneRetry"));
+                    int failuresBeforeStop = failures.Count;
+                    await StopStartedAsync(started, failures);
+                    if (failures.Count > failuresBeforeStop)
                     {
-                        if (await StartOneDiskAsync(engine, config, disk, isPrimary))
-                        {
-                            succeeded++;
-                            continue;
-                        }
-                        Log(Locale.T("main.log.multiDiskStartFailed", disk.DiskNumber));
+                        // 有会话停不下来：**不能整套重试**（否则等于拿同一个引擎再启一次），
+                        // 如实终止并把"停不下来"的原因一起弹出来。
+                        Log(Locale.T("main.log.startAborted"));
+                        ShowStartFailure(failures);
+                        return;
                     }
-                    catch (Exception ex)
-                    {
-                        // **一块盘的意外不能带垮其它块**。这是 async void 入口，异常绝不能再往外抛；
-                        // 启动本身的失败已由 StartTargetCore 转成弹窗 + false，这里兜的是它之外的部分
-                        // （写日志 / 克隆盘恢复）以及引擎抛出的真异常（例如 **L2 初始化失败**）。
-                        Log(Locale.T("main.log.startFailed", ex.Message));
-                        Log(Locale.T("main.log.multiDiskStartFailed", disk.DiskNumber));
-                        MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
+
+                    await Task.Delay(CloneRetryDelayMs);
+
+                    started.Clear();
+                    failures.Clear();
+                    kind = await StartAllAsync(picked, runL2Preflight: false, started, failures);
                 }
 
-                if (picked.Count > 1) Log(Locale.T("main.log.multiDiskSummary", succeeded, picked.Count));
+                if (kind != StartFailKind.None)
+                {
+                    // 全成或全不成：把本次已起来的会话全部停掉（**盘保持脱机，不自动联机**）。
+                    await StopStartedAsync(started, failures);
+                    Log(Locale.T("main.log.startAborted"));
+                    // 用户主动中止（L2 预检）不弹"启动失败"——预检对话框已经把原因说清楚了；
+                    // 但若还有"停不下来"的会话，必须如实弹出来（否则用户以为已经全停了）。
+                    if (kind != StartFailKind.Cancelled || failures.Count > 0) ShowStartFailure(failures);
+                    return;
+                }
+
+                // **整批成功之后**才把会话登记进列表：失败路径不能留下半套会话。
+                _sessions.AddRange(started);
+
+                Log(Locale.T("main.log.multiDiskSummary", picked.Count));
             }
             finally
             {
@@ -1367,98 +1349,251 @@ namespace FlyDisk
             }
         }
 
+        /// <summary>本次启动尝试的失败类型：只有 <see cref="CloneDisk"/> 允许整套重试一次。</summary>
+        private enum StartFailKind
+        {
+            None,
+            CloneDisk,
+            Other,
+            /// <summary>用户在 L2 预检里主动中止：不算"启动失败"，不弹聚合弹窗（预检自己已经说明过）。</summary>
+            Cancelled,
+        }
+
         /// <summary>
-        /// 启动**一块**盘的完整流程（本地形态）：L2 未使用询问 → L2 预检 → 起引擎 → 自动挂载报告。
-        ///
-        /// 多盘时每块盘各跑一遍（<paramref name="config"/> 与 <paramref name="engine"/> 都随盘而变）。
-        /// <paramref name="isPrimary"/> 为假时：成功后把新会话登记进 <see cref="_extraSessions"/>；
-        /// **克隆盘自动恢复只给第一块盘做**——那套流程会"整套停止再重来"（见
-        /// <see cref="RecoverFromCloneDiskProblem"/>），在多盘下会牵动别的会话；
-        /// 额外会话遇到克隆盘问题就**单独把它停掉**并如实告知，用户可稍后单独加速那一块。
+        /// 会话的唯一创建点：**所有盘（包括第一块）与远程都走这里**。
+        /// 每块盘拿一份配置副本、一个独立引擎，回调也在这里统一挂。
         /// </summary>
-        private async Task<bool> StartOneDiskAsync(TargetService engine, DiskConfig config,
-            PhysicalDiskInfo disk, bool isPrimary)
+        private Session CreateSession(PhysicalDiskInfo? disk, int index)
+        {
+            DiskConfig config = BuildSessionConfig(disk, index);
+            var engine = new TargetService(config);
+
+            // 发起程序登录（iSCSI 连接成功）：引擎在工作线程上抛事件，这里直接交给 Log——
+            // Log 自身会切回 UI 线程（InvokeRequired），且文案在 UI 侧现取（Locale.T），跟随当前语言。
+            engine.OnInitiatorConnected += (initiator, endpoint) =>
+                Log(Locale.T("main.log.iscsiConnected", initiator, endpoint));
+
+            return new Session { Disk = disk, Config = config, Engine = engine };
+        }
+
+        /// <summary>
+        /// 启动前的 L2 配置完整性检查（**只针对本次要加速的盘**）。
+        ///
+        /// 「L2 管理」允许先把一行存成空配置（选了盘、卷 / 上限留空），但这种条目**不能**被当成
+        /// "这块盘不启用 L2"静默跳过——那等于用户以为配了 L2、实际没配。发现不完整就拒绝整批启动，
+        /// 并告诉用户去「L2 管理」补全或删掉该行。
+        ///
+        /// 没有条目的盘 = 合法的不启用 L2；其它盘的空条目不影响本次启动。
+        /// </summary>
+        private bool ValidateL2ConfigForStart(IReadOnlyList<PhysicalDiskInfo> disks)
+        {
+            var incomplete = new List<string>();
+            foreach (PhysicalDiskInfo disk in disks)
+            {
+                L2DiskConfig? entry = L2DiskConfig.Find(_config.L2Disks, PhysicalDiskHandle.DescribeIdentity(disk));
+                if (entry == null) continue;
+                if (!string.IsNullOrWhiteSpace(entry.CacheVolume) && entry.MaxBytes > 0) continue;
+
+                incomplete.Add(Locale.T("main.msg.l2IncompleteItem", disk.DiskNumber, disk.Model));
+            }
+
+            if (incomplete.Count == 0) return true;
+
+            Log(Locale.T("main.log.l2IncompleteConfig"));
+            MessageBox.Show(
+                Locale.T("main.msg.l2IncompleteConfig", string.Join(Environment.NewLine, incomplete)),
+                Locale.T("dialog.l2IncompleteConfig"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        /// <summary>
+        /// 依次启动这一批盘。**任何一块失败就停止后续并返回失败类型**（全成或全不成）。
+        ///
+        /// 已成功的会话记录在 <paramref name="started"/>，由调用方在失败时统一停止、成功时登记。
+        /// 失败原因逐条记录在 <paramref name="failures"/>（已本地化），由调用方聚合成一次弹窗。
+        /// </summary>
+        private async Task<StartFailKind> StartAllAsync(
+            IReadOnlyList<PhysicalDiskInfo> picked, bool runL2Preflight,
+            List<Session> started, List<string> failures)
+        {
+            for (int index = 0; index < picked.Count; index++)
+            {
+                PhysicalDiskInfo disk = picked[index];
+                Session? session = null;
+
+                try
+                {
+                    // 创建会话本身也可能失败（L2 初始化失败 / 配置异常）——放在 try 里，
+                    // 按"不可恢复"整体终止，而不是让异常冒到 ThreadException。
+                    session = CreateSession(disk, index);
+
+                    // L2 预检只在第一轮做；重试时不再问用户（他刚才已经对 L2 拍过板）
+                    if (runL2Preflight && !RunL2Preflight(session.Config, disk))
+                    {
+                        Log(Locale.T("main.log.startCancelledAtL2", disk.DiskNumber, disk.Model));
+                        return StartFailKind.Cancelled;
+                    }
+
+                    (bool ok, string failure) = await StartTargetCore(session.Engine, disk);
+                    if (!ok)
+                    {
+                        failures.Add(Locale.T("main.log.startAttemptFailed", disk.DiskNumber, disk.Model, failure));
+                        return StartFailKind.Other;
+                    }
+                }
+                catch (IscsiCloneCheckException ex)
+                {
+                    // 克隆盘类：可重试（见 StartTarget 里的"整套重试一次"）
+                    failures.Add(Locale.T("main.log.startAttemptFailed", disk.DiskNumber, disk.Model, ex.Message));
+                    return StartFailKind.CloneDisk;
+                }
+                catch (Exception ex)
+                {
+                    // 其余异常（例如 L2 初始化失败）一律不可恢复
+                    Log(Locale.T("main.log.startFailed", ex.Message));
+                    failures.Add(Locale.T("main.log.startAttemptFailed", disk.DiskNumber, disk.Model, ex.Message));
+                    return StartFailKind.Other;
+                }
+
+                if (session == null) return StartFailKind.Other;
+
+                Log(Locale.T("main.log.targetReady", session.Engine.ListenEndpoint, session.Config.TargetIqn));
+                LogAutoMountResult(session.Engine, isPrimary: index == 0);
+
+                started.Add(session);
+            }
+
+            return StartFailKind.None;
+        }
+
+        /// <summary>
+        /// 启动前的 L2 预检（**唯一一处**判定并询问 L2 账本该怎么办的地方）。
+        /// 返回 false = 用户中止（本次启动按失败处理，整体终止）。
+        /// </summary>
+        private bool RunL2Preflight(DiskConfig config, PhysicalDiskInfo disk)
         {
             // 本次**不启用 L2**、但缓存目录里还留着**这块盘**的 L2 账本时，先问用户
             // （此刻还没脱机、系统状态一点没动；详细理由见 ConfirmL2LedgerUnused）。
             if (!ConfirmL2LedgerUnused(config, disk)) return false;
 
-            // 启动前的 L2 预检（**唯一一处**判定并询问 L2 账本该怎么办的地方，见 PrepareL2BeforeStart）：
-            // 容器不属于本盘 / 盘原本联机 / 上次未正常关服 / 容量变化或被夹取，全部在这里问完。
             // **联机状态必须取"此刻"的**：`disk` 是选盘那一刻的快照，「校验 L2」跑完会把源盘脱机，
-            // 紧随其后的启动若还看旧快照就会继续判"联机"、逼用户再点一次。这里重探一次（与
-            // PhysicalDiskHandle.Open 同源），保证"状态已变、判据跟上"。
+            // 紧随其后的启动若还看旧快照就会继续判"联机"、逼用户再点一次。
             bool wasOnlineNow = PhysicalDiskHandle.Probe(disk.DiskNumber).IsOnline;
-            if (!PrepareL2BeforeStart(config, BlockSourceInfo.FromDisk(disk, wasOnlineNow),
-                    disk.DiskNumber, localOnlineCheck: true))
+            return PrepareL2BeforeStart(config, BlockSourceInfo.FromDisk(disk, wasOnlineNow),
+                disk.DiskNumber, localOnlineCheck: true);
+        }
+
+        /// <summary>
+        /// 停止本次尝试里已成功起来的会话。**盘保持脱机、不自动联机**（用户可用菜单「重新联机硬盘」恢复）。
+        /// 复用"带重试的停止"：刚建立的 iSCSI 会话可能一下摘不干净。
+        /// 停不下来的会话把原因追加到 <paramref name="failures"/>（调用方会聚合弹窗，不能让用户以为已经全停了）。
+        /// </summary>
+        private async Task StopStartedAsync(IReadOnlyList<Session> started, List<string> failures)
+        {
+            foreach (Session session in started)
             {
-                return false;
+                (bool ok, string error) = await StopEngineWithRetryAsync(session.Engine);
+                if (ok) continue;
+
+                Log(Locale.T("main.log.stopFailed", error));
+                failures.Add(Locale.T("main.log.stopFailed", error));
+            }
+        }
+
+        /// <summary>把失败原因聚合成**一次**弹窗（不再逐块弹）。</summary>
+        private void ShowStartFailure(IReadOnlyList<string> failures)
+        {
+            string body = failures.Count == 0
+                ? Locale.T("main.log.startFailed", Locale.T("main.msg.startAllFailed"))
+                : string.Join(Environment.NewLine, failures);
+
+            MessageBox.Show(body, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+
+        /// <summary>
+        /// 解析一块盘的 L2：找配置条目 →（配置丢失时）从已存在的新结构目录恢复条目 → 返回目录与上限。
+        /// 返回 false = 这块盘不启用 L2。
+        ///
+        /// **旧布局（`&lt;卷根&gt;\FlyDisk.Cache\cache.dat|index.bin`）不再支持、不再迁移**：
+        /// 程序启动时会提示用户删除（见 <see cref="L2Manage.PromptRemoveLegacyCaches"/>）。
+        /// </summary>
+        private bool ResolveL2(PhysicalDiskInfo disk, out string cacheDir, out long maxBytes)
+        {
+            cacheDir = string.Empty;
+            maxBytes = L2DiskConfig.DefaultMaxBytes;
+
+            string identity = PhysicalDiskHandle.DescribeIdentity(disk);
+            L2DiskConfig? entry = L2DiskConfig.Find(_config.L2Disks, identity);
+            if (entry == null)
+            {
+                // 上次已按新结构建过缓存、但配置没保存下来：靠现有容器恢复条目。
+                // （旧布局不再参与这里：新版启动时已经提示删除。）
+                BlockSourceInfo info = BlockSourceInfo.FromDisk(disk, disk.IsOnline);
+                long hash = SsdCacheService.ComputeIdentity(info);
+                List<L2CacheInfo> owned = SsdCacheService.FindCacheDirectoriesForDisk(_config, info);
+                L2CacheInfo? existing = owned.Count > 0 ? owned[0] : null;
+                if (existing == null) return false;
+
+                entry = new L2DiskConfig
+                {
+                    DiskIdentity = identity,
+                    OwnerHash = hash,
+                    CacheVolume = existing.DriveRoot.TrimEnd('\\'),
+                    MaxBytes = existing.StoredSlots > 0
+                        ? (long)existing.StoredSlots * ServiceConstants.BlockSize
+                        : L2DiskConfig.DefaultMaxBytes,
+                };
+                _config.L2Disks.Add(entry);
+                if (!ConfigService.Save(_config, out string saveError))
+                    LogService.DebugFile($"L2 配置恢复：保存失败（下次启动会重试）：{saveError}");
+                Log(Locale.T("main.log.l2Recovered", disk.DiskNumber, entry.CacheVolume));
             }
 
-            if (!await StartTargetCore(engine, disk)) return false;
-
-            Log(Locale.T("main.log.targetReady", engine.ListenEndpoint, config.TargetIqn));
-            LogAutoMountResult(engine, Locale.T("main.log.iscsiConnectHint"));
-
-            if (isPrimary)
+            if (entry.OwnerHash == 0)
             {
-                // 克隆盘被系统保持脱机 / 只读（多半是判成了源盘的「冗余路径」）：按既定流程**整套重来一次**
-                // ——停止（摘 iSCSI、盘保持脱机）→ 等 1 秒 → 再启动（含同一套检查）。
-                // 一轮仍不行就停在原地、如实告诉用户（见 RecoverFromCloneDiskProblem）。
-                if (engine.CloneDiskWarning.Length > 0) await RecoverFromCloneDiskProblem(engine, disk);
-                return true;
+                entry.OwnerHash = SsdCacheService.ComputeIdentity(BlockSourceInfo.FromDisk(disk, disk.IsOnline));
+                if (!ConfigService.Save(_config, out string saveError))
+                    LogService.DebugFile($"L2 配置：保存身份散列失败（下次启动会重试）：{saveError}");
             }
 
-            if (engine.CloneDiskWarning.Length > 0)
-            {
-                // 多盘的第二块起**不跑"整套重来"**：那会牵动别的会话。这里只把这一块退回去，请用户单独加速它。
-                Log(Locale.T("main.log.multiDiskCloneProblem", disk.DiskNumber));
-                EngineResult stopped = await Task.Run(engine.Stop);
-                if (!stopped.Ok) Log(Locale.T("main.log.stopFailed", stopped.Message));
-                return false;
-            }
+            if (string.IsNullOrWhiteSpace(entry.CacheVolume)) return false;
 
-            _extraSessions.Add(new LocalSession { Disk = disk, Config = config, Target = engine });
+            cacheDir = SsdCacheService.GetDiskCacheDirectory(entry.CacheVolume, entry.OwnerHash);
+            maxBytes = entry.MaxBytes;
             return true;
         }
 
         /// <summary>
-        /// 为第 <paramref name="index"/> 块盘（0 基，&gt;0）派生**运行时配置**：
-        /// 端口 = 配置端口 + 序号、IQN = 配置 IQN + 后缀 —— 每块盘各用各的端点，互不干扰（见 <see cref="LocalSession"/>）。
-        ///
-        /// **L2 只给第一块盘**：L2 容器头记着"归属盘的身份"，一个容器只能属于一块盘（见 SsdCacheService 类注释），
-        /// 而当前口径是"不动 L2 代码" ⇒ 多盘同时加速时其余盘只用 L1 + 写透传。
-        /// "每盘独立 L2 容器"是另一件事，见 TODO.md 的后续项。
+        /// 为第 <paramref name="index"/> 个会话派生**运行时配置副本**（`disk == null` 为远程会话）：
+        /// index 0 保持配置原端口/IQN；index &gt; 0 端口 = 配置端口 + 序号、IQN = 配置 IQN + 后缀。
+        /// 其余字段全部由 <see cref="DiskConfig.Clone"/> 原样复制，新增字段不会漏。
         /// </summary>
-        private DiskConfig BuildSessionConfig(int index)
+        private DiskConfig BuildSessionConfig(PhysicalDiskInfo? disk, int index)
         {
-            return new DiskConfig
+            bool secondary = index > 0;
+
+            // 每块盘各自解析 L2；远程形态没有本地盘配置，沿用旧版单盘字段作兜底
+            bool l2Enabled;
+            string l2Path;
+            long l2Max;
+            if (disk != null)
             {
-                Language = _config.Language,
-                PhysicalDiskIdentity = _config.PhysicalDiskIdentity,
-                LastAcceleratedDiskIdentities = _config.LastAcceleratedDiskIdentities,
-                TargetIqn = $"{_config.TargetIqn}-{index + 1}",
-                ListenAddress = _config.ListenAddress,
-                ListenPort = _config.ListenPort + index,
-                SectorsPerBlock = _config.SectorsPerBlock,
-                EnableMemoryCache = _config.EnableMemoryCache,
-                EvictionThreshold = _config.EvictionThreshold,
-                StopCachingThreshold = _config.StopCachingThreshold,
-                EvictionWindowSeconds = _config.EvictionWindowSeconds,
-                EvictionGraceSeconds = _config.EvictionGraceSeconds,
-                EvictionBatchBlocks = _config.EvictionBatchBlocks,
-                EnableSsdCache = false,          // ← 只有第一块盘用 L2（见上面的注释）
-                SsdCachePath = string.Empty,
-                SsdCacheMaxBytes = _config.SsdCacheMaxBytes,
-                SsdCacheGhostFraction = _config.SsdCacheGhostFraction,
-                SsdConservativeThreshold = _config.SsdConservativeThreshold,
-                TraceFileLogging = _config.TraceFileLogging,
-                RemoteListenPort = _config.RemoteListenPort,
-                RemotePeerAddress = _config.RemotePeerAddress,
-                RunAtStartup = _config.RunAtStartup,
-                KeepOfflineOnBoot = _config.KeepOfflineOnBoot,
-                StartupDiskIdentities = _config.StartupDiskIdentities,
-            };
+                l2Enabled = ResolveL2(disk, out l2Path, out l2Max);
+            }
+            else
+            {
+                l2Enabled = _config.EnableSsdCache;
+                l2Path = _config.SsdCachePath;
+                l2Max = _config.SsdCacheMaxBytes;
+            }
+
+            DiskConfig config = _config.Clone();
+            config.TargetIqn = secondary ? $"{_config.TargetIqn}-{index + 1}" : _config.TargetIqn;
+            config.ListenPort = _config.ListenPort + index;
+            config.EnableSsdCache = l2Enabled;
+            config.SsdCachePath = l2Path;
+            config.SsdCacheMaxBytes = l2Max;
+            return config;
         }
 
         /// <summary>
@@ -1474,11 +1609,18 @@ namespace FlyDisk
         {
             if (config.EnableSsdCache) return true;   // 本次用 L2，账本归引擎自己管
 
-            long? owner;
-            try { owner = L2Verifier.TryReadOwnerIdentity(config); }
-            catch { return true; }   // 看一眼失败一律当作"没有可用的 L2"，不拦启动
+            List<L2CacheInfo> owned = new();
+            try
+            {
+                owned = SsdCacheService.FindCacheDirectoriesForDisk(
+                    _config, BlockSourceInfo.FromDisk(target, target.IsOnline));
+            }
+            catch
+            {
+                return true;   // 看一眼失败一律当作"没有可用的 L2"，不拦启动
+            }
 
-            if (!owner.HasValue || owner.Value != L2Verifier.Identify(target)) return true;
+            if (owned.Count == 0) return true;
 
             DialogResult answer = MessageBox.Show(
                 Locale.T("main.msg.l2UnusedLedger", target.DiskNumber),
@@ -1492,10 +1634,13 @@ namespace FlyDisk
             }
 
             // 让账本失效：只改容器头的身份戳，索引原样不动 ⇒ 下次启用 L2 时判"需要校验"。
-            if (SsdCacheService.InvalidateLedger(config))
+            // 同一块盘理论上只有一份新结构目录；逐份处理以防历史残留。
+            bool invalidated = false;
+            foreach (L2CacheInfo cache in owned)
             {
-                Log(Locale.T("main.log.l2UnusedLedgerInvalidated"));
+                if (SsdCacheService.InvalidateLedgerAt(cache.Directory)) invalidated = true;
             }
+            if (invalidated) Log(Locale.T("main.log.l2UnusedLedgerInvalidated"));
             return true;
         }
 
@@ -1596,8 +1741,8 @@ namespace FlyDisk
                     Log(Locale.T("main.log.l2VerifyPassed"));
                 }
 
-                // ③ 容量变了吗 / 被可用空间夹取了吗
-                return ConfirmCapacityChange();
+                // ③ 容量变了吗 / 超过缓存盘可用空间了吗
+                return ConfirmCapacityChange(config);
             }
             catch (Exception ex)
             {
@@ -1627,47 +1772,46 @@ namespace FlyDisk
         }
 
         /// <summary>
-        /// 【容量缩放 / 夹取确认】启动前预检的第三步。两种情况都会问用户：
-        /// ① **容量与上次不同**（改过配置、或可用空间变化）⇒ 说明将放大 / 缩小并保留缓存；
-        /// ② **本次容量被缓存盘可用空间夹取**（配置值放不下）⇒ 额外说明"为什么留这段余量"（SSD 快满会掉速），
-        ///    因为夹取很可能直接导致缩容。
-        ///
-        /// 用户确认后引擎按新容量缩放（引擎只按"已确认"执行，见 docs/L2容器按需增长与容量缩放_设计.md §4 D6/D7）。
+        /// 【容量检查 + 缩放确认】启动前预检的第三步。
+        /// ① **容量超过缓存盘可用空间** ⇒ **阻止启动**（不再静默夹取），提示该卷最多还能用多少；
+        /// ② **容量与上次不同**（用户改过上限）⇒ 说明将放大 / 缩小并保留缓存，由用户确认。
         /// </summary>
-        /// <returns>true = 可以继续启动；false = 用户选择中止</returns>
-        private bool ConfirmCapacityChange()
+        /// <returns>true = 可以继续启动；false = 用户选择中止 / 容量超限</returns>
+        private bool ConfirmCapacityChange(DiskConfig config)
         {
-            if (!_config.EnableSsdCache) return true;                    // 本次不用 L2：没有容量可谈
-            if (!SsdCacheService.LedgerExists(_config)) return true;      // 没有可保留的账本：重建即可
-            if (!SsdCacheService.TryPeekContainerSlotCount(_config, out int oldSlots)) return true;
+            if (!config.EnableSsdCache) return true;                    // 本次不用 L2：没有容量可谈
 
-            int configuredSlots = SsdCacheService.ConfiguredSlotCountFor(_config);   // 标称（不夹取）
-            int effectiveSlots = SsdCacheService.ComputeSlotCountFor(_config);       // 实际（夹取后）
+            int configuredSlots = SsdCacheService.ConfiguredSlotCountFor(config);   // 标称（不夹取）
+            int effectiveSlots = SsdCacheService.ComputeSlotCountFor(config);       // 实际（可用空间上限）
             if (configuredSlots <= 0 || effectiveSlots <= 0) return true;
 
-            bool clamped = effectiveSlots != configuredSlots;
-            bool changed = effectiveSlots != oldSlots;
-            if (!clamped && !changed) return true;   // 既没夹取、容量也没变：没什么可说
-
             string configuredText = CapacityText(configuredSlots);
-            string oldText = CapacityText(oldSlots);
             string effectiveText = CapacityText(effectiveSlots);
             string reserveText = ServiceConstants.FormatBytes(SsdCacheService.KeepFreeBytes);
 
-            string messageKey;
-            if (clamped)
+            // ① 超限：**阻止启动**，让用户去「L2 管理」把上限调小——不再替用户静默夹取。
+            //    必须放在"有没有账本"之前：新建缓存时同样要拦住超限配置。
+            if (effectiveSlots < configuredSlots)
             {
-                messageKey = !changed ? "main.msg.l2ClampSame"
-                    : (effectiveSlots < oldSlots ? "main.msg.l2ClampShrink" : "main.msg.l2ClampGrow");
+                MessageBox.Show(
+                    Locale.T("main.msg.l2OverCapacity", configuredText, effectiveText, reserveText),
+                    Locale.T("dialog.l2OverCapacity"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Log(Locale.T("main.log.l2OverCapacity", configuredText, effectiveText));
+                return false;
             }
-            else
-            {
-                messageKey = effectiveSlots < oldSlots ? "main.msg.l2ResizeShrink" : "main.msg.l2ResizeGrow";
-            }
+
+            if (!SsdCacheService.LedgerExists(config)) return true;      // 没有可保留的账本：重建即可
+            if (!SsdCacheService.TryPeekContainerSlotCount(config, out int oldSlots)) return true;
+
+            // ② 容量变化：保留缓存、按新容量缩放（与之前一致）
+            if (effectiveSlots == oldSlots) return true;
+
+            string oldText = CapacityText(oldSlots);
+            string messageKey = effectiveSlots < oldSlots ? "main.msg.l2ResizeShrink" : "main.msg.l2ResizeGrow";
 
             DialogResult answer = MessageBox.Show(
                 Locale.T(messageKey, configuredText, oldText, effectiveText, reserveText),
-                Locale.T(clamped ? "dialog.l2Clamp" : "dialog.l2Resize"), MessageBoxButtons.YesNo,
+                Locale.T("dialog.l2Resize"), MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
 
             if (answer != DialogResult.Yes)
@@ -1687,109 +1831,35 @@ namespace FlyDisk
         /// <summary>
         /// 启动（本地形态）。**L2 账本的一切已经在 <see cref="PrepareL2BeforeStart"/> 里问完了**，
         /// 所以这里只剩"起引擎 + 处理返回值"——引擎不再返回任何"要你去问用户"的结果（见 AGENTS.md §2.3）。
+        ///
+        /// **不弹窗**：失败原因交给批量编排聚合（见 <see cref="StartAllAsync"/>）；
+        /// 真异常（例如 L2 初始化失败、克隆盘检查不通过）直接上抛，由编排层按类型分流。
         /// </summary>
-        /// <returns>是否已经启动</returns>
-        private async Task<bool> StartTargetCore(TargetService engine, PhysicalDiskInfo target)
+        private async Task<(bool ok, string failure)> StartTargetCore(TargetService engine, PhysicalDiskInfo target)
         {
             EngineResult result = await Task.Run(() => engine.Start(target));
-            if (result.Ok) return true;
+            if (result.Ok) return (true, string.Empty);
 
-            // Rejected：预期内的拒绝（选错盘 / 参数不对）——如实提示即止。
-            // 真正的异常（例如 L2 初始化失败）会抛出来，由调用方那个 catch 兜住并弹窗。
+            // Rejected：预期内的拒绝（选错盘 / 参数不对）
             Log(Locale.T("main.log.startFailed", result.Message));
-            MessageBox.Show(result.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
+            return (false, result.Message);
         }
 
-        /// <summary>自动恢复里各步骤之间等多久（毫秒）：既让刚建立的 iSCSI 会话稳定下来，也让系统把设备栈收拾干净</summary>
+        /// <summary>整套重试前等多久（毫秒）：既让刚建立的 iSCSI 会话稳定下来，也让系统把设备栈收拾干净</summary>
         private const int CloneRetryDelayMs = 1000;
 
-        /// <summary>自动恢复里"停止加速"最多试几次（每次之间等 <see cref="CloneRetryDelayMs"/>）</summary>
+        /// <summary>停止加速最多试几次（每次之间等 <see cref="CloneRetryDelayMs"/>）</summary>
         private const int CloneRetryStopAttempts = 3;
 
         /// <summary>
-        /// 提 issue 的落点：只在"无法加速"时由代码打开，**不把链接写进给用户看的文案**（文案里只说 GitHub 仓库）。
-        /// </summary>
-        private const string GitHubIssuesUrl = "https://github.com/youke1686/FlyDisk/issues/new";
-
-        /// <summary>
-        /// 克隆盘异常的**一轮自动恢复**：等 1 秒（让刚建立的 iSCSI 会话稳定）→ 停止加速全流程（摘 iSCSI、
-        /// 落 L2 账本、盘保持脱机，**最多试 3 次**）→ 再等 1 秒 → 重新走一遍启动加速（含同一套克隆盘检查，
-        /// 见 <see cref="TargetService.CloneDiskWarning"/>）。
-        ///
-        /// 成功（检查不再报）就继续加速；仍失败就停止加速、如实告知用户（见 <see cref="ReportCloneDiskUnfixable"/>）。
-        /// **只重试一轮**：同一台机器、同一套时序再来一次就是同样的结果，多试只会让用户干等。
-        /// 重试用**同一块盘**（不再弹选盘框）：用户刚选过，且这是程序自己发起的动作。
-        ///
-        /// ⚠ 为什么每处都要等 1 秒、停止还要试 3 次：刚建立起来的 iSCSI 会话**没法立刻登出**，实测第一次
-        /// Stop 会被"还有 iSCSI 连接挂着"拒掉（见 <see cref="TryStopForCloneRecovery"/>）。
-        /// ⚠ 全程 await 后台任务，不阻塞 UI 线程（启停已移到后台，见 <see cref="StartTarget"/>）。
-        /// </summary>
-        private async Task RecoverFromCloneDiskProblem(TargetService engine, PhysicalDiskInfo target)
-        {
-            Log(Locale.T("main.log.cloneRetry"));
-
-            // ① 先等 1 秒：刚建立起来的 iSCSI 会话**没法立刻登出**（实测：第一次 Stop 会因"还有连接挂着"被拒），
-            //    等它稳定下来再动手。
-            await Task.Delay(CloneRetryDelayMs);
-
-            // ② 停止加速全流程（最多试 3 次）。一直停不下来就没法干净地重来，如实收尾、不再往下走。
-            (bool ok, string stopError) = await TryStopForCloneRecovery(engine);
-            if (!ok)
-            {
-                Log(Locale.T("main.log.cloneRetryStopFailed", CloneRetryStopAttempts, stopError));
-                return;
-            }
-
-            // ③ 再等 1 秒（让系统把设备栈收拾干净），然后整装重来
-            await Task.Delay(CloneRetryDelayMs);
-
-            // ④ 重新启动（含同一套克隆盘检查）。**不再重跑 L2 预检**：这是程序自己发起的重试、
-            //    用的还是刚选的那块盘，用户刚才已经对 L2 拍过板了（旧代码里那套"重试还要再问一遍"是副产品）。
-            RefreshStatus();
-
-            bool started = await StartTargetCore(engine, target);
-            if (!started)
-            {
-                // 启动本身失败（L2 被取消 / 抛异常）：原有的日志与弹窗已经说清原因，这里只补一句结论
-                Log(Locale.T("main.log.cloneRetryStartFailed"));
-                return;
-            }
-
-            Log(Locale.T("main.log.targetReady", engine.ListenEndpoint, engine.Config.TargetIqn));
-            LogAutoMountResult(engine, Locale.T("main.log.iscsiConnectHint"));
-
-            if (engine.CloneDiskWarning.Length == 0)
-            {
-                Log(Locale.T("main.log.cloneRetryOk"));
-                return;
-            }
-
-            // ⑤ 仍不行：停止加速（盘保持脱机），向用户说明并询问是否去提 issue
-            Log(Locale.T("main.log.cloneRetryFailed"));
-
-            // 先等 1 秒再停（同 ① 的道理）：刚重新启动过，那条新会话立刻登出同样会被拒
-            await Task.Delay(CloneRetryDelayMs);
-            // 再走"带重试的停止"（同 ② 的道理）：那条新会话也可能一下摘不干净
-            (bool ok2, string finalStopError) = await TryStopForCloneRecovery(engine);
-            if (!ok2)
-            {
-                // 停不下来就还处于"仍在加速"的状态：日志如实写出，别让用户以为已经停了
-                Log(Locale.T("main.log.stopFailed", finalStopError));
-            }
-
-            ReportCloneDiskUnfixable();
-        }
-
-        /// <summary>
-        /// 停止加速（自动恢复专用）：**最多试 <see cref="CloneRetryStopAttempts"/> 次**，每次之间等 1 秒。
+        /// 停止加速（带重试）：**最多试 <see cref="CloneRetryStopAttempts"/> 次**，每次之间等 1 秒。
         ///
         /// 为什么要试多次：刚建立起来的 iSCSI 会话**没法立刻登出**（实测第一次 Stop 会被"还有 iSCSI 连接挂着"
         /// 拒掉）。<c>Disconnect</c> 本身是幂等的（登出没成功就留着会话，下次调用再试），所以这里只要按节拍
         /// 把"再试一次"做够次数，登出通常在下一次就成功了。
         /// </summary>
         /// <returns>停下来了返回 (true, 空串)；否则 (false, 最后一次错误)</returns>
-        private async Task<(bool ok, string error)> TryStopForCloneRecovery(TargetService engine)
+        private async Task<(bool ok, string error)> StopEngineWithRetryAsync(TargetService engine)
         {
             string error = string.Empty;
             for (int attempt = 1; attempt <= CloneRetryStopAttempts; attempt++)
@@ -1798,34 +1868,10 @@ namespace FlyDisk
                 if (stopped.Ok) return (true, string.Empty);
 
                 error = stopped.Message;   // 被拒（例如会话还没登出去）⇒ 等一拍再来
-                LogService.DebugFile($"克隆盘恢复：停止加速第 {attempt}/{CloneRetryStopAttempts} 次失败：{error}");
+                LogService.DebugFile($"停止加速第 {attempt}/{CloneRetryStopAttempts} 次失败：{error}");
                 if (attempt < CloneRetryStopAttempts) await Task.Delay(CloneRetryDelayMs);
             }
             return (false, error);
-        }
-
-        /// <summary>
-        /// "无法加速"的收尾告知：弹窗说明 + 询问是否打开 GitHub 提 issue。
-        /// 文案里给出恢复路径（菜单「重新联机硬盘」把盘还给系统）——此刻磁盘保持脱机，用户得知道怎么还回去。
-        /// </summary>
-        private void ReportCloneDiskUnfixable()
-        {
-            DialogResult answer = MessageBox.Show(
-                Locale.T("main.msg.cloneUnfixable"),
-                Locale.T("dialog.cloneUnfixable"),
-                MessageBoxButtons.YesNo, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1);
-
-            if (answer != DialogResult.Yes) return;
-
-            try
-            {
-                Process.Start(new ProcessStartInfo(GitHubIssuesUrl) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                // 打不开浏览器不是大事：文案里已经让用户自己去仓库提
-                LogService.DebugFile($"打开 GitHub issue 页面失败：{ex.Message}");
-            }
         }
 
         private async void StopTarget()
@@ -1839,35 +1885,22 @@ namespace FlyDisk
                 bool remoteSession = _peer != null;
                 RemotePeer? peer = _peer;
 
-                // ① **逐个**停止本地会话：远程形态只有主会话；本地多盘时主会话 + 每个额外会话各停一次。
-                //    每块盘的"还有 iSCSI 连接就拒绝停止"这道守卫仍在它自己的引擎里（按各自的端口判连接）。
+                // 逐个停止会话（本地多盘时每块盘一个引擎；远程单会话）。
+                // "还有 iSCSI 连接就拒绝停止"的守卫仍在各引擎内部（按自己的端口判连接）。
                 int stoppedCount = 0;
                 var rejected = new List<string>();
 
-                if (_target.IsRunning)
+                foreach (Session session in _sessions.ToArray())
                 {
-                    EngineResult stopped = await Task.Run(_target.Stop);
-                    if (stopped.Ok)
-                    {
-                        stoppedCount++;
-                        int diskNumber = _target.LocalDiskNumber;
-                        if (!remoteSession && diskNumber >= 0) Log(Locale.T("main.log.stoppedDiskOffline", diskNumber));
-                    }
-                    else
-                    {
-                        rejected.Add(stopped.Message);
-                        Log(Locale.T("main.log.stopFailed", stopped.Message));
-                    }
-                }
+                    if (!session.Engine.IsRunning) continue;
 
-                foreach (LocalSession session in _extraSessions.ToArray())
-                {
-                    EngineResult stopped = await Task.Run(session.Target.Stop);
+                    EngineResult stopped = await Task.Run(session.Engine.Stop);
                     if (stopped.Ok)
                     {
                         stoppedCount++;
-                        _extraSessions.Remove(session);
-                        Log(Locale.T("main.log.stoppedDiskOffline", session.Disk.DiskNumber));
+                        _sessions.Remove(session);
+                        if (session.Disk != null && !remoteSession)
+                            Log(Locale.T("main.log.stoppedDiskOffline", session.Disk.DiskNumber));
                     }
                     else
                     {
@@ -1885,7 +1918,9 @@ namespace FlyDisk
                     return;
                 }
 
-                if (stoppedCount > 0) Log(Locale.T("main.log.releaseDiskHint"));
+                // 「把盘还给系统」这句只在**本地**形态有意义：远程形态下那块盘在对方机器上，
+                // 脱机与否由对方管理，在本机提示"去联机"会误导用户。
+                if (stoppedCount > 0 && !remoteSession) Log(Locale.T("main.log.releaseDiskHint"));
 
                 if (remoteSession && peer != null)
                 {
@@ -1948,23 +1983,26 @@ namespace FlyDisk
 
         /// <summary>
         /// 状态栏：每秒读一次引擎快照（单进程直连，不再有 IPC 连接状态可显示）。
-        /// 多盘同时加速（见 <see cref="LocalSession"/>）时：快照仍取**主会话**（第一个端口），
+        /// 多盘同时加速时：快照取**列表第一项**（UI 默认显示的那块盘），
         /// 但"在不在跑""能不能点某个菜单"一律用**聚合**判据（任一会话在跑就算在跑）。
         /// </summary>
         private void RefreshStatus()
         {
-            CacheStats stats;
+            CacheStats? stats;
             try
             {
-                stats = _target.CreateSnapshot();
+                stats = PrimarySession?.Engine.CreateSnapshot();
+                if (stats != null) _lastStats = stats;
             }
             catch
             {
-                return;   // 读快照失败就保留上一次显示
+                // 读快照失败：用上一次成功的快照继续刷新（否则按钮文案、菜单置灰、多盘计数会整块停更）。
+                // 连一次都没成功过就保持 null —— 下面仍用聚合判据刷按钮与菜单，状态栏保持不动。
+                stats = _lastStats;
             }
 
             bool anyRunning = IsAnyTargetRunning;
-            bool multiSession = _extraSessions.Count > 0;
+            bool multiSession = _sessions.Count > 1;
 
             // 校验要独占 L2 容器与源盘 ⇒ 目标运行中把入口置灰（弹出对话框前还会再兜一次）
             设置ToolStripMenuItem.Enabled = !anyRunning && !HasTargetWork;
@@ -2002,7 +2040,7 @@ namespace FlyDisk
 
                 btnStartStop.Enabled = true;
 
-                if (stats.IsRunning)
+                if (anyRunning)
                 {
                     SetSubtitle(Locale.T("main.subtitle.remoteClient"));     // 只有"真正开始用"之后才按角色分端
                     btnStartStop.Text = Locale.T("main.button.stop");
@@ -2039,14 +2077,17 @@ namespace FlyDisk
             if (multiSession)
             {
                 // **多盘同时加速**：状态栏说清"几块在跑 / 一共几块"，主按钮一律是"全部停止"
-                int running = (_target.IsRunning ? 1 : 0);
-                foreach (LocalSession session in _extraSessions)
-                {
-                    if (session.Target.IsRunning) running++;
-                }
-
-                lblTargetStatus.Text = Locale.T("main.status.multiRunning", running, SessionCount);
+                lblTargetStatus.Text = Locale.T("main.status.multiRunning", RunningCount, SessionCount);
                 btnStartStop.Text = Locale.T("main.button.stopAll", SessionCount);
+                return;
+            }
+
+            if (stats == null)
+            {
+                // 从未读到过任何快照：只能按聚合判据更新按钮文案，状态栏保持不动（见方法注释）。
+                // 但"没有任何会话"是确定的未运行状态，必须把停止过程中残留的状态文案刷掉。
+                if (!anyRunning) lblTargetStatus.Text = Locale.T("main.status.iscsiNotListening");
+                btnStartStop.Text = Locale.T(anyRunning ? "main.button.stop" : "main.button.start");
                 return;
             }
 
@@ -2071,30 +2112,20 @@ namespace FlyDisk
         #endregion
 
         /// <summary>
-        /// 目标起来后，按**自动挂载**的结果给用户一句话：成功就说盘已自动挂上；失败就报出英文诊断
-        /// （含错误码与失败步骤），再补一句该形态的手动提示（<paramref name="manualHint"/>）让用户去
-        /// 「iSCSI 发起程序」自己挂。失败不拦启动（见 后续待办.md 待办 3 §9）。
+        /// 目标起来后给用户一句话：自动登录开着就说盘已自动挂上（**登录失败已在引擎里按启动失败处理**，
+        /// 走不到这里）；关着就提示到「iSCSI 发起程序」手动挂。
         /// 最后统一补一句**位置说明**：盘不会出现在系统「网络」位置——用户常去那儿找盘，找不到会以为加速失败。
         /// </summary>
-        private void LogAutoMountResult(TargetService engine, string manualHint)
+        private void LogAutoMountResult(TargetService engine, bool isPrimary)
         {
-            if (engine.AutoMounted)
-            {
-                Log(Locale.T("main.log.iscsiAutoMounted"));
-            }
-            else
-            {
-                Log(Locale.T("main.log.iscsiAutoMountFailed", engine.AutoMountError));
-                Log(manualHint);
-            }
+            Log(engine.Config.EnableAutoIscsiLogin
+                ? Locale.T("main.log.iscsiAutoMounted")
+                : Locale.T("main.log.autoLoginDisabled", engine.Config.TargetIqn, engine.ListenEndpoint));
 
-            // 克隆盘检查的结论（引擎在登录后探测到"**新出现**的盘被判脱机/只读"时给出）：
-            // 这种状态意味着 iSCSI 盘没能正常挂回系统——必须让用户看见，而不是只报一句"已自动挂载"。
-            if (engine.CloneDiskWarning.Length > 0) Log(engine.CloneDiskWarning);
-
+            // 位置说明只打一次（列表第一项）：多盘时不必重复 N 遍。
             // 本地与远程两种形态共用这一句：盘不会"搬"到系统「网络」位置（本地走的是回环 iSCSI，
             // 远程挂载后同样是一块普通本地盘），在那里找盘是找不到的。
-            Log(Locale.T("main.log.diskPlacementHint"));
+            if (isPrimary) Log(Locale.T("main.log.diskPlacementHint"));
         }
 
         private void Log(string message)
@@ -2139,12 +2170,11 @@ namespace FlyDisk
             // 界面此刻正在关闭，故不写日志框；过程细节由引擎落 debug-security.log。
             if (e.CloseReason == CloseReason.WindowsShutDown)
             {
-                _target.TryStopForShutdown();
-                foreach (LocalSession session in _extraSessions)
+                foreach (Session session in _sessions)
                 {
-                    session.Target.TryStopForShutdown();
+                    session.Engine.TryStopForShutdown();
                 }
-                _extraSessions.Clear();
+                _sessions.Clear();
             }
 
             base.OnFormClosing(e);

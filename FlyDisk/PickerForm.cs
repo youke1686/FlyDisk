@@ -27,16 +27,15 @@ using FlyDisk.Theming;
 namespace FlyDisk
 {
     /// <summary>
-    /// **通用选择框**（左列表 + 右明细 + 确定/取消）：一次只让用户挑一项。
+    /// **通用选择框**（左列表 + 右明细 + 确定/取消）：默认单选；「启动加速」的多选模式下每行带复选框。
     ///
     /// 五种用法共用这一个对话框（**按"模式"分，而不是各写一个**）：
     /// - **本地选盘**：列本机物理盘（不能加速的直接标注并禁止选择）；
     /// - **远程选盘**：列**对端磁盘**（配对成功后由对端现取一份最新的清单）；
     /// - **「校验 L2」选盘**：本地形态，选要校验哪块盘；
     /// - **「重新联机源盘」**：本地形态 + <c>offlineOnly: true</c>，只列脱机盘（见 后续待办.md 第十二节）；
-    /// - **「管理 L2」选缓存**：列整机上找到的每一份 L2 缓存目录（见 <c>L2Manage</c>）；
-    /// - **「开机目标盘」多选**：本地形态 + 多选构造，一次勾多块（结果在 <c>SelectedDisks</c>，
-    ///   供设置窗口的「选择硬盘…」用；见 <c>BootDiskPreparation</c>）。
+    /// - **多选**：本地形态 + 多选构造，列表换成带复选框的 <c>CheckedListBox</c>，**勾选**多块盘
+    ///   （结果在 <c>SelectedDisks</c>，供「启动加速」同时加速多块盘）。
     ///
     /// 为什么**本地选盘每次点「启动加速」都要弹一次**（见 后续待办.md 第一节的"选盘时机"）：
     /// 用户改过配置后可能隔几天才点启动，很容易忘了当时选的是哪块盘；把选择动作放在启动的同一刻，
@@ -60,16 +59,15 @@ namespace FlyDisk
             public bool Selectable = true;
             public PhysicalDiskInfo? Local;
             public RemoteDiskInfo? Remote;
-            public L2CacheInfo? L2Cache;
         }
 
         private readonly List<Entry> _entries = new();
 
         /// <summary>
-        /// 配置里 L2 缓存目录落在那块物理盘上（-1 = L2 未启用 / 没配路径 / 查不到盘号）。
+        /// 配置里 L2 缓存目录落在哪些物理盘上（可能有多块：每块被加速盘各有自己的 L2 卷）。
         /// 用来拦下"拿缓存所在的那块盘去加速"——自己给自己加速是纯写放大，引擎启动时也会拒。
         /// </summary>
-        private readonly int _l2CacheDiskNumber = -1;
+        private readonly HashSet<int> _l2CacheDiskNumbers = new();
 
         /// <summary>
         /// 承载分页文件（pagefile.sys）的物理盘号集合，用于拦下"拿分页文件所在盘去加速"——
@@ -82,7 +80,15 @@ namespace FlyDisk
         /// <summary>列表为空时的文案键（远程形态与"只列脱机盘"各有各的空态说法）</summary>
         private string _emptyTextKey = "selectDisk.noDisks";
 
-        private readonly ListBox _list = new();
+        /// <summary>单选用普通列表；多选（「启动加速」）用带复选框的列表（见 <see cref="_checkedList"/>）</summary>
+        private readonly ListBox _list;
+
+        /// <summary>
+        /// 多选模式下的列表本体（与 <see cref="_list"/> 同一个对象）；单选模式为 null。
+        /// 多选用**复选框**表达选择，不需要 Ctrl/Shift 组合键。
+        /// </summary>
+        private readonly CheckedListBox? _checkedList;
+
         private readonly RichTextBox _detail = new();
         private readonly Button _ok = new();
         private readonly Button _cancel = new();
@@ -100,14 +106,11 @@ namespace FlyDisk
         /// <summary>【多选模式】用户选定的全部本机磁盘（顺序跟随列表；单选模式下是 0 或 1 项）</summary>
         public List<PhysicalDiskInfo> SelectedDisks { get; } = new();
 
-        /// <summary>是否多选（只有「开机目标盘」用；见设置窗口的「选择硬盘…」）</summary>
+        /// <summary>是否多选（「启动加速」同时选多块盘用）</summary>
         private readonly bool _multiSelect;
 
         /// <summary>远程形态：用户选定的对端磁盘；取消时为 null</summary>
         public RemoteDiskInfo? SelectedRemoteDisk { get; private set; }
-
-        /// <summary>「管理 L2」形态：用户选定的那份缓存；取消时为 null</summary>
-        public L2CacheInfo? SelectedL2Cache { get; private set; }
 
         /// <summary>【本地形态】</summary>
         /// <param name="disks">已枚举好的本机物理盘</param>
@@ -125,34 +128,35 @@ namespace FlyDisk
             bool offlineOnly = false, int l2CacheDiskNumber = -1)
             : this(disks,
                    identityToPreselect.Length > 0 ? new List<string> { identityToPreselect } : new List<string>(),
-                   offlineOnly, l2CacheDiskNumber, multiSelect: false)
+                   offlineOnly,
+                   l2CacheDiskNumber >= 0 ? new[] { l2CacheDiskNumber } : Array.Empty<int>(),
+                   multiSelect: false)
         {
         }
 
         /// <summary>
-        /// 【多选形态】同一份本机磁盘清单，但允许**一次选多块**（设置窗口的「选择硬盘…」用它选"开机目标盘"）。
+        /// 【多选形态】同一份本机磁盘清单，但允许**一次选多块**（「启动加速」用它同时加速多块盘）。
         /// 选中的结果在 <see cref="SelectedDisks"/>；<see cref="SelectedDisk"/> 仍是第一块，方便调用方只看一块。
         /// </summary>
         /// <param name="disks">已枚举好的本机物理盘</param>
-        /// <param name="identitiesToPreselect">已被记录的开机目标盘（配置里的身份串），用来自动勾选</param>
-        /// <param name="l2CacheDiskNumber">配置里 L2 缓存目录所在的那块盘（-1 = 未启用 / 查不到）；该盘会被标成不能加速</param>
+        /// <param name="identitiesToPreselect">上次加速过的盘（配置里的身份串），用来自动勾选</param>
+        /// <param name="l2CacheDiskNumbers">配置里各 L2 缓存目录所在的物理盘号（空 = 未启用 / 查不到）；这些盘会被标成不能加速</param>
         public PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
-            int l2CacheDiskNumber)
-            : this(disks, identitiesToPreselect, offlineOnly: false, l2CacheDiskNumber, multiSelect: true)
+            IReadOnlyCollection<int> l2CacheDiskNumbers)
+            : this(disks, identitiesToPreselect, offlineOnly: false, l2CacheDiskNumbers, multiSelect: true)
         {
         }
 
         /// <summary>唯一的实现体：本地清单 + 预选（单个或多选）+ 是否只列脱机盘 + 是否多选</summary>
         private PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
-            bool offlineOnly, int l2CacheDiskNumber, bool multiSelect)
-            : this(offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local")
+            bool offlineOnly, IReadOnlyCollection<int> l2CacheDiskNumbers, bool multiSelect)
+            : this(offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local", multiSelect)
         {
-            _multiSelect = multiSelect;
-            // ListBox 默认只允许单选（SelectionMode.One）；多选时改 Extended：Ctrl/Shift 点选，也支持拖动框选
-            if (multiSelect) _list.SelectionMode = SelectionMode.MultiExtended;
-
             _emptyTextKey = offlineOnly ? "selectDisk.noOfflineDisks" : "selectDisk.noDisks";
-            _l2CacheDiskNumber = l2CacheDiskNumber;
+            foreach (int number in l2CacheDiskNumbers)
+            {
+                if (number >= 0) _l2CacheDiskNumbers.Add(number);
+            }
             // offlineOnly（重新联机）模式下用不到，但算一次也无妨：分页文件盘恰恰是最该联机回来的那块
             _pageFileDiskNumbers = PhysicalDiskHandle.GetPageFileDiskNumbers();
 
@@ -165,7 +169,7 @@ namespace FlyDisk
                 // offlineOnly（重新联机）模式不做任何"能不能加速"的判定：系统盘恰恰是最需要联机回来的那块
                 List<string> blockReasons = offlineOnly
                     ? new List<string>()
-                    : BlockReasons(info, _l2CacheDiskNumber, _pageFileDiskNumbers);
+                    : BlockReasons(info, _l2CacheDiskNumbers, _pageFileDiskNumbers);
 
                 List<DetailLine> detail = BuildLocalDetail(info, blockReasons);
                 if (offlineOnly)
@@ -245,39 +249,35 @@ namespace FlyDisk
         }
 
         /// <summary>
-        /// 【管理 L2 形态】列出整机上找到的 L2 缓存目录（见 <see cref="SsdCacheService.DescribeAllL2Caches"/>）。
-        ///
-        /// 每一行都**可选**——包括认不出来的残留目录，那恰恰是最需要被清掉的那种。
-        /// </summary>
-        /// <param name="caches">扫出来的缓存清单</param>
-        public PickerForm(IReadOnlyList<L2CacheInfo> caches)
-            : this("selectDisk.title.l2")
-        {
-            _emptyTextKey = "selectDisk.noL2Caches";
-            for (int i = 0; i < caches.Count; i++)
-            {
-                L2CacheInfo cache = caches[i];
-                _entries.Add(new Entry
-                {
-                    L2Cache = cache,
-                    Selectable = true,
-                    Text = cache.IsConfigured
-                        ? Locale.T("selectDisk.item.l2Configured", cache.Directory)
-                        : cache.Directory,
-                    Detail = BuildL2Detail(cache)
-                });
-            }
-
-            FinishFill(caches.Count > 0 ? new List<int> { 0 } : new List<int>());
-        }
-
-        /// <summary>
         /// 通用外壳：各模式只给标题。**顶部不再有任何提示行**（2026-10-11 删掉了这个功能）——
         /// 原来那句「重新联机」的说明改放下方信息区（见本地构造函数的 <c>offlineOnly</c> 分支）。
         /// </summary>
         /// <param name="titleKey">窗口标题的文案键</param>
-        private PickerForm(string titleKey)
+        /// <param name="multiSelect">
+        /// true = 多选（「启动加速」）：列表换成 <see cref="CheckedListBox"/>，**勾选复选框**即选择多块盘。
+        /// </param>
+        private PickerForm(string titleKey, bool multiSelect = false)
         {
+            _multiSelect = multiSelect;
+
+            if (multiSelect)
+            {
+                // CheckOnClick：单击复选框就切换勾选。行的"选中"只用来决定右侧显示哪块盘的详情，
+                // 不再承担"选了哪些盘"的语义——所以不需要 MultiExtended，也就不需要 Ctrl/Shift。
+                var checkedList = new CheckedListBox
+                {
+                    CheckOnClick = true,
+                    SelectionMode = SelectionMode.One,
+                };
+                checkedList.ItemCheck += OnItemCheck;
+                _checkedList = checkedList;
+                _list = checkedList;
+            }
+            else
+            {
+                _list = new ListBox();
+            }
+
             Text = Locale.T(titleKey);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MinimizeBox = false;
@@ -292,7 +292,8 @@ namespace FlyDisk
             // 条目不再走自绘换行（试过 DrawMode.OwnerDrawVariable 始终没折行，已放弃）：
             // 行内也不再拼"不能加速"的长尾巴，改由下方盘信息区顶部统一列 ❌ 原因，行本身保持一行放得下。
             _list.SelectedIndexChanged += (s, e) => UpdateSelection();
-            _list.DoubleClick += (s, e) => { if (_ok.Enabled) Accept(); };
+            // 多选下双击不做"直接确定"：双击会先触发两次勾选切换，再确认太容易误触
+            _list.DoubleClick += (s, e) => { if (!_multiSelect && _ok.Enabled) Accept(); };
 
             // 信息区：只读、可滚动——"不能加速"的原因可能有好几条，超出高度的靠滚动看
             _detail.Location = new Point(12, 198);
@@ -329,15 +330,19 @@ namespace FlyDisk
                 return;
             }
 
-            if (_multiSelect && preselect.Count > 0)
+            if (_multiSelect && _checkedList != null)
             {
-                // 多选：把配置里记着的那些盘逐个勾上（SetSelected 不会清掉别的选中项）
+                // 多选：把配置里记着的那些盘逐个**勾上**（复选框才是"选了哪几块盘"的依据）
                 foreach (int index in preselect)
                 {
-                    if (index >= 0 && index < _list.Items.Count) _list.SetSelected(index, true);
+                    if (index >= 0 && index < _checkedList.Items.Count) _checkedList.SetItemChecked(index, true);
                 }
+
+                // 行高亮只用于显示详情：优先预选的第一块，否则第一块可加速的盘
+                int highlight = preselect.Count > 0 ? preselect[0] : _entries.FindIndex(e => e.Selectable);
+                _list.SelectedIndex = highlight >= 0 ? highlight : 0;
             }
-            else if (!_multiSelect && preselect.Count > 0 && preselect[0] >= 0)
+            else if (preselect.Count > 0 && preselect[0] >= 0)
             {
                 _list.SelectedIndex = preselect[0];
             }
@@ -366,12 +371,15 @@ namespace FlyDisk
         /// （<paramref name="pageFileDiskNumbers"/> 由调用方一次性算好再传进来，避免逐盘重复全机扫描）；
         /// L2 那条与启动校验 ⑥（缓存目录不得落在被加速的盘上）同源。
         /// </summary>
-        private static List<string> BlockReasons(PhysicalDiskInfo info, int l2CacheDiskNumber,
+        private static List<string> BlockReasons(PhysicalDiskInfo info, HashSet<int> l2CacheDiskNumbers,
             HashSet<int> pageFileDiskNumbers)
         {
             var reasons = new List<string>();
 
             if (info.IsReadOnly) reasons.Add(Locale.T("selectDisk.reason.readOnly"));
+
+            if (!PhysicalDiskHandle.HasStableIdentity(info))
+                reasons.Add(Locale.T("selectDisk.reason.noStableIdentity"));
 
             int system = PhysicalDiskHandle.GetSystemDiskNumber();
             if (system >= 0 && info.DiskNumber == system)
@@ -384,7 +392,7 @@ namespace FlyDisk
             if (pageFileDiskNumbers.Contains(info.DiskNumber))
                 reasons.Add(Locale.T("selectDisk.reason.pageFile"));
 
-            if (l2CacheDiskNumber >= 0 && info.DiskNumber == l2CacheDiskNumber)
+            if (l2CacheDiskNumbers.Contains(info.DiskNumber))
                 reasons.Add(Locale.T("selectDisk.reason.l2CacheDisk"));
 
             return reasons;
@@ -407,20 +415,6 @@ namespace FlyDisk
         }
 
         /// <summary>
-        /// L2 缓存目录的明细行。**全是普通行**：这里没有"会阻止启动"的概念（每一行都允许操作），
-        /// 要清掉哪一份完全由用户在下一步的操作窗口里决定。文案与操作窗口共用一份（见 <see cref="L2Manage"/>）。
-        /// </summary>
-        private static List<DetailLine> BuildL2Detail(L2CacheInfo cache)
-        {
-            var lines = new List<DetailLine>();
-            foreach (string text in L2Manage.DescribeCacheLines(cache))
-            {
-                lines.Add(new DetailLine(text, false));
-            }
-            return lines;
-        }
-
-        /// <summary>
         /// 本地盘的明细行。**只有"会阻止启动"的硬拦原因标 <see cref="DetailLine.IsError"/>=true**
         /// （渲染成红色、并使「确定」不可用）；基本信息、⚠ 警示、状态提示一律是普通行，保持正文色。
         /// </summary>
@@ -438,10 +432,6 @@ namespace FlyDisk
             // 它们就是"会阻止启动"的那几条，逐条标红
             foreach (string reason in blockReasons) lines.Add(new DetailLine(reason, true));
 
-            if (!PhysicalDiskHandle.HasStableIdentity(info))
-            {
-                lines.Add(new DetailLine(Locale.T("selectDisk.detail.noStableIdentity"), false));
-            }
             if (info.RemovableMedia)
             {
                 lines.Add(new DetailLine(Locale.T("selectDisk.detail.removable"), false));
@@ -483,7 +473,22 @@ namespace FlyDisk
         private void UpdateSelection()
         {
             int index = _list.SelectedIndex;
-            if (index < 0 || index >= _entries.Count)
+            bool hasSelection = index >= 0 && index < _entries.Count;
+
+            if (_multiSelect)
+            {
+                // 多选：**勾选状态**决定"选了哪些盘"；行高亮只决定右侧显示哪块盘的详情。
+                _ok.Enabled = CheckedAllSelectable();
+                if (_detailReady)
+                {
+                    ShowDetail(hasSelection
+                        ? _entries[index].Detail
+                        : new List<DetailLine> { new(Locale.T(_emptyTextKey), false) });
+                }
+                return;
+            }
+
+            if (!hasSelection)
             {
                 _ok.Enabled = false;
                 if (_detailReady) ShowDetail(new List<DetailLine> { new(Locale.T(_emptyTextKey), false) });
@@ -491,17 +496,38 @@ namespace FlyDisk
             }
 
             Entry entry = _entries[index];
-            // 单选：看当前这项能不能选。多选：**选中的每一项都必须能选**——否则会出现
-            // "用户勾了系统盘、点确定，结果那块盘被悄悄丢掉"的错觉（宁可不让点，让用户自己摘掉它）。
-            _ok.Enabled = _multiSelect ? SelectionAllSelectable() : entry.Selectable;
+            _ok.Enabled = entry.Selectable;
             if (_detailReady) ShowDetail(entry.Detail);
         }
 
-        /// <summary>多选模式下：选中的项是否全都可选（且至少有选中一项）</summary>
-        private bool SelectionAllSelectable()
+        /// <summary>
+        /// 多选：勾选状态变化后刷新「确定」的可用性。
+        /// 勾选状态在 <see cref="ItemCheck"/> 返回后才真正落定，所以这里延后一拍再读 <see cref="CheckedListBox.CheckedIndices"/>。
+        /// 同时拒绝勾选 ❌ 不可加速的盘（但允许选中该行查看原因）。
+        /// </summary>
+        private void OnItemCheck(object? sender, ItemCheckEventArgs e)
         {
+            if (_checkedList == null) return;
+
+            if (e.Index >= 0 && e.Index < _entries.Count && !_entries[e.Index].Selectable
+                && e.NewValue == CheckState.Checked)
+            {
+                e.NewValue = CheckState.Unchecked;
+                return;
+            }
+
+            // 构造期（FinishFill 里的 SetItemChecked）还没有窗口句柄，不能 BeginInvoke；
+            // 构造末尾会统一 UpdateSelection 一次。
+            if (IsHandleCreated) BeginInvoke(new Action(UpdateSelection));
+        }
+
+        /// <summary>多选模式下：勾选的项是否全都可选（且至少勾选一项）</summary>
+        private bool CheckedAllSelectable()
+        {
+            if (_checkedList == null) return false;
+
             bool any = false;
-            foreach (int index in _list.SelectedIndices)
+            foreach (int index in _checkedList.CheckedIndices)
             {
                 if (index < 0 || index >= _entries.Count) continue;
                 if (!_entries[index].Selectable) return false;
@@ -580,19 +606,21 @@ namespace FlyDisk
         {
             if (_multiSelect)
             {
-                // 多选（「开机目标盘」）：把选中的本机盘全部收下；一块都没选就什么都不做（不关闭对话框）
+                // 多选（「启动加速」）：把**勾选**的本机盘全部收下；一块都没勾就什么都不做（不关闭对话框）
                 SelectedDisks.Clear();
-                foreach (int index in _list.SelectedIndices)
+                if (_checkedList != null)
                 {
-                    if (index < 0 || index >= _entries.Count) continue;
-                    Entry entry = _entries[index];
-                    if (!entry.Selectable || entry.Local == null) continue;
-                    SelectedDisks.Add(entry.Local);
+                    foreach (int index in _checkedList.CheckedIndices)
+                    {
+                        if (index < 0 || index >= _entries.Count) continue;
+                        Entry entry = _entries[index];
+                        if (!entry.Selectable || entry.Local == null) continue;
+                        SelectedDisks.Add(entry.Local);
+                    }
                 }
                 if (SelectedDisks.Count == 0) return;
 
-                // 单选调用方（启动加速 / 重新联机 / L2 校验）只看 SelectedDisk：这里取第一块，
-                // 于是"多选"对它们是透明的（它们本来就用不到第二块）
+                // 单值这个属性仍保留：多选模式下 = 勾选顺序中的第一块（列表顺序），方便只看一块的调用方
                 SelectedDisk = SelectedDisks[0];
             }
             else
@@ -602,7 +630,6 @@ namespace FlyDisk
 
                 SelectedDisk = _entries[index].Local;
                 SelectedRemoteDisk = _entries[index].Remote;
-                SelectedL2Cache = _entries[index].L2Cache;
             }
 
             DialogResult = DialogResult.OK;

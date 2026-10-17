@@ -15,6 +15,9 @@
 // You should have received a copy of the GNU General Public License
 // along with FlyDisk.  If not, see <https://www.gnu.org/licenses/>.
 
+// ⚠ 已归档、**未参与编译**（原因、已知问题与复活前提见同目录 README.md）。
+// 本文件是「开机保持脱机」的参考实现：功能已从主程序摘除，这里只保留代码与设计。
+
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -25,7 +28,7 @@ using FlyDisk.Models;
 namespace FlyDisk
 {
     /// <summary>
-    /// 「开机保持脱机」的**唯一**执行处（见 AGENTS.md §2.7）。
+    /// 「开机保持脱机」的**唯一**执行处（原 AGENTS.md §2.7；该节已随功能归档移除）。
     ///
     /// 调用方有两处，必须共用这一份逻辑：
     /// - `FlyDisk.exe --keep-offline-only`：开机触发、以 SYSTEM 运行、**不建界面**（见 <see cref="StartupService"/>）；
