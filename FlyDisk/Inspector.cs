@@ -256,8 +256,9 @@ namespace FlyDisk
             if (engine.LocalDiskNumber < 0 || info == null)
                 return Locale.T("insp.b.remoteTarget");
 
-            string model = info.Model.Length > 0 ? info.Model : Locale.T("insp.w.unknownModel");
-            return Locale.T("insp.b.diskItem", engine.LocalDiskNumber, model);
+            // 加速中的源盘一定是脱机的：盘符槽写「脱机」，型号 / 容量照常给
+            return DiskText.Full(engine.LocalDiskNumber, info.Model, info.SizeBytes,
+                isOnline: false, driveLetters: null);
         }
 
         /// <summary>详细页：把每个会话的完整文本依次拼起来，块之间空行 + 分隔线 + 盘名，整段可复制</summary>
@@ -414,7 +415,8 @@ namespace FlyDisk
             if (s.IsRunning)
             {
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.targetDisk"),
-                    Locale.T("insp.v.diskOfflineOwned", StatText.Num(s.PhysicalDiskNumber))));
+                    Locale.T("insp.v.diskOfflineOwned", DiskText.Full(s.PhysicalDiskNumber, s.DeviceModel,
+                        s.DeviceSizeBytes, isOnline: false, driveLetters: null))));
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.iscsiConn"),
                     Locale.T("insp.v.connCount", StatText.Num(s.ActiveConnections))));
             }
@@ -636,13 +638,7 @@ namespace FlyDisk
             => total > 0 ? Frac(part, total).ToString("P1", CultureInfo.CurrentCulture) : "—";
 
         /// <summary>容量自动换档：≥1 TiB 用 TiB、≥1 GiB 用 GiB，否则 MiB（都保留 1 位小数）</summary>
-        public static string CapText(long bytes)
-        {
-            double b = bytes;
-            if (b >= 1024.0 * 1024 * 1024 * 1024) return (b / (1024.0 * 1024 * 1024 * 1024)).ToString("F1", CultureInfo.CurrentCulture) + " TiB";
-            if (b >= 1024.0 * 1024 * 1024) return (b / (1024.0 * 1024 * 1024)).ToString("F1", CultureInfo.CurrentCulture) + " GiB";
-            return (b / (1024.0 * 1024)).ToString("F1", CultureInfo.CurrentCulture) + " MiB";
-        }
+        public static string CapText(long bytes) => DiskText.Capacity(bytes);
 
         /// <summary>
         /// 是否"正在淘汰"。**严格大于淘汰线**——正好压在这条线上仍算正常（2026-10-01 定的显示口径）。
@@ -672,8 +668,7 @@ namespace FlyDisk
             s.SsdHitBlocksTotal,
             s.SsdCacheEnabled ? s.SsdMissBlocksTotal : s.L1MissBlocksTotal);
 
-        public static string Model(CacheStats s)
-            => string.IsNullOrWhiteSpace(s.DeviceModel) ? Locale.T("insp.w.unknownModel") : s.DeviceModel;
+        public static string Model(CacheStats s) => DiskText.Model(s.DeviceModel);
 
         public static string Serial(CacheStats s)
             => string.IsNullOrWhiteSpace(s.DeviceSerial) ? "—" : s.DeviceSerial;
@@ -1117,8 +1112,8 @@ namespace FlyDisk
         private string StatusLine(CacheStats s)
         {
             if (!s.IsRunning) return Locale.T("insp.w.notStarted");
-            return Locale.T("insp.b.runningLine", StatText.Num(s.PhysicalDiskNumber),
-                StatText.Model(s), StatText.CapText(s.DeviceSizeBytes));
+            return Locale.T("insp.b.runningLine", DiskText.Full(s.PhysicalDiskNumber, s.DeviceModel,
+                s.DeviceSizeBytes, isOnline: false, driveLetters: null));
         }
     }
 

@@ -196,10 +196,11 @@ namespace FlyDisk
             string.Join(Environment.NewLine + Environment.NewLine, blocks);
 
         /// <summary>
-        /// 明细行：<c>磁盘 1（WDC WD40EZAZ）：原因</c>。多盘失败时每块盘一行，用户一眼能对上号。
+        /// 明细行：<c>磁盘 0（脱机，型号，111.8 GiB）：原因</c>。
+        /// 盘名由 <see cref="DiskText"/> 统一生成，本方法只负责拼分隔符与原因。
         /// </summary>
-        public static string DiskLine(int diskNumber, string model, string reason) =>
-            Locale.T("dialog.diskLine", diskNumber, model, reason);
+        public static string DiskLine(string disk, string reason) =>
+            Locale.T("dialog.diskLine", disk, reason);
 
         #endregion
     }

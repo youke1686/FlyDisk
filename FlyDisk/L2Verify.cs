@@ -230,6 +230,8 @@ namespace FlyDisk.Engine
         {
             // ① 先审盘，而且**全部在脱机之前**：任何一条不过，系统状态一点都没动
             PhysicalDiskInfo info = PhysicalDiskHandle.Probe(_diskNumber);
+            // Probe 只读磁盘属性、不扫卷；盘名要带盘符，这里补一次（脱机后卷就没了）
+            PhysicalDiskHandle.FillDriveLetters(new[] { info });
             ValidateTargetDisk(info);
 
             string containerPath = Path.Combine(_dir, ContainerFileName);
@@ -268,7 +270,7 @@ namespace FlyDisk.Engine
             if (deviceIdentity != ComputeDeviceIdentity(info))
             {
                 throw new InvalidOperationException(
-                    Locale.T("l2v.err.containerOwner", info.DiskNumber, info.Model));
+                    Locale.T("l2v.err.containerOwner", DiskText.Full(info)));
             }
 
             LoadIndex();
@@ -351,18 +353,18 @@ namespace FlyDisk.Engine
             if (blocked.Length > 0)
             {
                 throw new InvalidOperationException(
-                    Locale.T("l2v.err.targetBlocked", info.DiskNumber, blocked));
+                    Locale.T("l2v.err.targetBlocked", DiskText.Full(info), blocked));
             }
 
             int cacheDisk = PhysicalDiskHandle.GetDiskNumberOfVolume(Path.GetPathRoot(_dir) ?? string.Empty);
             if (cacheDisk >= 0 && cacheDisk == info.DiskNumber)
             {
                 throw new InvalidOperationException(
-                    Locale.T("l2v.err.cacheOnTarget", _dir, info.DiskNumber));
+                    Locale.T("l2v.err.cacheOnTarget", _dir, DiskText.Full(info)));
             }
 
             if (info.IsReadOnly)
-                throw new InvalidOperationException(Locale.T("l2v.err.targetReadOnly", info.DiskNumber));
+                throw new InvalidOperationException(Locale.T("l2v.err.targetReadOnly", DiskText.Full(info)));
         }
 
         /// <summary>
@@ -954,6 +956,10 @@ namespace FlyDisk
         /// <summary>本次要校验的目标盘号（由调用方在打开本窗口前选定）</summary>
         private readonly int _diskNumber;
 
+        /// <summary>目标盘信息（含盘符），说明行用；只探测一次，失败后不再重试</summary>
+        private Engine.PhysicalDiskInfo? _diskInfo;
+        private bool _diskInfoLoaded;
+
         /// <summary>控件登记表（见 <see cref="ILocalizable"/>）：静态文本键 → 控件</summary>
         public Dictionary<string, List<Control>> TextBindings { get; } = new();
 
@@ -1042,21 +1048,33 @@ namespace FlyDisk
             }
             else
             {
-                string model = string.Empty;
-                try
-                {
-                    Engine.PhysicalDiskInfo info = Engine.PhysicalDiskHandle.Probe(_diskNumber);
-                    model = info.Model;
-                }
-                catch
-                {
-                    // 探测失败就只显示盘号：真正的错误会在打开会话时如实报出
-                }
-                disk = model.Length > 0
-                    ? Locale.T("l2v.diskWithModel", _diskNumber, model)
-                    : Locale.T("l2v.disk", _diskNumber);
+                disk = TryGetDiskInfo() is { } info
+                    ? DiskText.Full(info)
+                    : DiskText.Short(_diskNumber);
             }
             return Locale.T("l2v.info", Locale.T(actionKey), disk);
+        }
+
+        /// <summary>
+        /// 目标盘信息（只探测一次）。**必须补盘符**：<see cref="Engine.PhysicalDiskHandle.Probe"/> 只读磁盘属性，
+        /// 不扫卷；而盘名要带盘符，脱机之后卷就消失了，那时再补就来不及。
+        /// </summary>
+        private Engine.PhysicalDiskInfo? TryGetDiskInfo()
+        {
+            if (_diskInfoLoaded) return _diskInfo;
+            _diskInfoLoaded = true;
+            try
+            {
+                Engine.PhysicalDiskInfo info = Engine.PhysicalDiskHandle.Probe(_diskNumber);
+                Engine.PhysicalDiskHandle.FillDriveLetters(new[] { info });
+                _diskInfo = info;
+            }
+            catch
+            {
+                // 探测失败就只显示盘号：真正的错误会在打开会话时如实报出
+                _diskInfo = null;
+            }
+            return _diskInfo;
         }
 
         protected override void OnShown(EventArgs e)

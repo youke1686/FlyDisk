@@ -339,8 +339,7 @@ namespace FlyDisk
                         Identity = identity,
                         OwnerHash = SsdCacheService.ComputeIdentity(BlockSourceInfo.FromDisk(disk, disk.IsOnline)),
                         Info = disk,
-                        Text = Locale.T("insp.b.diskItem", disk.DiskNumber,
-                            disk.Model.Length > 0 ? disk.Model : Locale.T("selectDisk.modelUnknown")),
+                        Text = DiskText.Full(disk),
                     });
                 }
             }
@@ -358,9 +357,34 @@ namespace FlyDisk
                 {
                     Identity = entry.DiskIdentity,
                     OwnerHash = entry.OwnerHash,
-                    Text = Locale.T("l2m.diskNotConnected", entry.DiskIdentity),
+                    Text = DiskText.NotConnected(entry.DiskIdentity),
                 });
             }
+
+            // 与选盘框同一口径：有盘符的按字母排在前，无盘符的次之，脱机的再往后，没接上的沉底
+            _diskChoices.Sort(CompareChoices);
+        }
+
+        /// <summary>L2 管理下拉框的排序键（与 <see cref="PickerForm"/> 的盘符排序同源）</summary>
+        private static int CompareChoices(DiskChoice a, DiskChoice b)
+        {
+            int rankA = ChoiceRank(a);
+            int rankB = ChoiceRank(b);
+            if (rankA != rankB) return rankA.CompareTo(rankB);
+
+            string letterA = a.Info is { DriveLetters.Count: > 0 } ia ? ia.DriveLetters[0] : string.Empty;
+            string letterB = b.Info is { DriveLetters.Count: > 0 } ib ? ib.DriveLetters[0] : string.Empty;
+            int byLetter = string.Compare(letterA, letterB, StringComparison.OrdinalIgnoreCase);
+            if (byLetter != 0) return byLetter;
+
+            return (a.Info?.DiskNumber ?? int.MaxValue).CompareTo(b.Info?.DiskNumber ?? int.MaxValue);
+        }
+
+        private static int ChoiceRank(DiskChoice choice)
+        {
+            if (choice.Info == null) return 3;                 // 已配置但没接上
+            if (!choice.Info.IsOnline) return 2;               // 脱机沉底
+            return choice.Info.DriveLetters.Count > 0 ? 0 : 1; // 有盘符的排最前
         }
 
         private void BuildLayout()
@@ -1135,7 +1159,11 @@ namespace FlyDisk
         private string Describe(Row row)
         {
             if (row.CacheDirectory.Length > 0) return row.CacheDirectory;
-            return row.DiskIdentity.Length > 0 ? row.DiskIdentity : Locale.T("l2m.unknownDisk");
+
+            // 优先用下拉框里的友好盘名（盘号 + 盘符/脱机 + 型号 + 容量），其次是身份串的人话形式
+            DiskChoice? choice = _diskChoices.Find(c => string.Equals(c.Identity, row.DiskIdentity, StringComparison.Ordinal));
+            if (choice != null) return choice.Text;
+            return row.DiskIdentity.Length > 0 ? DiskText.NotConnected(row.DiskIdentity) : Locale.T("l2m.unknownDisk");
         }
 
         private static string FormatBytes(long bytes)

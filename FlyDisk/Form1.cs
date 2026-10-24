@@ -441,7 +441,13 @@ namespace FlyDisk
             TargetService reonlineEngine = PrimarySession?.Engine ?? new TargetService(_config);
             if (reonlineEngine.TryReonlineDisk(picked.DiskNumber, out string error))
             {
-                Log(Locale.T("main.log.reonlineDone", picked.DiskNumber));
+                // 联机成功后重新枚举一次：选盘时那块盘是脱机的（没有盘符），旧快照会把盘符槽写成「脱机」
+                PhysicalDiskInfo? refreshed = null;
+                try { refreshed = PhysicalDiskHandle.Enumerate().Find(d => d.DiskNumber == picked.DiskNumber); }
+                catch { /* 取不到就退回简称 */ }
+                Log(Locale.T("main.log.reonlineDone", refreshed != null
+                    ? DiskText.Full(refreshed)
+                    : DiskText.Short(picked.DiskNumber)));
                 Log(Locale.T("main.log.reonlineCacheWarn"));
             }
             else
@@ -473,7 +479,7 @@ namespace FlyDisk
             List<PhysicalDiskInfo> disks;
             try
             {
-                // 只查联机盘：脱机盘没有可查的打开文件，联机盘才是"盘符挂着、程序能用"的那个状态
+                // 只查联机盘：脱机盘没有挂载点，卷映射定位不到，查了也只会得到"没有定位到这块盘的卷"
                 disks = PhysicalDiskHandle.Enumerate().FindAll(d => d.IsOnline);
             }
             catch (Exception ex)
@@ -507,14 +513,14 @@ namespace FlyDisk
 
             PhysicalDiskInfo? picked;
             using (var pick = new PickerForm(disks, identity ?? string.Empty,
-                       onlineOnly: true, okTextKey: "selectDisk.ok.occupy",
+                       occupancyMode: true, okTextKey: "selectDisk.ok.occupy",
                        acceleratedDiskNumbers: accelerated))
             {
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisk == null) return;
                 picked = pick.SelectedDisk;
             }
 
-            OccupancyQuery.Run(this, picked);
+            OccupancyQuery.Run(this, picked, accelerated.Contains(picked.DiskNumber));
         }
 
         /// <summary>
@@ -1447,7 +1453,7 @@ namespace FlyDisk
                 if (entry == null || !entry.Enabled) continue;   // 停用的行本次不参与，不拦启动
                 if (!string.IsNullOrWhiteSpace(entry.CacheVolume) && entry.MaxBytes > 0) continue;
 
-                incomplete.Add(Locale.T("main.msg.l2IncompleteItem", disk.DiskNumber, disk.Model));
+                incomplete.Add(DiskText.Full(disk));
             }
 
             if (incomplete.Count == 0) return true;
@@ -1575,28 +1581,28 @@ namespace FlyDisk
                     // L2 预检只在第一轮做；重试时不再问用户（他刚才已经对 L2 拍过板）
                     if (runL2Preflight && !RunL2Preflight(session.Config, disk))
                     {
-                        Log(Locale.T("main.log.startCancelledAtL2", disk.DiskNumber, disk.Model));
+                        Log(Locale.T("main.log.startCancelledAtL2", DiskText.Full(disk)));
                         return StartFailKind.Cancelled;
                     }
 
                     (bool ok, string failure) = await StartTargetCore(session.Engine, disk);
                     if (!ok)
                     {
-                        failures.Add(Locale.T("main.log.startAttemptFailed", disk.DiskNumber, disk.Model, failure));
+                        failures.Add(Locale.T("main.log.startAttemptFailed", DiskText.Full(disk), failure));
                         return StartFailKind.Other;
                     }
                 }
                 catch (IscsiCloneCheckException ex)
                 {
                     // 克隆盘类：可重试（见 StartTarget 里的"整套重试一次"）
-                    failures.Add(Locale.T("main.log.startAttemptFailed", disk.DiskNumber, disk.Model, ex.Message));
+                    failures.Add(Locale.T("main.log.startAttemptFailed", DiskText.Full(disk), ex.Message));
                     return StartFailKind.CloneDisk;
                 }
                 catch (Exception ex)
                 {
                     // 其余异常（例如 L2 初始化失败）一律不可恢复
                     Log(Locale.T("main.log.startFailed", ex.Message));
-                    failures.Add(Locale.T("main.log.startAttemptFailed", disk.DiskNumber, disk.Model, ex.Message));
+                    failures.Add(Locale.T("main.log.startAttemptFailed", DiskText.Full(disk), ex.Message));
                     return StartFailKind.Other;
                 }
 
@@ -1640,8 +1646,12 @@ namespace FlyDisk
                 (bool ok, string error) = await StopEngineWithRetryAsync(session.Engine);
                 if (ok) continue;
 
-                Log(Locale.T("main.log.stopFailed", error));
-                failures.Add(Locale.T("main.log.stopFailed", error));
+                // 这块盘已经在启动流程里被脱机，停止失败时它仍是脱机的
+                string text = session.Disk != null
+                    ? Locale.T("main.log.stopFailedWithDisk", DiskText.Full(session.Disk, forceOffline: true), error)
+                    : Locale.T("main.log.stopFailed", error);
+                Log(text);
+                failures.Add(text);
             }
         }
 
@@ -1693,7 +1703,7 @@ namespace FlyDisk
                 _config.L2Disks.Add(entry);
                 if (!ConfigService.Save(_config, out string saveError))
                     LogService.DebugFile($"L2 配置恢复：保存失败（下次启动会重试）：{saveError}");
-                Log(Locale.T("main.log.l2Recovered", disk.DiskNumber, entry.CacheVolume));
+                Log(Locale.T("main.log.l2Recovered", DiskText.Full(disk), entry.CacheVolume));
             }
 
             if (!entry.Enabled) return false;   // 本次只用 L1（缓存文件保留，预检会询问账本如何处置）
@@ -1785,7 +1795,7 @@ namespace FlyDisk
             }
 
             int unusedChoice = Dialogs.Choose(this, Locale.T("dialog.l2UnusedLedger"),
-                Locale.T("main.msg.l2UnusedLedger", target.DiskNumber),
+                Locale.T("main.msg.l2UnusedLedger", DiskText.Full(target)),
                 Locale.T("l2.choose.continue"), Locale.T("l2.choose.abort"));
 
             if (unusedChoice != 0)
@@ -2046,7 +2056,10 @@ namespace FlyDisk
                     if (!stopped.Ok)
                     {
                         // **每块失败盘各问一次**：能正常停的就正常停，用户还需要知道是哪块盘出了问题
-                        Log(Locale.T("main.log.stopFailed", DescribeStopFailure(stopped)));
+                        string failure = DescribeStopFailure(stopped);
+                        Log(session.Disk != null && !remoteSession
+                            ? Locale.T("main.log.stopFailedWithDisk", DiskText.Full(session.Disk, forceOffline: true), failure)
+                            : Locale.T("main.log.stopFailed", failure));
                         bool forced = await HandleStopFailureAsync(session, stopped, remoteSession);
                         if (forced)
                         {
@@ -2057,8 +2070,15 @@ namespace FlyDisk
                     }
 
                     stoppedCount++;
-                    Log(Locale.T("main.log.stopLedger", session.Disk?.DiskNumber ?? -1,
-                        LedgerText(session.Engine.LastLedgerCommit)));
+                    if (session.Disk != null && !remoteSession)
+                    {
+                        Log(Locale.T("main.log.stopLedger", DiskText.Full(session.Disk, forceOffline: true),
+                            LedgerText(session.Engine.LastLedgerCommit)));
+                    }
+                    else
+                    {
+                        Log(Locale.T("main.log.stopRemote", LedgerText(session.Engine.LastLedgerCommit)));
+                    }
                     _sessions.Remove(session);
                     if (session.Disk != null && !remoteSession)
                     {
@@ -2066,7 +2086,7 @@ namespace FlyDisk
                         {
                             // 用了 L2：盘必须保持脱机，跨重启的账本才敢采信
                             anyLeftOffline = true;
-                            Log(Locale.T("main.log.stoppedDiskOffline", session.Disk.DiskNumber));
+                            Log(Locale.T("main.log.stoppedDiskOffline", DiskText.Short(session.Disk.DiskNumber)));
                         }
                         else
                         {
@@ -2078,12 +2098,12 @@ namespace FlyDisk
                                 session.Engine.TryReonlineDisk(diskNumber, out onlineError));
                             if (online)
                             {
-                                Log(Locale.T("main.log.stoppedDiskAutoOnline", diskNumber));
+                                Log(Locale.T("main.log.stoppedDiskAutoOnline", DiskText.Short(diskNumber)));
                             }
                             else
                             {
                                 anyLeftOffline = true;
-                                Log(Locale.T("main.log.stoppedDiskAutoOnlineFailed", diskNumber, onlineError));
+                                Log(Locale.T("main.log.stoppedDiskAutoOnlineFailed", DiskText.Short(diskNumber), onlineError));
                             }
                         }
                     }
@@ -2128,7 +2148,7 @@ namespace FlyDisk
             string reason = DescribeStopFailure(failed);
             string head = session.Disk == null || remoteSession
                 ? Locale.T("stop.branch.remoteTarget", reason)
-                : Dialogs.DiskLine(session.Disk.DiskNumber, session.Disk.Model, reason);
+                : Dialogs.DiskLine(DiskText.Full(session.Disk, forceOffline: true), reason);
 
             int choice = Dialogs.Choose(this, Locale.T("stop.branch.title"),
                 Dialogs.Body(head, Locale.T("stop.branch.options"), Locale.T("stop.branch.choose")),
@@ -2160,8 +2180,15 @@ namespace FlyDisk
             }
 
             _sessions.Remove(session);
-            Log(Locale.T("main.log.stopForced", session.Disk?.DiskNumber ?? -1,
-                LedgerText(session.Engine.LastLedgerCommit)));
+            if (session.Disk != null && !remoteSession)
+            {
+                Log(Locale.T("main.log.stopForced", DiskText.Full(session.Disk, forceOffline: true),
+                    LedgerText(session.Engine.LastLedgerCommit)));
+            }
+            else
+            {
+                Log(Locale.T("main.log.stopForcedRemote", LedgerText(session.Engine.LastLedgerCommit)));
+            }
             return true;
         }
 

@@ -57,6 +57,10 @@ namespace FlyDisk
             public string Text = string.Empty;
             public List<DetailLine> Detail = new();
             public bool Selectable = true;
+
+            /// <summary>是否命中"上次选的那块盘"；排序前先记下，排序后再换算成列表下标</summary>
+            public bool Preselect;
+
             public PhysicalDiskInfo? Local;
             public RemoteDiskInfo? Remote;
         }
@@ -92,6 +96,9 @@ namespace FlyDisk
         private readonly RichTextBox _detail = new();
         private readonly Button _ok = new();
         private readonly Button _cancel = new();
+
+        /// <summary>占用查询模式：在信息区末尾补一行 Handle2 署名（信息区本身可滚动，不改布局）</summary>
+        private bool _showCredit;
 
         /// <summary>确定按钮的文案键（默认 `common.ok`；占用查询用 `selectDisk.ok.occupy`）</summary>
         private string _okTextKey = "common.ok";
@@ -130,16 +137,20 @@ namespace FlyDisk
         /// 配置里 L2 缓存目录所在的那块盘（-1 = L2 未启用 / 没配 / 查不到）。
         /// 该盘会被标成不能加速——自己给自己加速是纯写放大，引擎启动时也会拒（见启动校验 ⑥）。
         /// </param>
+        /// <param name="occupancyMode">
+        /// true = **占用查询**：不做任何"能不能加速"的判定（占用查询本来就不是加速）。
+        /// 候选清单由调用方筛好——占用查询只传联机盘（脱机盘没有挂载点，卷映射定位不到）。
+        /// </param>
         public PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, string identityToPreselect,
             bool offlineOnly = false, int l2CacheDiskNumber = -1,
-            bool onlineOnly = false, string okTextKey = "common.ok",
+            bool occupancyMode = false, string okTextKey = "common.ok",
             IReadOnlyCollection<int>? acceleratedDiskNumbers = null)
             : this(disks,
                    identityToPreselect.Length > 0 ? new List<string> { identityToPreselect } : new List<string>(),
                    offlineOnly,
                    l2CacheDiskNumber >= 0 ? new[] { l2CacheDiskNumber } : Array.Empty<int>(),
                    multiSelect: false,
-                   onlineOnly,
+                   occupancyMode,
                    okTextKey,
                    acceleratedDiskNumbers)
         {
@@ -155,16 +166,18 @@ namespace FlyDisk
         public PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
             IReadOnlyCollection<int> l2CacheDiskNumbers, string okTextKey = "common.ok")
             : this(disks, identitiesToPreselect, offlineOnly: false, l2CacheDiskNumbers, multiSelect: true,
-                   onlineOnly: false, okTextKey, acceleratedDiskNumbers: null)
+                   occupancyMode: false, okTextKey, acceleratedDiskNumbers: null)
         {
         }
 
         /// <summary>唯一的实现体：本地清单 + 预选（单个或多选）+ 只列脱机/只列联机 + 是否多选</summary>
         private PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
             bool offlineOnly, IReadOnlyCollection<int> l2CacheDiskNumbers, bool multiSelect,
-            bool onlineOnly, string okTextKey, IReadOnlyCollection<int>? acceleratedDiskNumbers)
-            : this(offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local", multiSelect)
+            bool occupancyMode, string okTextKey, IReadOnlyCollection<int>? acceleratedDiskNumbers)
+            : this(occupancyMode ? "selectDisk.title.occupy"
+                   : offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local", multiSelect)
         {
+            _showCredit = occupancyMode;
             _okTextKey = okTextKey;
             // 基类构造里已经按默认键设过一次，这里覆盖成调用方要的文案
             _ok.Text = Locale.T(_okTextKey);
@@ -172,9 +185,7 @@ namespace FlyDisk
             {
                 foreach (int number in acceleratedDiskNumbers) _acceleratedDiskNumbers.Add(number);
             }
-            _emptyTextKey = offlineOnly ? "selectDisk.noOfflineDisks"
-                : onlineOnly ? "selectDisk.noOnlineDisks"
-                : "selectDisk.noDisks";
+            _emptyTextKey = offlineOnly ? "selectDisk.noOfflineDisks" : "selectDisk.noLocalDisks";
             foreach (int number in l2CacheDiskNumbers)
             {
                 if (number >= 0) _l2CacheDiskNumbers.Add(number);
@@ -182,20 +193,18 @@ namespace FlyDisk
             // offlineOnly（重新联机）模式下用不到，但算一次也无妨：分页文件盘恰恰是最该联机回来的那块
             _pageFileDiskNumbers = PhysicalDiskHandle.GetPageFileDiskNumbers();
 
-            var preselect = new List<int>();
             for (int i = 0; i < disks.Count; i++)
             {
                 PhysicalDiskInfo info = disks[i];
                 if (offlineOnly && info.IsOnline) continue;   // 只列脱机盘：联机盘没什么可"重新联机"的
-                if (onlineOnly && !info.IsOnline) continue;   // 只列联机盘：占用查询对脱机盘没有意义
 
-                // offlineOnly（重新联机）/ onlineOnly（占用查询）模式不做任何"能不能加速"的判定：
+                // offlineOnly（重新联机）/ occupancyMode（占用查询）不做任何"能不能加速"的判定：
                 // 系统盘恰恰是最需要联机回来的那块；占用查询本来就不是加速。
-                List<string> blockReasons = offlineOnly || onlineOnly
+                List<string> blockReasons = offlineOnly || occupancyMode
                     ? new List<string>()
                     : BlockReasons(info, _l2CacheDiskNumbers, _pageFileDiskNumbers);
 
-                List<DetailLine> detail = BuildLocalDetail(info, blockReasons);
+                List<DetailLine> detail = BuildLocalDetail(info, blockReasons, showAccelerationHints: multiSelect);
                 if (offlineOnly)
                 {
                     // 「重新联机」那句说明本来在对话框顶部；顶部提示行已删（2026-10-11），
@@ -207,29 +216,55 @@ namespace FlyDisk
                     Local = info,
                     // 「确定」能不能用**只由错误行决定**：有任意一条"会阻止启动"的原因就选不了
                     Selectable = !detail.Exists(line => line.IsError),
-                    Text = Locale.T("selectDisk.item.local",
-                        info.DiskNumber,
-                        info.Model.Length > 0 ? info.Model : Locale.T("selectDisk.modelUnknown"),
-                        info.SizeText,
-                        FormatDriveSlot(info))
+                    Text = DiskText.Wide(info)
                         + (_acceleratedDiskNumbers.Contains(info.DiskNumber)
                             ? Locale.T("selectDisk.item.accelerating")
                             : string.Empty),
-                    Detail = detail
+                    Detail = detail,
+                    Preselect = identitiesToPreselect.Count > 0 && MatchesIdentity(info, identitiesToPreselect),
                 });
+            }
 
-                if (identitiesToPreselect.Count > 0 && MatchesIdentity(info, identitiesToPreselect))
-                {
-                    // 记的必须是 **_entries 的下标**，不是 disks 的下标：offlineOnly 模式下联机盘被
-                    // 上面的 continue 跳过，两个下标会错位；错位后赋给 ListBox.SelectedIndex 会越界
-                    // （抛 ArgumentOutOfRangeException），而异常又正好被调用方那个 try 兜成
-                    // "枚举物理盘失败"，文不对题、极难定位。
-                    preselect.Add(_entries.Count - 1);
-                }
+            // 列表顺序按盘符排：有盘符的在前（按首盘符字母升序），无盘符的次之，脱机的最后。
+            // 预选下标必须在**排序之后**再算，否则会指到别的盘上。
+            _entries.Sort(CompareEntries);
+
+            var preselect = new List<int>();
+            for (int i = 0; i < _entries.Count; i++)
+            {
+                if (_entries[i].Preselect) preselect.Add(i);
             }
 
             FinishFill(preselect);
         }
+
+        /// <summary>
+        /// 选择框的排序键：**有盘符 → 无盘符 → 脱机**；同档内按首盘符字母升序，再按盘号。
+        /// 盘符只是"用户认盘"的锚点：加速中的源盘没有盘符（整盘脱机），一律沉到最下面。
+        /// </summary>
+        private static int CompareEntries(Entry a, Entry b)
+        {
+            int rankA = EntryRank(a);
+            int rankB = EntryRank(b);
+            if (rankA != rankB) return rankA.CompareTo(rankB);
+
+            string letterA = FirstDriveLetter(a);
+            string letterB = FirstDriveLetter(b);
+            int byLetter = string.Compare(letterA, letterB, StringComparison.OrdinalIgnoreCase);
+            if (byLetter != 0) return byLetter;
+
+            return (a.Local?.DiskNumber ?? int.MaxValue).CompareTo(b.Local?.DiskNumber ?? int.MaxValue);
+        }
+
+        private static int EntryRank(Entry entry)
+        {
+            if (entry.Local == null) return 3;                 // 远程形态不参与本地排序
+            if (!entry.Local.IsOnline) return 2;               // 脱机沉底
+            return entry.Local.DriveLetters.Count > 0 ? 0 : 1; // 有盘符的排最前
+        }
+
+        private static string FirstDriveLetter(Entry entry) =>
+            entry.Local is { DriveLetters.Count: > 0 } local ? local.DriveLetters[0] : string.Empty;
 
         /// <summary>该盘的身份串是否在预选清单里（身份串的生成与比对都走同一处，见 DescribeIdentity）</summary>
         private static bool MatchesIdentity(PhysicalDiskInfo info, IReadOnlyList<string> identities)
@@ -430,38 +465,29 @@ namespace FlyDisk
         }
 
         /// <summary>
-        /// 列表行里的**盘符槽**（含括号；无内容时返回空串，整段省略，不留空括号）。
-        /// 一块盘可能有多个卷 / 多个盘符，全部按序列出（引擎已在 <see cref="PhysicalDiskHandle.FillDriveLetters"/>
-        /// 里排过序），分隔符**统一英文逗号**，不随语言分叉。
-        ///
-        /// **脱机盘没有盘符**（整盘脱机后卷随之消失、<c>\\.\X:</c> 开不出来），所以这个槽里改放"脱机"一词：
-        /// 一来如实说明"这儿没盘符"的原因，二来行尾原本那句联机/脱机状态就多余了，已删（见 item.local 模板）。
-        /// 联机盘若确实没有卷（未格式化），槽为空、整段省略。
-        /// </summary>
-        private static string FormatDriveSlot(PhysicalDiskInfo info)
-        {
-            if (!info.IsOnline) return Locale.T("selectDisk.item.drives", Locale.T("selectDisk.offline"));
-            if (info.DriveLetters.Count == 0) return string.Empty;
-            return Locale.T("selectDisk.item.drives", string.Join(", ", info.DriveLetters));
-        }
-
-        /// <summary>
         /// 本地盘的明细行。**只有"会阻止启动"的硬拦原因标 <see cref="DetailLine.IsError"/>=true**
         /// （渲染成红色、并使「确定」不可用）；基本信息、⚠ 警示、状态提示一律是普通行，保持正文色。
         /// </summary>
-        private static List<DetailLine> BuildLocalDetail(PhysicalDiskInfo info, IReadOnlyList<string> blockReasons)
+        /// <param name="showAccelerationHints">
+        /// 只有「启动加速」才显示"能不能加速 / 加速效果如何"的提示（可移动介质、有无搜寻惩罚）。
+        /// 校验 L2 / 重新联机 / 占用查询都不加速，这些提示在那些场景里只是噪音。
+        /// </param>
+        private static List<DetailLine> BuildLocalDetail(PhysicalDiskInfo info, IReadOnlyList<string> blockReasons,
+            bool showAccelerationHints)
         {
             var lines = new List<DetailLine>();
 
             // 第一行留给**基本信息**（字节/扇区、容量、序列号）：它是"这块盘是谁"的锚点，任何时候都要看得见。
             lines.Add(new DetailLine(Locale.T("selectDisk.detail.header",
                 info.BytesPerSector,
-                info.SizeText,
+                DiskText.Capacity(info.SizeBytes),
                 info.SerialNumber.Length > 0 ? info.SerialNumber : Locale.T("selectDisk.serialNone")), false));
 
             // 不能加速的原因紧跟在基本信息之后（再往上顶会把基本信息挤出可视区）；
             // 它们就是"会阻止启动"的那几条，逐条标红
             foreach (string reason in blockReasons) lines.Add(new DetailLine(reason, true));
+
+            if (!showAccelerationHints) return lines;
 
             if (info.RemovableMedia)
             {
@@ -583,6 +609,14 @@ namespace FlyDisk
                 _detail.SelectionColor = lines[i].IsError ? error : normal;
                 _detail.AppendText(lines[i].Text);
                 if (i < lines.Count - 1) _detail.AppendText("\n");
+            }
+
+            // 占用查询：信息区本身可滚动，署名直接追加在末尾，不动任何布局
+            if (_showCredit)
+            {
+                _detail.SelectionColor = normal;
+                _detail.AppendText("\n\n");
+                _detail.AppendText(Locale.T("occupy.credit"));
             }
 
             // Clear() 会把段落格式也重置回默认，所以每次渲染都得重新收紧行距

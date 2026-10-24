@@ -415,6 +415,7 @@
                     <li class="toc-h3"><a href="#inspector-zh">检查器</a></li>
                     <li class="toc-h3"><a href="#verify-zh">校验 L2</a></li>
                     <li class="toc-h3"><a href="#reonline-zh">重新联机硬盘</a></li>
+                    <li class="toc-h3"><a href="#occupy-zh">占用查询</a></li>
                     <li class="toc-h3"><a href="#remote-zh">远程加速</a></li>
                 </ul>
             </div>
@@ -575,7 +576,7 @@
 
 <table>
     <tr><th>区域</th><th>作用</th></tr>
-    <tr><td>菜单栏</td><td>设置 / 检查器 / 校验 L2 / 重新联机硬盘 / 远程 / 🌍 语言。加速运行中，部分入口会暂时禁用。</td></tr>
+    <tr><td>菜单栏</td><td>设置 / 检查器 / 校验 L2 / 重新联机硬盘 / 占用查询 / 远程 / 🌍 语言。加速运行中，部分入口会暂时禁用。</td></tr>
     <tr><td>主按钮</td><td>「启动加速」↔「停止加速」等。负责主要功能。</td></tr>
     <tr><td>状态行</td><td>显示 iSCSI 地址、当前连接数、链路状态等少量运行状态指示信息。</td></tr>
 <tr><td>日志区</td><td>运行过程中的提示与错误。</td></tr>
@@ -587,8 +588,11 @@
 
 <h3>硬盘选择窗口&nbsp;</h3>
 <p>每一行长这样：</p>
-<pre><code>磁盘 0（C: , D:）    型号字样    （容量）</code></pre>
-<p>括号里是该盘上的<strong>盘符</strong>（一块盘可能对应多个卷、多个盘符）；你曾经加速过的盘，那一格显示「<em>脱机</em>」。</p>
+<pre><code>磁盘 0（C:, D:）    型号字样    （931.5 GiB）</code></pre>
+<p>括号里是该盘上的<strong>盘符</strong>（一块盘可能对应多个卷、多个盘符）；<strong>脱机盘</strong>（通常是以前加速过、还没还回去的盘）这一格显示「<em>脱机</em>」。</p>
+<p>列表<strong>按盘符排序</strong>：有盘符的在前（按首盘符字母升序），没有盘符的其次，脱机的排在最后；程序里所有选盘框都用同一套顺序。</p>
+<p>盘名的格式全程序统一：<strong>盘号 + 盘符（或「脱机」）+ 型号 + 容量</strong>，容量按 TiB / GiB / MiB 自动换档；型号读不到时写「未知型号」。</p>
+<p>「无搜寻惩罚」「可移动介质」这类与<strong>加速效果</strong>有关的提示，只在「启动加速」的选盘框里出现；校验 L2、重新联机、占用查询的选盘框不显示。</p>
 <p>目前仅能同时加速一整块物理硬盘，不单卷（单盘符）加速 。</p>
 <p><strong>可以一次选多块盘</strong>：在列表里<strong>勾选每行前面的复选框</strong>，确定后这些盘会<strong>同时</strong>被加速——每块盘各用各的 iSCSI 端口（从配置端口开始依次递增）与各自的目标名，互不干扰。<strong>每块盘都可以单独配置 L2 缓存</strong>，具体配置方法见设置中的 L2 管理</p>
 <h3>盘信息区</h3>
@@ -684,6 +688,18 @@
 </ul>
 
 <div class="note">联机后，这块盘就<strong>脱离本程序控制</strong>了，可能被其他程序写入。如果你启用了 L2 缓存，<strong>下次启动加速需要强制校验 L2</strong>（可能花一两分钟）。程序会给出这条提醒。</div>
+
+<h2 id="occupy-zh">占用查询</h2>
+
+<p>用于查清「到底是哪个程序在占着这块盘」。从菜单「<strong>占用查询</strong>」打开，与当前是否正在加速无关。</p>
+
+<ol>
+    <li><strong>选盘</strong>：只列出<strong>联机</strong>盘。脱机盘没有挂载点，系统里定位不到它的卷，所以查不了。</li>
+    <li><strong>开始检查</strong>：程序枚举全系统的句柄，并与该盘的卷设备路径比对。进度框可以随时取消，计数行显示「已检查 N / M 个进程」。</li>
+    <li><strong>结果</strong>：只读文本框，可直接选中复制。每个程序会列出它占用了多少句柄、打开了哪些文件/目录（按路径去重）；没有发现占用时也会如实说明。</li>
+</ol>
+
+<div class="note">「未发现占用」不等于绝对没有：文件系统挂载、系统服务等仍可能占着这块盘。选盘框信息区底部的署名说明本功能基于 <strong>Handle2</strong> 开源项目（MIT 许可证）。</div>
 
 <h2 id="remote-zh">远程加速（实验性）</h2>
 
@@ -786,11 +802,18 @@
 <tr><td>fusion-pixel-12px-proportional-zh_hans.ttf（Fusion Pixel Font）</td><td>主窗口标题与副标题的像素字体，嵌入 exe</td><td>SIL OFL 1.1（字体本体）+ MIT（工具链）</td></tr>
 </table>
 
+<h3>改编的源代码</h3>
+<table>
+<tr><th>项目</th><th>用途</th><th>许可证</th></tr>
+<tr><td>Handle2（https://github.com/PolarGoose/Handle2）</td><td>占用查询的句柄枚举与对象名查询，改编后位于 <code>FlyDisk/Engine/HandleScan/</code></td><td>MIT</td></tr>
+</table>
+
 <h3>版权声明</h3>
 <ul>
 <li>ISCSI，DiskAccessLibrary，DiskAccessLibrary.Win32：Copyright © Tal Aloni 2012-2024（https://github.com/TalAloni/iSCSIConsole ，https://github.com/TalAloni/DiskAccessLibrary）</li>
 <li>System.ServiceProcess.ServiceController：Copyright (c) .NET Foundation and Contributors（https://github.com/dotnet/dotnet）</li>
 <li>Fusion Pixel Font：Copyright (c) 2022, TakWolf（https://takwolf.com ，https://github.com/TakWolf/fusion-pixel-font）</li>
+<li>Handle2：Copyright (c) 2022 PolarGoose（https://github.com/PolarGoose/Handle2）</li>
 </ul>
 
 <h3>LGPL-3.0 合规要点（前三项库）</h3>
@@ -823,6 +846,7 @@
                     <li class="toc-h3"><a href="#inspector-en">Inspector</a></li>
                     <li class="toc-h3"><a href="#verify-en">Verify L2</a></li>
                     <li class="toc-h3"><a href="#reonline-en">Re-online a Disk</a></li>
+                    <li class="toc-h3"><a href="#occupy-en">Disk Usage</a></li>
                     <li class="toc-h3"><a href="#remote-en">Remote Acceleration</a></li>
                 </ul>
             </div>
@@ -982,7 +1006,7 @@
 
 <table>
     <tr><th>Area</th><th>Purpose</th></tr>
-    <tr><td>Menu bar</td><td>Settings / Inspector / Verify L2 / Re-online Disk / Remote / 🌍 Language. Some entries are temporarily disabled while acceleration is running.</td></tr>
+    <tr><td>Menu bar</td><td>Settings / Inspector / Verify L2 / Re-online Disk / Disk Usage / Remote / 🌍 Language. Some entries are temporarily disabled while acceleration is running.</td></tr>
     <tr><td>Main button</td><td>"Start Acceleration" ↔ "Stop Acceleration", etc. Handles the main functions.</td></tr>
     <tr><td>Status line</td><td>Shows a few run-state indicators such as the iSCSI address, the current connection count and the link state.</td></tr>
     <tr><td>Log box</td><td>Notices and errors during operation.</td></tr>
@@ -994,8 +1018,11 @@
 
 <h3>Disk Selection Window&nbsp;</h3>
 <p>Each row looks like this:</p>
-<pre><code>Disk 0 (C: , D:)    Model    (Capacity)</code></pre>
-<p>The parentheses hold the <strong>drive letters</strong> on that disk (a disk may map to several volumes and letters, separated by English commas). An offline disk usually means you accelerated it before; that slot shows "<em>offline</em>".</p>
+<pre><code>Disk 0 (C:, D:)    Model    (931.5 GiB)</code></pre>
+<p>The parentheses hold the <strong>drive letters</strong> on that disk (a disk may map to several volumes and letters, separated by English commas). For an <strong>offline disk</strong> (usually one you accelerated before and have not given back yet), this slot shows "<em>offline</em>".</p>
+<p>The list is <strong>sorted by drive letter</strong>: disks with drive letters first (ascending by the first letter), disks without letters next, offline disks last. All disk pickers in the program use the same order.</p>
+<p>Disk names have the same format everywhere: <strong>disk number + drive letters (or "offline") + model + capacity</strong>; capacity automatically switches between TiB / GiB / MiB, and an unreadable model is shown as "Unknown model".</p>
+<p>Hints about <strong>acceleration benefit</strong> such as "no seek penalty" and "removable media" appear only in the "Start Acceleration" picker, not in the Verify L2, Re-online, or Disk Usage pickers.</p>
 <p>For now you can accelerate only a whole physical disk at once; per-volume acceleration is not supported.</p>
 <p><strong>You can select several disks at once</strong>: <strong>tick the checkbox in front of each row</strong>; after confirming, those disks are accelerated <strong>simultaneously</strong> — each disk gets its own iSCSI port (incrementing from the configured port) and its own target name, so they do not interfere. <strong>Every disk can have its own L2 cache</strong>; see "L2 Management" in Settings for how to configure it.</p>
 
@@ -1090,6 +1117,18 @@
 </ul>
 
 <div class="note">Once online, the disk <strong>leaves this program's control</strong> and may be written by other programs. If you have L2 enabled, <strong>the next start of acceleration will force an L2 verification</strong> (may take a minute or two). The program gives you this reminder.</div>
+
+<h2 id="occupy-en">Disk Usage (Handle Check)</h2>
+
+<p>Use this to find out <strong>which program is holding a disk</strong>. Open it from the "<strong>Disk Usage</strong>" menu; it works regardless of whether acceleration is running.</p>
+
+<ol>
+    <li><strong>Pick a disk</strong>: only <strong>online</strong> disks are listed. An offline disk has no mount point, so its volumes cannot be located in the system and it cannot be checked.</li>
+    <li><strong>Start Check</strong>: the program enumerates system handles and matches them against the disk's volume device paths. The progress dialog can be cancelled at any time, and the counter shows "N / M processes checked".</li>
+    <li><strong>Result</strong>: a read-only text box you can select and copy. For each program it lists how many handles it holds and which files/folders it opened (deduplicated by path); if nothing is found, it says so explicitly.</li>
+</ol>
+
+<div class="note">"No usage found" is not an absolute guarantee: a mounted file system or a system service may still be using the disk. The credit at the bottom of the picker's info area notes that this feature is based on the <strong>Handle2</strong> open-source project (MIT License).</div>
 
 <h2 id="remote-en">Remote Acceleration (Experimental)</h2>
 
@@ -1193,11 +1232,18 @@
 <tr><td>fusion-pixel-12px-proportional-zh_hans.ttf (Fusion Pixel Font)</td><td>Pixel font for the main window title and subtitle, embedded in the exe</td><td>SIL OFL 1.1 (font) + MIT (toolchain)</td></tr>
 </table>
 
+<h3>Adapted source code</h3>
+<table>
+<tr><th>Project</th><th>Purpose</th><th>License</th></tr>
+<tr><td>Handle2 (https://github.com/PolarGoose/Handle2)</td><td>Handle enumeration and object-name queries for Disk Usage, adapted into <code>FlyDisk/Engine/HandleScan/</code></td><td>MIT</td></tr>
+</table>
+
 <h3>Copyright notices</h3>
 <ul>
 <li>ISCSI, DiskAccessLibrary, DiskAccessLibrary.Win32: Copyright © Tal Aloni 2012-2024 (https://github.com/TalAloni/iSCSIConsole , https://github.com/TalAloni/DiskAccessLibrary)</li>
 <li>System.ServiceProcess.ServiceController: Copyright (c) .NET Foundation and Contributors (https://github.com/dotnet/dotnet)</li>
 <li>Fusion Pixel Font: Copyright (c) 2022, TakWolf (https://takwolf.com , https://github.com/TakWolf/fusion-pixel-font)</li>
+<li>Handle2: Copyright (c) 2022 PolarGoose (https://github.com/PolarGoose/Handle2)</li>
 </ul>
 
 <h3>LGPL-3.0 compliance notes (first three libraries)</h3>
@@ -3611,6 +3657,30 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 <pre>MIT License
 
 Copyright (c) 2022 TakWolf
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre>
+
+<h4>7. The MIT License — Handle2</h4>
+<pre>MIT License
+
+Copyright (c) 2022 PolarGoose
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

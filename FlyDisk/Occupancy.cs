@@ -31,7 +31,7 @@ namespace FlyDisk
 {
     /// <summary>
     /// 「占用查询」的界面部分：进度框 + 结果框 + 串联逻辑。
-    /// 选盘框是通用的 <see cref="PickerForm"/>（onlineOnly + 确定按钮文案「开始检查」），
+    /// 选盘框是通用的 <see cref="PickerForm"/>（occupancyMode + 确定按钮文案「开始检查」），
     /// 本文件不重复造一个。
     ///
     /// 三框串联的语义（见 docs/停机改造与占用查询_施工计划.md §9）：
@@ -42,7 +42,7 @@ namespace FlyDisk
     internal static class OccupancyQuery
     {
         /// <summary>对已选定的盘执行一次完整查询（进度 + 结果）。取消不显示结果。</summary>
-        public static void Run(IWin32Window owner, PhysicalDiskInfo disk)
+        public static void Run(IWin32Window owner, PhysicalDiskInfo disk, bool accelerated)
         {
             using var progress = new OccupancyProgressForm(disk);
             if (progress.ShowDialog(owner) != DialogResult.OK) return;
@@ -50,7 +50,7 @@ namespace FlyDisk
             OccupancyScanResult? result = progress.Result;
             if (result == null) return;   // 取消 / 出错到拿不到结果
 
-            using var resultForm = new OccupancyResultForm(disk, result);
+            using var resultForm = new OccupancyResultForm(disk, result, accelerated);
             resultForm.ShowDialog(owner);
         }
     }
@@ -202,7 +202,7 @@ namespace FlyDisk
         private readonly Button _btnClose = new();
         private readonly TextBox _text = new();
 
-        public OccupancyResultForm(PhysicalDiskInfo disk, OccupancyScanResult result)
+        public OccupancyResultForm(PhysicalDiskInfo disk, OccupancyScanResult result, bool accelerated)
         {
             Text = Locale.T("occupy.title.result");
             ClientSize = new Size(620, 420);
@@ -223,7 +223,7 @@ namespace FlyDisk
             _text.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
             _text.BackColor = ThemeManager.Palette.InputBg;
             _text.ForeColor = ThemeManager.InputTextColor;
-            _text.Text = Render(disk, result);
+            _text.Text = Render(disk, result, accelerated);
 
             _btnClose.Size = new Size(110, 28);
             _btnClose.Text = Locale.T("common.close");
@@ -248,10 +248,10 @@ namespace FlyDisk
         }
 
         /// <summary>把扫描结果渲染成整段文本。空结果与出错都如实写出来。</summary>
-        private static string Render(PhysicalDiskInfo disk, OccupancyScanResult result)
+        private static string Render(PhysicalDiskInfo disk, OccupancyScanResult result, bool accelerated)
         {
             var sb = new StringBuilder();
-            sb.AppendLine(Locale.T("occupy.result.header", disk.DiskNumber, disk.Model, disk.SizeText));
+            sb.AppendLine(DiskText.Full(disk, accelerating: accelerated));
             sb.AppendLine(Locale.T("occupy.result.time", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             sb.AppendLine();
 
