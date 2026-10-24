@@ -312,49 +312,68 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>
-        /// 停止时调用：把 L2 索引落盘并关闭容器——这是**整个运行期唯一一次**账本落盘。
-        /// **必须在下线 target 之后调用**（否则还有命令在跑，会在账本序列化的同时改内存表）。
+        /// 停机序列 ④a：停掉水位节拍并提交 L2 账本。**必须在命令入口关闭之后调用**。
+        ///
+        /// 与 <see cref="Release"/> 拆开，是为了让"没等到静止"时也能先落一份脏账本：
+        /// 释放（④b）必须等所有在途命令真正退出，而落账本不必。
         /// </summary>
-        public void Shutdown(bool persistLedger = true)
+        public void CommitLedger(LedgerCommit kind)
         {
             if (Interlocked.Exchange(ref _shutdown, 1) != 0) return;
-            // 调用方已关闭命令入口并等在途命令结束；节拍也必须完全退出才可释放裸指针。
+
+            // 节拍会改内存索引，必须在序列化之前完全退出
             Timer? timer = Interlocked.Exchange(ref _levelTimer, null);
             if (timer != null)
             {
                 using var done = new ManualResetEvent(false);
                 if (timer.Dispose(done)) done.WaitOne();
             }
+
             try
             {
-                _ssd?.Close(persistLedger);
+                _ssd?.CommitLedger(kind);
             }
-            finally
+            catch (Exception ex)
             {
-                lock (_wheelLock)
+                LogService.DebugFile($"提交 L2 账本时出错：{ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 停机序列 ④b：关容器、清索引、把所有 Slab 归还系统。
+        /// **调用方必须先确认在途命令已全部退出**——这里会把命令正在用的裸指针还给系统。
+        /// </summary>
+        public void Release()
+        {
+            try { _ssd?.Release(); }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"释放 L2 容器时出错：{ex.Message}");
+            }
+
+            lock (_wheelLock)
+            {
+                _blocks.Clear();
+                _nodeChunks.Clear();
+                Array.Fill(_bucketHead, -1);
+                Array.Fill(_bucketTail, -1);
+                _coldHead = _coldTail = _freeNodeHead = -1;
+                _nodeHighWater = 0;
+                lock (_poolLock)
                 {
-                    _blocks.Clear();
-                    _nodeChunks.Clear();
-                    Array.Fill(_bucketHead, -1);
-                    Array.Fill(_bucketTail, -1);
-                    _coldHead = _coldTail = _freeNodeHead = -1;
-                    _nodeHighWater = 0;
-                    lock (_poolLock)
+                    foreach (Slab slab in _slabs)
                     {
-                        foreach (Slab slab in _slabs)
-                        {
-                            NativeMemory.Free((void*)slab.Base);
-                            GC.RemoveMemoryPressure(SLAB_SIZE);
-                            Interlocked.Increment(ref _releasedSlabs);
-                        }
-                        _slabs.Clear();
-                        _currentSlab = null;
-                        Interlocked.Exchange(ref _totalSlots, 0);
-                        Interlocked.Exchange(ref _usedSlots, 0);
+                        NativeMemory.Free((void*)slab.Base);
+                        GC.RemoveMemoryPressure(SLAB_SIZE);
+                        Interlocked.Increment(ref _releasedSlabs);
                     }
-                    Interlocked.Exchange(ref _chainedNodes, 0);
-                    Interlocked.Exchange(ref _cachedBlocks, 0);
+                    _slabs.Clear();
+                    _currentSlab = null;
+                    Interlocked.Exchange(ref _totalSlots, 0);
+                    Interlocked.Exchange(ref _usedSlots, 0);
                 }
+                Interlocked.Exchange(ref _chainedNodes, 0);
+                Interlocked.Exchange(ref _cachedBlocks, 0);
             }
         }
 

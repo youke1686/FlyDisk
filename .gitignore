@@ -8,10 +8,10 @@
 [Pp]ublish/
 TestResults/
 packages/
+Handle2/
 
 Thumbs.db
 Desktop.ini
 
 废/
 演示/
-*.diff

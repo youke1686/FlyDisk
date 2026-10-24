@@ -90,6 +90,7 @@ namespace FlyDisk
         private readonly Timer _statusTimer;
         private readonly ToolStripMenuItem _verifyL2MenuItem;
         private readonly ToolStripMenuItem _reonlineMenuItem;
+        private readonly ToolStripMenuItem _occupancyMenuItem;
         private readonly ToolStripMenuItem _remoteMenuItem;
         private readonly ToolStripMenuItem _languageMenuItem;
         private readonly ToolStripMenuItem _zhLanguageMenuItem;
@@ -154,6 +155,12 @@ namespace FlyDisk
             _reonlineMenuItem = new ToolStripMenuItem(Locale.T("menu.reonline"));
             _reonlineMenuItem.Click += 重新联机源盘ToolStripMenuItem_Click;
             menuStrip1.Items.Add(_reonlineMenuItem);
+
+            // 「占用查询」入口：查出哪几个程序正占着某块联机盘。
+            // **它与加速状态无关**——盘停不下来恰恰是最需要它的时候，所以不做任何置灰。
+            _occupancyMenuItem = new ToolStripMenuItem(Locale.T("menu.occupy"));
+            _occupancyMenuItem.Click += 占用查询ToolStripMenuItem_Click;
+            menuStrip1.Items.Add(_occupancyMenuItem);
 
             // 「远程」入口：与「校验 L2」同构（一个顶层项 = 一个对话框）。
             // 本地加速运行中置灰（三职责互斥）；远程已配对 / 运行中时可用（用户要能查看与断开）。
@@ -269,12 +276,7 @@ namespace FlyDisk
 
         private void 设置ToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            if (IsAnyTargetRunning || HasTargetWork)
-            {
-                MessageBox.Show(Locale.T("main.msg.runningCannotEdit"),
-                    Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
+            // 加速运行中时菜单项已被置灰（见 RefreshStatus），这里不再重复判断。
 
             // 在**副本**上编辑：设置窗口里点「取消」不能改到正在使用的配置对象。
             // L2Disks 是引用类型列表，必须逐项深拷贝，否则 L2 管理里的修改仍会漏回全局配置。
@@ -306,9 +308,8 @@ namespace FlyDisk
             else
             {
                 Log(Locale.T("main.log.configSaveFailed", error));
-                MessageBox.Show(
-                    Locale.T("main.msg.configSaveFailed", error, ServiceConstants.ConfigFilePath),
-                    Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.configSave"),
+                    Locale.T("main.msg.configSaveFailed", error, ServiceConstants.ConfigFilePath));
             }
         }
 
@@ -331,8 +332,7 @@ namespace FlyDisk
         {
             if (IsAnyTargetRunning || HasTargetWork)
             {
-                MessageBox.Show(Locale.T("main.msg.verifyRunningCannot"),
-                    Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.notice.accelerating"), Locale.T("main.msg.verifyRunningCannot"));
                 return;
             }
 
@@ -345,7 +345,7 @@ namespace FlyDisk
                 List<PhysicalDiskInfo> disks = PhysicalDiskHandle.Enumerate();
                 if (disks.Count == 0)
                 {
-                    MessageBox.Show(Locale.T("main.msg.noDisks"), Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.noDisks"), Locale.T("main.msg.noDisks"));
                     return;
                 }
 
@@ -353,8 +353,7 @@ namespace FlyDisk
                 var owners = new HashSet<long>(caches.Where(c => c.Recognized).Select(c => c.OwnerIdentity));
                 if (owners.Count == 0)
                 {
-                    MessageBox.Show(Locale.T("main.msg.verifyNoOwnerDisk"),
-                        Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.noOwnerDisk"), Locale.T("main.msg.verifyNoOwnerDisk"));
                     return;
                 }
 
@@ -363,12 +362,12 @@ namespace FlyDisk
                 {
                     // 容器在、但归属的那块盘不在本机：没接上 / 已在别处联机 / 远程形态（本地校验只支持本地盘）。
                     // 此时**不回退到完整清单**——本机没有任何正确的候选，让用户从盘堆里挑只会挑错。
-                    MessageBox.Show(Locale.T("main.msg.verifyNoOwnerDisk"),
-                        Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.noOwnerDisk"), Locale.T("main.msg.verifyNoOwnerDisk"));
                     return;
                 }
 
-                using var pick = new PickerForm(owned, _config.PhysicalDiskIdentity);
+                using var pick = new PickerForm(owned, _config.PhysicalDiskIdentity,
+                    okTextKey: "selectDisk.ok.verify");
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisk == null) return;
                 target = pick.SelectedDisk;
 
@@ -376,14 +375,13 @@ namespace FlyDisk
                 cache = caches.Find(c => c.Recognized && c.OwnerIdentity == owner);
                 if (cache == null)
                 {
-                    MessageBox.Show(Locale.T("main.msg.verifyNoOwnerDisk"),
-                        Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.noOwnerDisk"), Locale.T("main.msg.verifyNoOwnerDisk"));
                     return;
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show(Locale.T("main.msg.enumerateFailed", ex.Message), Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.enumerateDisk"), Locale.T("main.msg.enumerateFailed", ex.Message));
                 return;
             }
 
@@ -413,8 +411,7 @@ namespace FlyDisk
         {
             if (IsAnyTargetRunning || HasTargetWork)
             {
-                MessageBox.Show(Locale.T("main.msg.reonlineRunningCannot"),
-                    Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.notice.accelerating"), Locale.T("main.msg.reonlineRunningCannot"));
                 return;
             }
 
@@ -425,16 +422,17 @@ namespace FlyDisk
                 List<PhysicalDiskInfo> disks = PhysicalDiskHandle.Enumerate();
                 if (disks.Count == 0)
                 {
-                    MessageBox.Show(Locale.T("main.msg.noDisks"), Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.noDisks"), Locale.T("main.msg.noDisks"));
                     return;
                 }
-                using var pick = new PickerForm(disks, _config.PhysicalDiskIdentity, offlineOnly: true);
+                using var pick = new PickerForm(disks, _config.PhysicalDiskIdentity, offlineOnly: true,
+                    okTextKey: "selectDisk.ok.reonline");
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisk == null) return;
                 picked = pick.SelectedDisk;
             }
             catch (Exception ex)
             {
-                MessageBox.Show(Locale.T("main.msg.enumerateFailed", ex.Message), Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.enumerateDisk"), Locale.T("main.msg.enumerateFailed", ex.Message));
                 return;
             }
 
@@ -449,13 +447,75 @@ namespace FlyDisk
             else
             {
                 Log(Locale.T("main.log.reonlineFailed", error));
-                MessageBox.Show(error, Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Fail(this, Locale.T("dialog.fail.reonline"), error);
             }
 
             RefreshStatus();
         }
 
-        #region 远程
+        /// <summary>
+        /// 「占用查询」：选一块**联机**盘，查出谁正打开着它上面的文件。
+        ///
+        /// 入口有两处，走的是同一套界面：菜单栏（本方法），以及「停止失败」分支框的「检查占用」。
+        /// 加速中的盘在选盘框里会带 `(加速中)` 标注——那其实是它的克隆盘，用户看到的盘符就挂在这块上。
+        /// </summary>
+        private void 占用查询ToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            BeginOccupancyQuery(null);
+        }
+
+        /// <summary>
+        /// 打开占用查询的选盘框并执行。<paramref name="preselectDiskNumber"/> 非空时默认选中该盘
+        /// （停止失败后跳过来用），**仍需用户自己点「开始检查」**。
+        /// </summary>
+        private void BeginOccupancyQuery(int? preselectDiskNumber)
+        {
+            List<PhysicalDiskInfo> disks;
+            try
+            {
+                // 只查联机盘：脱机盘没有可查的打开文件，联机盘才是"盘符挂着、程序能用"的那个状态
+                disks = PhysicalDiskHandle.Enumerate().FindAll(d => d.IsOnline);
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Fail(this, Locale.T("dialog.fail.enumerateDisk"),
+                    Locale.T("main.msg.enumerateFailed", ex.Message));
+                return;
+            }
+
+            if (disks.Count == 0)
+            {
+                Dialogs.Notice(this, Locale.T("dialog.notice.noOnlineDisk"),
+                    Dialogs.Body(Locale.T("main.msg.noOnlineDisks"), Locale.T("occupy.enumerate.connect")));
+                return;
+            }
+
+            // 加速中的盘 = 各会话记录的克隆盘号
+            var accelerated = new List<int>();
+            foreach (Session session in _sessions)
+            {
+                if (!session.Engine.IsRunning) continue;
+                accelerated.AddRange(session.Engine.CloneDiskNumbers);
+            }
+
+            string? identity = null;
+            if (preselectDiskNumber is int number)
+            {
+                PhysicalDiskInfo? target = disks.Find(d => d.DiskNumber == number);
+                identity = target == null ? null : PhysicalDiskHandle.DescribeIdentity(target);
+            }
+
+            PhysicalDiskInfo? picked;
+            using (var pick = new PickerForm(disks, identity ?? string.Empty,
+                       onlineOnly: true, okTextKey: "selectDisk.ok.occupy",
+                       acceleratedDiskNumbers: accelerated))
+            {
+                if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisk == null) return;
+                picked = pick.SelectedDisk;
+            }
+
+            OccupancyQuery.Run(this, picked);
+        }
 
         /// <summary>
         /// 「远程」对话框：**配对关系与监听的唯一管理入口**。
@@ -495,12 +555,8 @@ namespace FlyDisk
         /// </summary>
         private bool ConfirmExperimentalRemote()
         {
-            DialogResult answer = MessageBox.Show(
-                Locale.T("main.msg.experimentalRemote"),
-                Locale.T("dialog.experimental"), MessageBoxButtons.OKCancel, MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2);   // 默认落在"取消"上：误按回车不该让人进到这一步
-
-            return answer == DialogResult.OK;
+            return Dialogs.Proceed(this, Locale.T("dialog.experimental"),
+                Locale.T("main.msg.experimentalRemote"));
         }
 
         /// <summary>【监听方】开放监听。**此时不脱机任何盘**——只有对端点名要某块盘、你点了同意之后才脱机</summary>
@@ -522,7 +578,7 @@ namespace FlyDisk
             catch (Exception ex)
             {
                 _remoteListener = null;
-                MessageBox.Show(Locale.T("main.msg.openRemoteFailed", ex.Message), Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.openRemote"), Locale.T("main.msg.openRemoteFailed", ex.Message));
             }
             RefreshStatus();
         }
@@ -653,12 +709,9 @@ namespace FlyDisk
 
             if (IsAnyTargetRunning || HasTargetWork) return false;
 
-            DialogResult answer = MessageBox.Show(
+            return Dialogs.Confirm(this, Locale.T("dialog.authorizeRemote"),
                 Locale.T("main.msg.authorizeRemote", target.DiskNumber, target.Model,
-                    target.SizeText, target.BytesPerSector, client),
-                Locale.T("dialog.authorizeRemote"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
-
-            return answer == DialogResult.Yes;
+                    target.SizeText, target.BytesPerSector, client));
         }
 
         /// <summary>【监听方】关闭远程服务（**还配对着时拒绝**，与"挂着 iSCSI 就拒绝停止"同源）</summary>
@@ -668,9 +721,8 @@ namespace FlyDisk
 
             if (_peer != null)
             {
-                MessageBox.Show(
-                    Locale.T("main.msg.stillPairedCannotClose", _peer.PeerName),
-                    Locale.T("dialog.closeRejected"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.closeRejected"),
+                    Locale.T("main.msg.stillPairedCannotClose", _peer.PeerName));
                 return;
             }
 
@@ -690,8 +742,7 @@ namespace FlyDisk
         {
             if (!TryParseAddress(address, out string host, out int port))
             {
-                MessageBox.Show(Locale.T("main.msg.badAddressFormat"), Locale.T("dialog.tip"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.notice.badAddress"), Locale.T("main.msg.badAddressFormat"));
                 return;
             }
 
@@ -719,7 +770,7 @@ namespace FlyDisk
                     {
                         _remoteStatus = string.Empty;
                         Log(Locale.T("main.log.pairFailed", ex.Message));
-                        MessageBox.Show(Locale.T("main.msg.pairFailed", ex.Message), Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        Dialogs.Fail(this, Locale.T("dialog.fail.pair"), Locale.T("main.msg.pairFailed", ex.Message));
                         RefreshStatus();
                     }));
                 }
@@ -755,8 +806,7 @@ namespace FlyDisk
         {
             if (IsAnyTargetRunning || HasTargetWork)
             {
-                MessageBox.Show(Locale.T("main.msg.stopBeforeDisconnect"), Locale.T("dialog.tip"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.notice.stopFirst"), Locale.T("main.msg.stopBeforeDisconnect"));
                 return;
             }
 
@@ -800,8 +850,7 @@ namespace FlyDisk
                     {
                         _remoteStatus = Locale.T("main.remote.pairedWith", peer.PeerName);
                         Log(Locale.T("main.log.fetchDisksFailed", ex.Message));
-                        MessageBox.Show(Locale.T("main.msg.fetchDisksFailed", ex.Message), Locale.T("dialog.error"),
-                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        Dialogs.Fail(this, Locale.T("dialog.fail.fetchDisks"), Locale.T("main.msg.fetchDisksFailed", ex.Message));
                         RefreshStatus();
                     }));
                     return;
@@ -819,11 +868,11 @@ namespace FlyDisk
 
             if (disks.Count == 0)
             {
-                MessageBox.Show(Locale.T("main.msg.peerNoDisks"), Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.notice.peerNoDisks"), Locale.T("main.msg.peerNoDisks"));
                 return;
             }
 
-            using var pick = new PickerForm(disks, _remoteDiskIdentity);
+            using var pick = new PickerForm(disks, _remoteDiskIdentity, "selectDisk.ok.start");
             if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedRemoteDisk == null) return;
             RemoteDiskInfo chosen = pick.SelectedRemoteDisk;
 
@@ -847,7 +896,7 @@ namespace FlyDisk
                         {
                             // async void 回调：异常绝不能再往外抛（会走 Application.ThreadException）。
                             Log(Locale.T("main.log.startFailed", ex.Message));
-                            MessageBox.Show(ex.Message, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            Dialogs.Fail(this, Locale.T("dialog.startFailed"), ex.Message);
                         }
                     }));
                 }
@@ -867,7 +916,7 @@ namespace FlyDisk
                         _remoteStartPending = false;
                         _remoteStatus = Locale.T("main.remote.pairedWith", peer.PeerName);
                         Log(Locale.T("main.log.peerRejected", ex.Message));
-                        MessageBox.Show(ex.Message, Locale.T("dialog.remoteStartFailed"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        Dialogs.Fail(this, Locale.T("dialog.remoteStartFailed"), ex.Message);
                         RefreshStatus();
                     }));
                 }
@@ -949,7 +998,7 @@ namespace FlyDisk
                 if (result.Ok) return true;
 
                 Log(Locale.T("main.log.startFailed", result.Message));
-                MessageBox.Show(result.Message, Locale.T("dialog.remoteStartFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.remoteStartFailed"), result.Message);
                 return false;
             }
             catch (Exception ex)
@@ -957,7 +1006,7 @@ namespace FlyDisk
                 // 真异常（例如自动 iSCSI 登录失败、L2 初始化失败）：同样按"启动失败"处理，
                 // 由调用方收回远端服务；异常消息里已带可读的处置建议。
                 Log(Locale.T("main.log.startFailed", ex.Message));
-                MessageBox.Show(ex.Message, Locale.T("dialog.remoteStartFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.remoteStartFailed"), ex.Message);
                 return false;
             }
         }
@@ -1001,8 +1050,6 @@ namespace FlyDisk
             _remoteStatus = Locale.T("main.remote.pairedWith", _peer?.PeerName);
             RefreshStatus();
         }
-
-        #endregion
 
         #endregion
 
@@ -1256,7 +1303,7 @@ namespace FlyDisk
                 List<PhysicalDiskInfo> disks = PhysicalDiskHandle.Enumerate();
                 if (disks.Count == 0)
                 {
-                    MessageBox.Show(Locale.T("main.msg.noDisks"), Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.noDisks"), Locale.T("main.msg.noDisks"));
                     return;
                 }
 
@@ -1271,13 +1318,14 @@ namespace FlyDisk
                     if (number >= 0 && !l2CacheDisks.Contains(number)) l2CacheDisks.Add(number);
                 }
 
-                using var pick = new PickerForm(disks, _config.LastAcceleratedDiskIdentities, l2CacheDisks);
+                using var pick = new PickerForm(disks, _config.LastAcceleratedDiskIdentities, l2CacheDisks,
+                    "selectDisk.ok.start");
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisks.Count == 0) return;
                 picked = pick.SelectedDisks;
             }
             catch (Exception ex)
             {
-                MessageBox.Show(Locale.T("main.msg.enumerateFailed", ex.Message), Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.enumerateDisk"), Locale.T("main.msg.enumerateFailed", ex.Message));
                 return;
             }
 
@@ -1405,9 +1453,8 @@ namespace FlyDisk
             if (incomplete.Count == 0) return true;
 
             Log(Locale.T("main.log.l2IncompleteConfig"));
-            MessageBox.Show(
-                Locale.T("main.msg.l2IncompleteConfig", string.Join(Environment.NewLine, incomplete)),
-                Locale.T("dialog.l2IncompleteConfig"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Dialogs.Notice(this, Locale.T("dialog.l2IncompleteConfig"),
+                Locale.T("main.msg.l2IncompleteConfig", string.Join(Environment.NewLine, incomplete)));
             return false;
         }
 
@@ -1429,8 +1476,7 @@ namespace FlyDisk
             {
                 // 约定：不静默。预检本身出意外 ⇒ 报错并中止（此刻还没动任何盘）
                 Log(Locale.T("main.log.l2PreflightFailed", ex.Message));
-                MessageBox.Show(Locale.T("main.msg.l2PreflightFailed", ex.Message), Locale.T("dialog.error"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.l2Preflight"), Locale.T("main.msg.l2PreflightFailed", ex.Message));
                 return false;
             }
         }
@@ -1491,9 +1537,8 @@ namespace FlyDisk
 
             string detail = string.Join(Environment.NewLine, over);
             Log(Locale.T("main.log.l2SpaceOvercommit", detail));
-            MessageBox.Show(
-                Locale.T("main.msg.l2SpaceOvercommit", detail),
-                Locale.T("dialog.l2OverCapacity"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Dialogs.Notice(this, Locale.T("dialog.l2OverCapacity"),
+                Locale.T("main.msg.l2SpaceOvercommit", detail));
             return false;
         }
 
@@ -1604,10 +1649,12 @@ namespace FlyDisk
         private void ShowStartFailure(IReadOnlyList<string> failures)
         {
             string body = failures.Count == 0
-                ? Locale.T("main.log.startFailed", Locale.T("main.msg.startAllFailed"))
-                : string.Join(Environment.NewLine, failures);
+                ? Locale.T("main.msg.startAllFailed")
+                : Dialogs.Body(Locale.T("main.msg.startFailedSummary"),
+                    string.Join(Environment.NewLine, failures),
+                    Locale.T("main.msg.startFailedClose"));
 
-            MessageBox.Show(body, Locale.T("dialog.startFailed"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Dialogs.Fail(this, Locale.T("dialog.startFailed"), body);
         }
 
         /// <summary>
@@ -1737,12 +1784,11 @@ namespace FlyDisk
                 return true;
             }
 
-            DialogResult answer = MessageBox.Show(
+            int unusedChoice = Dialogs.Choose(this, Locale.T("dialog.l2UnusedLedger"),
                 Locale.T("main.msg.l2UnusedLedger", target.DiskNumber),
-                Locale.T("dialog.l2UnusedLedger"),
-                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                Locale.T("l2.choose.continue"), Locale.T("l2.choose.abort"));
 
-            if (answer != DialogResult.Yes)
+            if (unusedChoice != 0)
             {
                 Log(Locale.T("main.log.l2UnusedLedgerKept"));
                 return false;
@@ -1782,24 +1828,7 @@ namespace FlyDisk
             {
                 if (!config.EnableSsdCache || string.IsNullOrWhiteSpace(config.SsdCachePath)) return true;
 
-                // ① 容器属于这块盘吗？（不是我们的容器 / 换了另一块盘 / 长度连头部都不够）
-                string mismatch = SsdCacheService.DetectLedgerMismatch(config, source);
-                if (mismatch.Length > 0)
-                {
-                    DialogResult answer = MessageBox.Show(
-                        Locale.T("main.msg.l2Mismatch", mismatch),
-                        Locale.T("dialog.l2Mismatch"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
-                        MessageBoxDefaultButton.Button2);
-                    if (answer != DialogResult.Yes)
-                    {
-                        Log(Locale.T("main.log.cancelledL2Mismatch"));
-                        return false;
-                    }
-
-                    Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.mismatchUserReset")));
-                    return ClearLedgerForStart(config);
-                }
-
+                // ① "容器属于哪块盘"不再单独判：缓存目录本身按设备身份散列命名，换盘/换卷时新目录是空的。
                 if (!SsdCacheService.LedgerExists(config)) return true;   // 没有账本：引擎会新建一份空的
 
                 // ② 这份账本可信吗？两种情形都不算：盘本来联机（上次之后可能被写过）、上次没正常关服
@@ -1813,11 +1842,10 @@ namespace FlyDisk
                     if (!localOnlineCheck)
                     {
                         // 远程形态**不支持逐块校验**（要把整个缓存大小的数据从对端传回来），只能清空重建
-                        DialogResult remoteAnswer = MessageBox.Show(
+                        int remoteChoice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsHandle"),
                             Locale.T("main.msg.l2NeedsVerifyRemote", untrusted),
-                            Locale.T("dialog.l2NeedsHandle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
-                            MessageBoxDefaultButton.Button2);
-                        if (remoteAnswer != DialogResult.Yes)
+                            Locale.T("l2.choose.clearAndStart"), Locale.T("l2.choose.abort"));
+                        if (remoteChoice != 0)
                         {
                             Log(Locale.T("main.log.remoteL2MustClear"));
                             return false;
@@ -1827,10 +1855,18 @@ namespace FlyDisk
                         return ClearLedgerForStart(config);
                     }
 
-                    DialogResult answer = MessageBox.Show(
+                    int verifyChoice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"),
                         Locale.T("main.msg.l2NeedsVerify", untrusted),
-                        Locale.T("dialog.l2NeedsVerify"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                    if (answer != DialogResult.Yes)
+                        Locale.T("l2.choose.verify"), Locale.T("l2.choose.clear"), Locale.T("l2.choose.abort"));
+
+                    if (verifyChoice == 2)
+                    {
+                        // 关闭 / Esc 也落在这里：什么都不动，不启动
+                        Log(Locale.T("main.log.abortedL2Verify"));
+                        return false;
+                    }
+
+                    if (verifyChoice == 1)
                     {
                         Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userDeclinedVerify", untrusted)));
                         return ClearLedgerForStart(config);
@@ -1863,8 +1899,7 @@ namespace FlyDisk
             {
                 // 约定：不静默。预检本身出意外 ⇒ **报错中止**（并告诉用户从哪手动清掉）
                 Log(Locale.T("main.log.l2PreflightFailed", ex.Message));
-                MessageBox.Show(Locale.T("main.msg.l2PreflightFailed", ex.Message), Locale.T("dialog.error"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.l2Preflight"), Locale.T("main.msg.l2PreflightFailed", ex.Message));
                 return false;
             }
         }
@@ -1882,7 +1917,7 @@ namespace FlyDisk
             L2CacheInfo cache = SsdCacheService.DescribeL2Cache(config.SsdCachePath, config);
             if (L2Manage.TryClear(cache, out string error)) return true;
 
-            MessageBox.Show(error, Locale.T("dialog.l2Mismatch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Dialogs.Fail(this, Locale.T("dialog.l2Mismatch"), error);
             return false;
         }
 
@@ -1908,9 +1943,8 @@ namespace FlyDisk
             //    必须放在"有没有账本"之前：新建缓存时同样要拦住超限配置。
             if (effectiveSlots < configuredSlots)
             {
-                MessageBox.Show(
-                    Locale.T("main.msg.l2OverCapacity", configuredText, effectiveText, reserveText),
-                    Locale.T("dialog.l2OverCapacity"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.l2OverCapacity"),
+                    Locale.T("main.msg.l2OverCapacity", configuredText, effectiveText, reserveText));
                 Log(Locale.T("main.log.l2OverCapacity", configuredText, effectiveText));
                 return false;
             }
@@ -1924,12 +1958,11 @@ namespace FlyDisk
             string oldText = CapacityText(oldSlots);
             string messageKey = effectiveSlots < oldSlots ? "main.msg.l2ResizeShrink" : "main.msg.l2ResizeGrow";
 
-            DialogResult answer = MessageBox.Show(
+            int resizeChoice = Dialogs.Choose(this, Locale.T("dialog.l2Resize"),
                 Locale.T(messageKey, configuredText, oldText, effectiveText, reserveText),
-                Locale.T("dialog.l2Resize"), MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                Locale.T("l2.choose.zoom"), Locale.T("l2.choose.abort"));
 
-            if (answer != DialogResult.Yes)
+            if (resizeChoice != 0)
             {
                 Log(Locale.T("main.log.cancelledL2Resize"));
                 return false;
@@ -2004,59 +2037,56 @@ namespace FlyDisk
                 // "还有 iSCSI 连接就拒绝停止"的守卫仍在各引擎内部（按自己的端口判连接）。
                 int stoppedCount = 0;
                 bool anyLeftOffline = false;
-                var rejected = new List<string>();
 
                 foreach (Session session in _sessions.ToArray())
                 {
                     if (!session.Engine.IsRunning) continue;
 
                     EngineResult stopped = await Task.Run(session.Engine.Stop);
-                    if (stopped.Ok)
+                    if (!stopped.Ok)
                     {
-                        stoppedCount++;
-                        _sessions.Remove(session);
-                        if (session.Disk != null && !remoteSession)
+                        // **每块失败盘各问一次**：能正常停的就正常停，用户还需要知道是哪块盘出了问题
+                        Log(Locale.T("main.log.stopFailed", DescribeStopFailure(stopped)));
+                        bool forced = await HandleStopFailureAsync(session, stopped, remoteSession);
+                        if (forced)
                         {
-                            if (session.Config.EnableSsdCache)
+                            stoppedCount++;
+                            if (session.Disk != null && !remoteSession) anyLeftOffline = true;
+                        }
+                        continue;
+                    }
+
+                    stoppedCount++;
+                    Log(Locale.T("main.log.stopLedger", session.Disk?.DiskNumber ?? -1,
+                        LedgerText(session.Engine.LastLedgerCommit)));
+                    _sessions.Remove(session);
+                    if (session.Disk != null && !remoteSession)
+                    {
+                        if (session.Config.EnableSsdCache)
+                        {
+                            // 用了 L2：盘必须保持脱机，跨重启的账本才敢采信
+                            anyLeftOffline = true;
+                            Log(Locale.T("main.log.stoppedDiskOffline", session.Disk.DiskNumber));
+                        }
+                        else
+                        {
+                            // 没用 L2：没有"保持脱机"的必要，停止成功就还给系统。
+                            // 只试一次（停止路径的重试只留给 iSCSI 登出）；失败只落主界面日志。
+                            int diskNumber = session.Disk.DiskNumber;
+                            string onlineError = string.Empty;
+                            bool online = await Task.Run(() =>
+                                session.Engine.TryReonlineDisk(diskNumber, out onlineError));
+                            if (online)
                             {
-                                // 用了 L2：盘必须保持脱机，跨重启的账本才敢采信
-                                anyLeftOffline = true;
-                                Log(Locale.T("main.log.stoppedDiskOffline", session.Disk.DiskNumber));
+                                Log(Locale.T("main.log.stoppedDiskAutoOnline", diskNumber));
                             }
                             else
                             {
-                                // 没用 L2：没有"保持脱机"的必要，停止成功就还给系统。
-                                // 只试一次（停止路径的重试只留给 iSCSI 登出）；失败只落主界面日志。
-                                int diskNumber = session.Disk.DiskNumber;
-                                string onlineError = string.Empty;
-                                bool online = await Task.Run(() =>
-                                    session.Engine.TryReonlineDisk(diskNumber, out onlineError));
-                                if (online)
-                                {
-                                    Log(Locale.T("main.log.stoppedDiskAutoOnline", diskNumber));
-                                }
-                                else
-                                {
-                                    anyLeftOffline = true;
-                                    Log(Locale.T("main.log.stoppedDiskAutoOnlineFailed", diskNumber, onlineError));
-                                }
+                                anyLeftOffline = true;
+                                Log(Locale.T("main.log.stoppedDiskAutoOnlineFailed", diskNumber, onlineError));
                             }
                         }
                     }
-                    else
-                    {
-                        rejected.Add(stopped.Message);
-                        Log(Locale.T("main.log.stopFailed", stopped.Message));
-                    }
-                }
-
-                if (rejected.Count > 0)
-                {
-                    // 有会话没停下来：如实弹出来（不然用户只看到按钮弹回来、以为程序卡了），
-                    // 并且**保留还没停下的会话**，让用户处理完占用后能再点一次「停止加速」。
-                    MessageBox.Show(string.Join(Environment.NewLine, rejected), Locale.T("dialog.stopRejected"),
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
                 }
 
                 // 「把盘还给系统」这句只在**本地**形态有意义：远程形态下那块盘在对方机器上，
@@ -2078,7 +2108,7 @@ namespace FlyDisk
                 // 停止会被"还有 iSCSI 连接"拒绝（见 TargetService.Stop），这类拒绝要弹出来，
                 // 否则用户只看到按钮弹回来、以为程序卡了
                 Log(Locale.T("main.log.stopFailed", ex.Message));
-                MessageBox.Show(ex.Message, Locale.T("dialog.stopRejected"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Fail(this, Locale.T("dialog.stopRejected"), ex.Message);
             }
             finally
             {
@@ -2086,6 +2116,73 @@ namespace FlyDisk
                 RefreshStatus();
             }
         }
+
+        /// <summary>
+        /// 停止失败后的三分支：<c>检查占用</c> / <c>强制停止</c> / <c>确认</c>（最右 = 什么都不做）。
+        ///
+        /// 返回 <c>true</c> = 用户选了强制停止且执行成功（调用方据此把会话移出并记"保持脱机"）。
+        /// 关闭对话框（X / Esc）等同「确认」：会话继续运行，盘还在加速。
+        /// </summary>
+        private async Task<bool> HandleStopFailureAsync(Session session, EngineResult failed, bool remoteSession)
+        {
+            string reason = DescribeStopFailure(failed);
+            string head = session.Disk == null || remoteSession
+                ? Locale.T("stop.branch.remoteTarget", reason)
+                : Dialogs.DiskLine(session.Disk.DiskNumber, session.Disk.Model, reason);
+
+            int choice = Dialogs.Choose(this, Locale.T("stop.branch.title"),
+                Dialogs.Body(head, Locale.T("stop.branch.options"), Locale.T("stop.branch.choose")),
+                Locale.T("stop.branch.occupy"),
+                Locale.T("stop.branch.force"),
+                Locale.T("stop.branch.confirm"));
+
+            if (choice == 0)
+            {
+                // 「检查占用」= 打开占用查询的选盘框，默认选中这块盘（加速中时是它的克隆盘）
+                int? preselect = session.Engine.CloneDiskNumbers.Count > 0
+                    ? session.Engine.CloneDiskNumbers[0]
+                    : session.Disk?.DiskNumber;
+                BeginOccupancyQuery(preselect);
+                return false;
+            }
+
+            if (choice != 1) return false;   // 确认：保持现状
+
+            // 强制停止开始时就把出口写进主界面日志：万一某条读写永不返回，用户知道可以结束进程
+            Log(Locale.T("stop.force.logHint"));
+
+            EngineResult forced = await Task.Run(session.Engine.ForceStop);
+            if (!forced.Ok)
+            {
+                Dialogs.Fail(this, Locale.T("stop.fail.title"),
+                    Dialogs.Body(forced.Message, Locale.T("stop.force.failed")));
+                return false;
+            }
+
+            _sessions.Remove(session);
+            Log(Locale.T("main.log.stopForced", session.Disk?.DiskNumber ?? -1,
+                LedgerText(session.Engine.LastLedgerCommit)));
+            return true;
+        }
+
+        /// <summary>把停止失败的原因翻成一句可读的话（分支框正文用）</summary>
+        private static string DescribeStopFailure(EngineResult failed)
+        {
+            return failed.FailureKind switch
+            {
+                StopFailureKind.InitiatorLogoutFailed =>
+                    Locale.T("stop.fail.logoutDetail", failed.LogoutRc),
+                StopFailureKind.ExternalConnections =>
+                    Locale.T("stop.fail.connectionsDetail", failed.Connections),
+                StopFailureKind.InFlightBusy => Locale.T("stop.fail.inflightDetail"),
+                _ => failed.Message,
+            };
+        }
+
+        /// <summary>账本类型的中文说法（日志用）</summary>
+        private static string LedgerText(LedgerCommit kind) => kind == LedgerCommit.Dirty
+            ? Locale.T("stop.ledger.dirty")
+            : Locale.T("stop.ledger.clean");
 
         /// <summary>
         /// 副标题左边缘 = 标题的水平中线。

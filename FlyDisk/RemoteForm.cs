@@ -255,8 +255,7 @@ namespace FlyDisk
                 string address = _txtAddress.Text.Trim();
                 if (address.Length == 0)
                 {
-                    MessageBox.Show(Locale.T("remote.msg.needAddress"), Locale.T("dialog.tip"),
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.addressEmpty"), Locale.T("remote.msg.needAddress"));
                     return;
                 }
                 _config.RemotePeerAddress = address;   // 记住地址（只是输入框的记忆，不等于"保持配对"）

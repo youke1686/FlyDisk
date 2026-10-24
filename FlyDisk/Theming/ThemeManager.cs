@@ -544,6 +544,20 @@ namespace FlyDisk.Theming
         /// 属性号在 Win10 20H1+ 与 Win11 都是 20（更早的预览版是 19），失败时回退试一次。
         /// 取不到 dwmapi（Server Core 之类）时静默放过——标题栏颜色不值得让程序起不来。
         /// </summary>
+        /// <summary>
+        /// 把控件（含它的**原生滚动条**）切成深色变体；浅色主题下什么都不做。
+        ///
+        /// 系统不知道本程序是深色应用，默认给 TextBox / RichTextBox 画的是浅色滚动条——
+        /// 在深色底上就是一道白条。`DarkMode_Explorer` 需要 Windows 10 1809+。
+        /// 调用时机：控件句柄已创建（`OnShown` 或 `OnHandleCreated` 之后）。
+        /// </summary>
+        public static void ApplyDarkScrollbar(Control control)
+        {
+            if (!IsDark || !control.IsHandleCreated) return;
+            try { SetWindowTheme(control.Handle, "DarkMode_Explorer", null); }
+            catch (Exception) { /* 取不到 uxtheme 时保持系统默认，不影响功能 */ }
+        }
+
         private static void ApplyTitleBar(Form form)
         {
             if (!form.IsHandleCreated) return;
@@ -564,6 +578,9 @@ namespace FlyDisk.Theming
 
         [DllImport("dwmapi.dll", PreserveSig = true)]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern int SetWindowTheme(IntPtr hWnd, string? pszSubAppName, string? pszSubIdList);
 
         // ===== ToolStrip 渲染器 =====
 

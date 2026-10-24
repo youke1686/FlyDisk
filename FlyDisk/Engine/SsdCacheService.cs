@@ -337,7 +337,7 @@ namespace FlyDisk.Engine
             catch
             {
                 // 构造失败时对象不会交给 CacheService，必须当场释放容器和锁，允许用户立即重试。
-                Close(persistLedger: false);
+                Release();
                 throw;
             }
         }
@@ -485,62 +485,6 @@ namespace FlyDisk.Engine
             => Math.Clamp(slots / SLOTS_PER_SLAB * SLOTS_PER_SLAB, SLOTS_PER_SLAB, MAX_SLOTS);
 
         /// <summary>
-        /// **只读探测**：上次留下的 L2 容器是否属于**当前这块盘**（设备身份）。
-        ///
-        /// 返回"为什么不能复用"（空串 = 可以复用、或根本没有容器可谈）。**只输出事实、不做任何判定**——
-        /// 判定与"要不要问用户"全部在 UI 的启动前预检里（见 AGENTS.md §2.3 的职责边界）。
-        ///
-        /// **刻意不管的两类**：
-        /// ① "上次没正常关服"（身份戳对不上、索引缺失）——那由 <see cref="LedgerStampMismatch"/> 报；
-        /// ② **容量 / ghost 参数与本次配置不一致**——改为**缩放保留**，其"缩/扩确认"由 UI 预检负责
-        ///    （见 docs/L2容器按需增长与容量缩放_设计.md §4 D6/D7），所以这里不再报。
-        /// 探测自身出意外时**不再"当作无冲突"放过**（约定：不静默）——原样上抛，由 UI 报错中止。
-        /// </summary>
-        public static string DetectLedgerMismatch(DiskConfig config, BlockSourceInfo info)
-        {
-            try
-            {
-                string dir = Path.GetFullPath(config.SsdCachePath).TrimEnd('\\');
-                string containerPath = Path.Combine(dir, ContainerFileName);
-                if (!File.Exists(containerPath)) return string.Empty;   // 首次运行：没有账本可谈
-
-                long identity = ComputeDeviceIdentity(info.Model, info.SerialNumber, info.SizeBytes, info.BytesPerSector);
-
-                byte[] header = new byte[BLOCK_SIZE];
-                using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    if (fs.Length < BLOCK_SIZE)
-                        return Locale.T("engine.l2.containerTooShort", containerPath);
-
-                    fs.ReadExactly(header, 0, BLOCK_SIZE);
-                }
-
-                if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
-                    BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
-                    BitConverter.ToInt32(header, 4) != CONTAINER_VERSION)
-                {
-                    return Locale.T("engine.l2.containerNotOurs", containerPath);
-                }
-
-                if (BitConverter.ToInt64(header, 24) != identity)
-                {
-                    return Locale.T("engine.l2.wrongDisk", info.Model, info.SerialNumber,
-                        ((double)info.SizeBytes / 1024 / 1024 / 1024).ToString("F1"));
-                }
-
-                // **容量不一致不再在这里拦**（见设计文档 §4 D6）：引擎按"已由 UI 确认"执行缩放保留；
-                // "缩 / 扩确认"一并挪到 UI 预检（Form1.PrepareL2BeforeStart）。ghost 参数差异同理静默适配。
-                return string.Empty;
-            }
-            catch (Exception ex)
-            {
-                // 约定：不静默。探测本身出意外时不再"当作无冲突"放过——上抛，由 UI 报错中止。
-                throw new InvalidOperationException(
-                    Locale.T("engine.l2.probeFailed", config.SsdCachePath, ex.Message), ex);
-            }
-        }
-
-        /// <summary>
         /// 缓存目录里是否存在一份**看起来可供校验**的账本（容器与索引都在）。只做存在性判断、不读内容——
         /// 启动流程用它决定"要不要先让用户校验一遍"（盘原本联机时）。
         /// </summary>
@@ -661,7 +605,7 @@ namespace FlyDisk.Engine
 
         /// <summary>
         /// **只读探测**：容器头部记的**槽数**（供 UI 在启动前判断"容量是否变化"，见设计文档 §4 D7）。
-        /// 与 <see cref="DetectLedgerMismatch"/> 同一套头部校验；任何情况下都不写盘。
+        /// 走与装载相同的一套头部校验（魔数 / 版本 / 头部哈希）；任何情况下都不写盘。
         /// </summary>
         /// <returns>读到返回 true；没有容器 / 头部不合法 / 打不开 / 槽数非正 返回 false</returns>
         public static bool TryPeekContainerSlotCount(DiskConfig config, out int slotCount)
@@ -1563,16 +1507,19 @@ namespace FlyDisk.Engine
 
         /// <summary>
         /// 落盘索引快照——**只在停服时调用一次**，运行期一次都不写（见 关于内存缓存的进一步讨论.md §7.6）。
-        /// 之所以敢只在停服写：本次运行若没能走到这里，开机时身份戳对不上，整层缓存自动作废，
-        /// 不会有任何人去读一份过期的账本。写之前会先把数据文件 FlushFileBuffers（见 <see cref="WriteSnapshot"/>）。
+        ///
+        /// <see cref="LedgerCommit.Dirty"/> = 2 秒内没等到在途命令结束：结构照写，但**不碰容器文件**
+        /// （此刻可能还有命令在写它，而 `FileStream` 不是线程安全的），并且把身份戳写成与容器不符，
+        /// 下次启动必然要求校验。见 docs/停机改造与占用查询_施工计划.md §5。
         /// </summary>
-        public void Flush()
+        public void CommitLedger(LedgerCommit kind)
         {
+            if (kind == LedgerCommit.None) return;
             if (_container == null || !_persistLedger) return;
 
             try
             {
-                WriteSnapshot();
+                WriteSnapshot(kind);
             }
             catch (Exception ex)
             {
@@ -1581,13 +1528,16 @@ namespace FlyDisk.Engine
             }
         }
 
-        private void WriteSnapshot()
+        private void WriteSnapshot(LedgerCommit kind)
         {
             long t0 = Environment.TickCount64;
+            bool dirty = kind == LedgerCommit.Dirty;
 
-            // 1) 数据必须先真的落盘。"正常关服"不等于"数据已在盘上"——数据还在系统写缓存里，
-            //    若之后机器掉电，账本就会指向盘上其实没有的块。这一次 FlushFileBuffers 就是为此存在。
-            _container!.Flush(true);
+            // 1) 干净账本必须先把容器数据真正落盘——"正常关服"不等于"数据已在盘上"：数据还在系统写缓存里，
+            //    若之后机器掉电，账本就会指向盘上其实没有的块。
+            //    **脏账本刻意跳过这一步**：那条在途命令可能正在写容器，并发 Flush 会出错；
+            //    而这份账本本来就不可信，容器数据是否已落盘交给下次的逐块校验判定。
+            if (!dirty) _container!.Flush(true);
 
             // 2) 环上跳过空洞：写出去的顺序 = 内存顺序去掉空洞，**相对顺序不变**
             int mCountWrite = 0;
@@ -1619,7 +1569,9 @@ namespace FlyDisk.Engine
                     hw.Write(mCountWrite);
                     hw.Write(_ghostCount);
                     hw.Write(generation);
-                    hw.Write(_containerId);
+                    // 脏账本：故意写成与容器戳必然不等的值（~x 永远不等于 x），
+                    // 下次启动 LedgerStampMismatch 立即判"上次没有正常关服"，要求校验。
+                    hw.Write(dirty ? ~_containerId : _containerId);
                     hw.Write(new byte[INDEX_HEADER_HASH_OFFSET - 60]);   // 保留区
                     hw.Write(Hash(header, 0, INDEX_HEADER_HASH_OFFSET));
                 }
@@ -1655,7 +1607,7 @@ namespace FlyDisk.Engine
             }
 
             _lastFlushMs = Environment.TickCount64 - t0;
-            LogService.DebugFile($"Ssd 索引已刷盘（仅正常关服会走到这里）：M {mCountWrite}、" +
+            LogService.DebugFile($"Ssd 索引已刷盘（{(dirty ? "脏：未等到静止，下次启动要求校验" : "干净")}）：M {mCountWrite}、" +
                 $"G {_ghostCount}、占用 {usedSlotsWrite} 槽、代 {generation}、用时 {_lastFlushMs} ms");
         }
 
@@ -1888,36 +1840,37 @@ namespace FlyDisk.Engine
 
         #region 释放
 
-        public void Dispose() => Close(persistLedger: true);
-
-        /// <summary>仅有序且无故障的停止提交账本；异常停止保留不匹配的身份戳</summary>
-        public void Close(bool persistLedger)
+        /// <summary>
+        /// `IDisposable` 兜底：先尝试提交干净账本，再释放容器。正常停服**不**走这里
+        /// （停机序列显式分开调用 <see cref="CommitLedger"/> 与 <see cref="Release"/>）。
+        /// </summary>
+        public void Dispose()
         {
-            try
-            {
-                if (persistLedger) Flush();
-            }
+            CommitLedger(LedgerCommit.Clean);
+            Release();
+        }
+
+        /// <summary>
+        /// 释放容器与目录锁。**必须等所有在途命令真正退出后调用**（停机序列的 ④b）：
+        /// 容器 `FileStream` 会被并发写，提前 Dispose 会让命令撞上已释放的句柄。
+        /// 账本提交是另一件事，见 <see cref="CommitLedger"/>。
+        /// </summary>
+        public void Release()
+        {
+            try { _container?.Dispose(); }
             catch (Exception ex)
             {
-                LogService.DebugFile($"SSD 二级缓存关闭时刷盘/关闭失败：{ex.Message}");
+                LogService.DebugFile($"SSD 二级缓存：关闭容器失败：{ex.Message}");
             }
             finally
             {
-                try { _container?.Dispose(); }
+                _container = null;
+                try { _lockFile?.Dispose(); }
                 catch (Exception ex)
                 {
-                    LogService.DebugFile($"SSD 二级缓存：关闭容器失败：{ex.Message}");
+                    LogService.DebugFile($"SSD 二级缓存：关闭目录锁失败：{ex.Message}");
                 }
-                finally
-                {
-                    _container = null;
-                    try { _lockFile?.Dispose(); }
-                    catch (Exception ex)
-                    {
-                        LogService.DebugFile($"SSD 二级缓存：关闭目录锁失败：{ex.Message}");
-                    }
-                    finally { _lockFile = null; }
-                }
+                finally { _lockFile = null; }
             }
         }
 

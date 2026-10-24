@@ -93,6 +93,12 @@ namespace FlyDisk
         private readonly Button _ok = new();
         private readonly Button _cancel = new();
 
+        /// <summary>确定按钮的文案键（默认 `common.ok`；占用查询用 `selectDisk.ok.occupy`）</summary>
+        private string _okTextKey = "common.ok";
+
+        /// <summary>正在加速的盘号（克隆盘），显示时追加 `(加速中)`</summary>
+        private readonly HashSet<int> _acceleratedDiskNumbers = new();
+
         /// <summary>
         /// 信息区是否已经可以写入了（句柄就绪 + 主题上色完毕）。
         /// 构造期控件还没有句柄，`RichTextBox` 的选色 / 追加都落不下去，此时写只会得到错色或空内容；
@@ -125,12 +131,17 @@ namespace FlyDisk
         /// 该盘会被标成不能加速——自己给自己加速是纯写放大，引擎启动时也会拒（见启动校验 ⑥）。
         /// </param>
         public PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, string identityToPreselect,
-            bool offlineOnly = false, int l2CacheDiskNumber = -1)
+            bool offlineOnly = false, int l2CacheDiskNumber = -1,
+            bool onlineOnly = false, string okTextKey = "common.ok",
+            IReadOnlyCollection<int>? acceleratedDiskNumbers = null)
             : this(disks,
                    identityToPreselect.Length > 0 ? new List<string> { identityToPreselect } : new List<string>(),
                    offlineOnly,
                    l2CacheDiskNumber >= 0 ? new[] { l2CacheDiskNumber } : Array.Empty<int>(),
-                   multiSelect: false)
+                   multiSelect: false,
+                   onlineOnly,
+                   okTextKey,
+                   acceleratedDiskNumbers)
         {
         }
 
@@ -142,17 +153,28 @@ namespace FlyDisk
         /// <param name="identitiesToPreselect">上次加速过的盘（配置里的身份串），用来自动勾选</param>
         /// <param name="l2CacheDiskNumbers">配置里各 L2 缓存目录所在的物理盘号（空 = 未启用 / 查不到）；这些盘会被标成不能加速</param>
         public PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
-            IReadOnlyCollection<int> l2CacheDiskNumbers)
-            : this(disks, identitiesToPreselect, offlineOnly: false, l2CacheDiskNumbers, multiSelect: true)
+            IReadOnlyCollection<int> l2CacheDiskNumbers, string okTextKey = "common.ok")
+            : this(disks, identitiesToPreselect, offlineOnly: false, l2CacheDiskNumbers, multiSelect: true,
+                   onlineOnly: false, okTextKey, acceleratedDiskNumbers: null)
         {
         }
 
-        /// <summary>唯一的实现体：本地清单 + 预选（单个或多选）+ 是否只列脱机盘 + 是否多选</summary>
+        /// <summary>唯一的实现体：本地清单 + 预选（单个或多选）+ 只列脱机/只列联机 + 是否多选</summary>
         private PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
-            bool offlineOnly, IReadOnlyCollection<int> l2CacheDiskNumbers, bool multiSelect)
+            bool offlineOnly, IReadOnlyCollection<int> l2CacheDiskNumbers, bool multiSelect,
+            bool onlineOnly, string okTextKey, IReadOnlyCollection<int>? acceleratedDiskNumbers)
             : this(offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local", multiSelect)
         {
-            _emptyTextKey = offlineOnly ? "selectDisk.noOfflineDisks" : "selectDisk.noDisks";
+            _okTextKey = okTextKey;
+            // 基类构造里已经按默认键设过一次，这里覆盖成调用方要的文案
+            _ok.Text = Locale.T(_okTextKey);
+            if (acceleratedDiskNumbers != null)
+            {
+                foreach (int number in acceleratedDiskNumbers) _acceleratedDiskNumbers.Add(number);
+            }
+            _emptyTextKey = offlineOnly ? "selectDisk.noOfflineDisks"
+                : onlineOnly ? "selectDisk.noOnlineDisks"
+                : "selectDisk.noDisks";
             foreach (int number in l2CacheDiskNumbers)
             {
                 if (number >= 0) _l2CacheDiskNumbers.Add(number);
@@ -165,9 +187,11 @@ namespace FlyDisk
             {
                 PhysicalDiskInfo info = disks[i];
                 if (offlineOnly && info.IsOnline) continue;   // 只列脱机盘：联机盘没什么可"重新联机"的
+                if (onlineOnly && !info.IsOnline) continue;   // 只列联机盘：占用查询对脱机盘没有意义
 
-                // offlineOnly（重新联机）模式不做任何"能不能加速"的判定：系统盘恰恰是最需要联机回来的那块
-                List<string> blockReasons = offlineOnly
+                // offlineOnly（重新联机）/ onlineOnly（占用查询）模式不做任何"能不能加速"的判定：
+                // 系统盘恰恰是最需要联机回来的那块；占用查询本来就不是加速。
+                List<string> blockReasons = offlineOnly || onlineOnly
                     ? new List<string>()
                     : BlockReasons(info, _l2CacheDiskNumbers, _pageFileDiskNumbers);
 
@@ -187,7 +211,10 @@ namespace FlyDisk
                         info.DiskNumber,
                         info.Model.Length > 0 ? info.Model : Locale.T("selectDisk.modelUnknown"),
                         info.SizeText,
-                        FormatDriveSlot(info)),
+                        FormatDriveSlot(info))
+                        + (_acceleratedDiskNumbers.Contains(info.DiskNumber)
+                            ? Locale.T("selectDisk.item.accelerating")
+                            : string.Empty),
                     Detail = detail
                 });
 
@@ -218,9 +245,13 @@ namespace FlyDisk
         /// <summary>【远程形态】列出**对端**磁盘</summary>
         /// <param name="disks">对端刚才报过来的清单</param>
         /// <param name="identityToPreselect">上次用的那块对端盘（若这一轮还在，就默认选中它）</param>
-        public PickerForm(IReadOnlyList<RemoteDiskInfo> disks, string identityToPreselect)
+        public PickerForm(IReadOnlyList<RemoteDiskInfo> disks, string identityToPreselect,
+            string okTextKey = "common.ok")
             : this("selectDisk.title.remote")
         {
+            _okTextKey = okTextKey;
+            _ok.Text = Locale.T(_okTextKey);
+
             int preselect = -1;
             for (int i = 0; i < disks.Count; i++)
             {
@@ -305,7 +336,7 @@ namespace FlyDisk
             _detail.BorderStyle = BorderStyle.None;
             _detail.TabStop = false;
 
-            _ok.Text = Locale.T("common.ok");
+            _ok.Text = Locale.T(_okTextKey);
             _ok.Location = new Point(376, 316);
             _ok.Size = new Size(84, 28);
             _ok.Click += (s, e) => Accept();

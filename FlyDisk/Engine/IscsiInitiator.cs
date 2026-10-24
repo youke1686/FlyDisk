@@ -180,6 +180,9 @@ namespace FlyDisk.Engine
         /// <summary>当前是否有一条由本对象建立的会话（供界面/日志判断）</summary>
         public bool IsMounted => _hasSession;
 
+        /// <summary>最近一次 <see cref="Disconnect"/> 里 `LogoutIScsiTarget` 的返回码（0 = 成功）</summary>
+        public uint LastLogoutRc { get; private set; }
+
         #endregion
 
         #region 挂载
@@ -263,6 +266,7 @@ namespace FlyDisk.Engine
                 try
                 {
                     uint rc = LogoutIScsiTarget(ref id);
+                    LastLogoutRc = rc;
                     loggedOut = rc == ERROR_SUCCESS;
                     LogService.DebugFile(
                         $"iSCSI initiator: Logout rc=0x{rc:X8}, session={SessionText}");

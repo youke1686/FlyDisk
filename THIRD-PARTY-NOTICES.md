@@ -29,6 +29,18 @@
 
 ---
 
+## 一之二、并入的源码（非独立库）
+
+| 组件 | 版本 / 来源 | 在本项目中的用途 | 许可证 | 许可证文本 |
+| --- | --- | --- | --- | --- |
+| Handle2 | https://github.com/PolarGoose/Handle2 （2022） | 句柄表枚举与对象名/类型查询，改编后放在 `FlyDisk\Engine\HandleScan\`（`NtDll.cs` / `WinApi.cs` / `ProcessUtils.cs` / `HandleInfoRetriever.cs`） | MIT | `Handle2-LICENSE-MIT.txt` |
+
+**版权声明**：Copyright (c) 2022 PolarGoose
+
+**改动说明**：只调整了命名空间与文件布局；删除了 CLI 外壳、盘符转换器与模块扫描；过滤判据改为"句柄原始设备路径是否以目标盘的卷前缀开头"，并加入取消与进度回调。原实现的 `Watchdog` / `WorkerThreadWithDeadLockDetection` 未采用（它会留下无法终止的线程）。
+
+---
+
 ## 二、随程序分发的资源
 
 | 资源 | 用途 | 许可证 | 许可证文本 |

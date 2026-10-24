@@ -119,12 +119,12 @@ namespace FlyDisk
             if (dirs.Count == 0) return true;
 
             string list = string.Join(Environment.NewLine, dirs);
-            DialogResult answer = MessageBox.Show(
+            int legacyChoice = Dialogs.Choose(null, Locale.T("dialog.legacyL2Found"),
                 Locale.T("main.msg.legacyL2Found", list),
-                Locale.T("dialog.legacyL2Found"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button1);
+                Locale.T("l2.choose.deleteAndStart"), Locale.T("l2.choose.exit"));
 
-            if (answer != DialogResult.Yes) return false;
+            // 关闭 / Esc 与「退出程序」同义：两个分支都会改变状态，最保守的是"一个文件都不动"
+            if (legacyChoice != 0) return false;
 
             var failed = new List<string>();
             foreach (string dir in dirs)
@@ -139,10 +139,9 @@ namespace FlyDisk
             if (failed.Count > 0)
             {
                 LogService.DebugFile($"删除旧 L2 缓存失败：{string.Join(" | ", failed)}");
-                MessageBox.Show(
+                Dialogs.Fail(null, Locale.T("dialog.fail.deleteLegacyL2"),
                     Locale.T("main.msg.legacyL2DeleteFailed",
-                        string.Join(Environment.NewLine + Environment.NewLine, failed)),
-                    Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        string.Join(Environment.NewLine + Environment.NewLine, failed)));
             }
             else
             {
@@ -435,8 +434,7 @@ namespace FlyDisk
             }
             catch (Exception ex)
             {
-                MessageBox.Show(Locale.T("l2m.scanFailed", ex.Message), Locale.T("dialog.error"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Fail(this, Locale.T("dialog.fail.scanL2"), Locale.T("l2m.scanFailed", ex.Message));
                 caches = new List<L2CacheInfo>();
             }
 
@@ -767,8 +765,7 @@ namespace FlyDisk
                 string.Equals(other.Data.DiskIdentity, choice.Identity, StringComparison.Ordinal));
             if (duplicate)
             {
-                MessageBox.Show(this, Locale.T("l2m.msg.duplicateDisk"), Locale.T("dialog.tip"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Notice(this, Locale.T("dialog.notice.duplicateDisk"), Locale.T("l2m.msg.duplicateDisk"));
 
                 DiskChoice? previous = row.DiskIdentity.Length > 0
                     ? _diskChoices.Find(c => string.Equals(c.Identity, row.DiskIdentity, StringComparison.Ordinal))
@@ -930,11 +927,8 @@ namespace FlyDisk
             if (view == null) return;
             Row row = view.Data;
 
-            DialogResult answer = MessageBox.Show(
-                Locale.T("l2m.deleteConfirm", Describe(row)),
-                Locale.T("l2m.delete"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2);
-            if (answer != DialogResult.Yes) return;
+            if (!Dialogs.Confirm(this, Locale.T("l2m.delete"),
+                    Locale.T("l2m.deleteConfirm", Describe(row)))) return;
 
             // 文件删除**延后到「确定」**：这样「取消」不会已经删掉东西
             if (row.CacheDirectory.Length > 0 && Directory.Exists(row.CacheDirectory))
@@ -964,16 +958,13 @@ namespace FlyDisk
             Row row = view.Data;
             if (row.CacheDirectory.Length == 0 || !Directory.Exists(row.CacheDirectory)) return;
 
-            DialogResult answer = MessageBox.Show(
-                Locale.T("l2m.clearConfirm", Describe(row)),
-                Locale.T("l2m.clearContent"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2);
-            if (answer != DialogResult.Yes) return;
+            if (!Dialogs.Confirm(this, Locale.T("l2m.clearContent"),
+                    Locale.T("l2m.clearConfirm", Describe(row)))) return;
 
             L2CacheInfo cache = SsdCacheService.DescribeL2Cache(row.CacheDirectory, _config);
             if (!L2Manage.TryClear(cache, out string error))
             {
-                MessageBox.Show(error, Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Fail(this, Locale.T("dialog.fail.clearCache"), error);
                 return;
             }
 
@@ -1034,16 +1025,14 @@ namespace FlyDisk
             {
                 if (!Directory.Exists(dir))
                 {
-                    MessageBox.Show(Locale.T("l2m.openDirFailed", dir), Locale.T("dialog.error"),
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Fail(this, Locale.T("dialog.fail.openDir"), Locale.T("l2m.openDirFailed", dir));
                     return;
                 }
                 Process.Start(new ProcessStartInfo("explorer.exe", $"\"{dir}\"") { UseShellExecute = true });
             }
             catch (Exception ex)
             {
-                MessageBox.Show(Locale.T("l2m.openDirFailed", ex.Message), Locale.T("dialog.error"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Dialogs.Fail(this, Locale.T("dialog.fail.openDir"), Locale.T("l2m.openDirFailed", ex.Message));
             }
         }
 
@@ -1066,15 +1055,13 @@ namespace FlyDisk
                 // 停用的行只保留配置，不参与本次的上限校验（重新启用时启动前会再校验）
                 if (enabled && volume.Length > 0 && (gib < 1 || gib > 64))
                 {
-                    MessageBox.Show(Locale.T("l2m.msg.limitRange", Describe(row)), Locale.T("dialog.tip"),
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.limitRange"), Locale.T("l2m.msg.limitRange", Describe(row)));
                     return;
                 }
 
                 if (result.Exists(e => string.Equals(e.DiskIdentity, row.DiskIdentity, StringComparison.Ordinal)))
                 {
-                    MessageBox.Show(Locale.T("l2m.msg.duplicateDisk"), Locale.T("dialog.tip"),
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Notice(this, Locale.T("dialog.notice.duplicateDisk"), Locale.T("l2m.msg.duplicateDisk"));
                     return;
                 }
 
@@ -1115,10 +1102,9 @@ namespace FlyDisk
                     long budget = free - SsdCacheService.KeepFreeBytes + used;
                     if (configured > budget)
                     {
-                        MessageBox.Show(
+                        Dialogs.Notice(this, Locale.T("dialog.notice.volumeFull"),
                             Locale.T("l2m.msg.volumeOverLimit", group.Key,
-                                FormatBytes(configured), FormatBytes(Math.Max(0, budget))),
-                            Locale.T("dialog.tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                FormatBytes(configured), FormatBytes(Math.Max(0, budget))));
                         return;
                     }
                 }
@@ -1134,7 +1120,7 @@ namespace FlyDisk
                 L2CacheInfo cache = SsdCacheService.DescribeL2Cache(dir, _config);
                 if (!L2Manage.TryClear(cache, out string error))
                 {
-                    MessageBox.Show(error, Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Dialogs.Fail(this, Locale.T("dialog.fail.clearCache"), error);
                     return;
                 }
             }

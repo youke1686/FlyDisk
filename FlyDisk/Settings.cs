@@ -247,8 +247,8 @@ namespace FlyDisk
         {
             if (HelpDocument.Open()) return;
 
-            MessageBox.Show(string.Format(Locale.T("settings.msg.docsOpenFailed"), HelpDocument.FilePath),
-                Locale.T("dialog.error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Dialogs.Fail(this, Locale.T("dialog.fail.openDocs"),
+                string.Format(Locale.T("settings.msg.docsOpenFailed"), HelpDocument.FilePath));
         }
 
         private void btnSave_Click(object sender, EventArgs e)

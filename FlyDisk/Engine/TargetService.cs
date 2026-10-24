@@ -61,19 +61,34 @@ namespace FlyDisk.Engine
 
         private CacheService? _cache;
         private CachedPhysicalDisk? _disk;
+
+        /// <summary>
+        /// 本次会话登录后新出现的克隆盘号（iSCSI 会话枚举出来的那些盘）。
+        /// 用途：占用查询的选盘框标注"(加速中)"；强制停止后"重新联机"的守卫（同签名双盘）。
+        /// 停止时清空。
+        /// </summary>
+        private readonly List<int> _cloneDiskNumbers = new();
+
+        /// <summary>克隆盘号（未加速 / 已停止时为空）</summary>
+        public IReadOnlyList<int> CloneDiskNumbers => _cloneDiskNumbers;
         private ISCSITarget? _target;
         private ISCSIServer? _server;
         private readonly object _lifecycleLock = new();
         private int _cleanupPending;
 
         /// <summary>
-        /// 停服等待在途命令退出时，后台最多再等多久（毫秒）。
+        /// 关闭命令入口后，判定"是否还有在途命令"的等待上限（毫秒）。
         ///
-        /// 超时进后台之后**不能无限等**：只要有一条命令永不返回（盘挂死 / iSCSI 会话僵住），
-        /// <see cref="IsStopping"/> 就会永久为真，用户再也启动不了、也联不了盘，只能重启进程。
-        /// 给足这个上限是为了让"只是慢"的命令正常收尾，只有真挂死才走到强制释放。
+        /// 它**只是一个判据**：等不到就落脏账本，然后继续等——真正的资源释放（④b/⑤）永远排在
+        /// "真正空闲"之后，没有超时能越过它。见 docs/停机改造与占用查询_施工计划.md §4。
         /// </summary>
-        private const int CleanupWaitLimitMs = 60000;
+        private const int StopIdleProbeMs = 2000;
+
+        /// <summary>
+        /// 无限期等待在途命令时，每隔多久往诊断日志里写一行"仍在等待"。
+        /// 只影响日志，不影响等待本身。
+        /// </summary>
+        private const int IdleLogIntervalMs = 60000;
 
         /// <summary>
         /// 发起端：target 起来之后自动把盘挂回系统视野、停止时自动摘除（见 后续待办.md 待办 3）。
@@ -91,6 +106,9 @@ namespace FlyDisk.Engine
 
         /// <summary>停服超时后仍有命令在途，后台持有资源直到命令退出；期间禁止重启或联机</summary>
         public bool IsStopping => Volatile.Read(ref _cleanupPending) != 0;
+
+        /// <summary>上一次停止提交的账本类型（供界面在日志里写"干净 / 脏"）</summary>
+        public LedgerCommit LastLedgerCommit { get; private set; }
 
         public DiskConfig Config => _config;
 
@@ -352,15 +370,17 @@ namespace FlyDisk.Engine
         /// 只在**正常停止**用：关机路径（<see cref="StopForShutdownCore"/>）仍只试一次，
         /// 避免拖慢关机。3 次都失败时保持原行为——后续的连接守卫会拒绝停止。
         /// </summary>
-        private void DisconnectInitiatorWithRetry()
+        /// <returns>是否已把自动挂载的会话摘掉（<c>false</c> = 三次都失败）</returns>
+        private bool DisconnectInitiatorWithRetry()
         {
             const int attempts = 3;
             for (int attempt = 0; attempt < attempts; attempt++)
             {
                 if (attempt > 0) Thread.Sleep(500);
-                if (_initiator.Disconnect()) return;
+                if (_initiator.Disconnect()) return true;
                 LogService.DebugFile($"停止加速：iSCSI 会话登出失败（第 {attempt + 1}/{attempts} 次）");
             }
+            return false;
         }
 
         private EngineResult StopRunningCore()
@@ -375,7 +395,7 @@ namespace FlyDisk.Engine
             //    还挂着这块盘"本身，登出会让设备从设备栈安全移除，盘自然消失。
             //    摘完等 TCP 连接真正从 ESTABLISHED 列表里消失，再判有没有**别的**连接。
             //    登出失败时按 0s / 0.5s / 1s 重试 3 次（登出失败通常是设备暂时还被占用）。
-            DisconnectInitiatorWithRetry();
+            bool logoutOk = DisconnectInitiatorWithRetry();
             WaitForAutoConnectionGone();
 
             // 拒绝的理由：停止会把盘从**正在使用它的文件系统**脚下抽走（target 下线 + 关句柄 + 盘保持脱机），
@@ -384,7 +404,22 @@ namespace FlyDisk.Engine
             int connections = GetActiveConnectionCount();
             if (connections > 0)
             {
-                return EngineResult.Reject(Locale.T("main.msg.iscsiDisconnectFailed"));
+                // 两种截然不同的原因，界面要分开说：
+                // ① 本程序自己的会话登不出去（设备还被占用）——带登出返回码；
+                // ② 另有发起程序挂着这块盘（用户手动挂的）——带连接数。
+                return logoutOk
+                    ? EngineResult.RejectStop(StopFailureKind.ExternalConnections,
+                        Locale.T("stop.fail.connections"), connections, 0)
+                    : EngineResult.RejectStop(StopFailureKind.InitiatorLogoutFailed,
+                        Locale.T("stop.fail.logout"), connections, _initiator.LastLogoutRc);
+            }
+
+            // **关闭入口之前**先确认没有在途命令：不空闲就直接判失败。
+            // 此刻 Close() 还没调用，盘与缓存都保持原样——"停止失败 = 什么都没动"才成立。
+            if (_disk != null && !_disk.WaitForIdle(StopIdleProbeMs))
+            {
+                return EngineResult.RejectStop(StopFailureKind.InFlightBusy,
+                    Locale.T("stop.fail.inflight"), connections, 0);
             }
 
             StopCore(restoreDeviceState: false);
@@ -421,17 +456,12 @@ namespace FlyDisk.Engine
                 bool orderlyUnmount = !_initiator.IsMounted;
 
                 // 无论摘没摘干净，都走完整收尾：停 target（中止服务、掐断所有会话）→ 关 LUN 后端 →
-                // 等在途命令跑完 → 冻结并落 L2 账本 → 关句柄（盘保持脱机）。
+                // 判空闲（超时落脏账本）→ 等真正空闲 → 释放 → 关句柄（盘保持脱机）。
                 StopCore(restoreDeviceState: false);
 
-                if (IsStopping)
-                {
-                    LogService.DebugFile("shutdown stop: in-flight IO did not finish; L2 ledger not committed");
-                    return false;
-                }
                 LogService.DebugFile(orderlyUnmount
-                    ? "shutdown stop: orderly stop done; healthy L2 ledger commit attempted"
-                    : "shutdown stop: forced stop (initiator logout failed); healthy L2 ledger commit attempted");
+                    ? $"shutdown stop: orderly stop done; ledger={LastLedgerCommit}"
+                    : $"shutdown stop: forced stop (initiator logout failed); ledger={LastLedgerCommit}");
                 return true;
             }
             catch (Exception ex)
@@ -440,6 +470,38 @@ namespace FlyDisk.Engine
                 LogService.DebugFile($"shutdown stop failed: {ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 【强制停止】不管前端、不看连接，直接掐断并收尾。
+        ///
+        /// 与 <see cref="Stop"/> 的差别只有一处：不做连接守卫、不做空闲预检。收尾链完全相同，
+        /// 所以 2 秒内没等到静止时会落一份**脏账本**，下次启动要求校验。
+        ///
+        /// 语义上它不危险：源盘一直在本程序独占手里、写路径是写透传，L2 内容与源盘一致；
+        /// 唯一代价是 Windows 侧可能有未下发的写丢失（等价于拔 U 盘）。
+        /// **完成后盘保持脱机，不自动联机**。
+        /// </summary>
+        public EngineResult ForceStop()
+        {
+            lock (_lifecycleLock) return ForceStopCore();
+        }
+
+        private EngineResult ForceStopCore()
+        {
+            if (!IsRunning) return EngineResult.Success;
+
+            TraceSourceDiskAttributes();
+            StopCore(restoreDeviceState: false);
+
+            // ⑥ 登出 / 撤门户：尽力而为，放到后台，失败只落诊断日志（不阻塞停止返回）
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                try { _initiator.Disconnect(); }
+                catch (Exception ex) { LogService.DebugFile($"强制停止：后台摘除 iSCSI 会话失败：{ex.Message}"); }
+            });
+
+            return EngineResult.Success;
         }
 
         /// <summary>
@@ -494,11 +556,22 @@ namespace FlyDisk.Engine
             return PhysicalDiskHandle.TryOnline(diskNumber, out error);
         }
 
+        /// <summary>
+        /// 停机序列的唯一实现（见 docs/停机改造与占用查询_施工计划.md §4）：
+        ///
+        /// ① 停 target → ② 关 LUN 后端（fence）→ ③ 判空闲（2 秒）→ ④a 提交账本（干净/脏）→
+        /// ④b 释放（等真正空闲之后）→ ⑤ 关源盘句柄。
+        ///
+        /// **④b 与 ⑤ 必须完整执行到底**：一旦开始就无限期等下去，不设超时、不跳过、不提前返回。
+        /// 原"60 秒到点强制释放"已删除——那条路会在命令仍在跑时释放 Slab 与句柄，属于堆破坏。
+        ///
+        /// 等待是**内联**的：调用方本来就在后台线程上（`Form1.StopTarget` 的 `Task.Run`），
+        /// 不再另起收尾线程。因此会话在收尾期间仍留在 <c>_sessions</c> 里，守卫与端口分配天然正确。
+        /// </summary>
         private void StopCore(bool restoreDeviceState)
         {
             // ⓪ 自动挂载会话由调用方在进入 StopCore 之前摘除：
             //    StopRunningCore 会按 0s / 0.5s / 1s 重试 3 次，StopForShutdownCore 只试一次。
-            //    这里不能再补一次，否则正常停止的总尝试次数会变成 4 次。
 
             // ① 先停 target：不再接受新命令、断开会话
             try
@@ -510,78 +583,84 @@ namespace FlyDisk.Engine
                 LogService.DebugFile($"停止 iSCSI 服务端时出错（继续收尾）：{ex.Message}");
             }
 
-            // ①′ 立刻关上 LUN 后端：库里 target 的命令队列**没有排空手段**，队列尾巴上的命令会在
-            //     下面几步（关句柄、写账本）之后才被执行。让它们撞上"目标已停止"的 IO 错误，
-            //     比让它们碰到已释放的句柄（ObjectDisposedException 会把工作线程带走）安全得多。
+            // ② 立刻关上 LUN 后端：库里 target 的命令队列**没有排空手段**，队列尾巴上的命令会在
+            //    下面几步（关句柄、写账本）之后才被执行。让它们撞上"目标已停止"的 IO 错误，
+            //    比让它们碰到已释放的句柄（ObjectDisposedException 会把工作线程带走）安全得多。
             _disk?.Close();
 
             CachedPhysicalDisk? disk = _disk;
             CacheService? cache = _cache;
             PhysicalDiskHandle? device = _device;
-            bool idle = disk == null || disk.WaitForIdle(2000);
 
             _server = null;
             _target = null;
             _disk = null;
-
             _cache = null;
 
-            // ④ 最后放块源。
-            // **本地形态**：关盘（并按需恢复联机）——句柄的生命周期就绑在 target 上。
-            // **远程形态**：**这里不碰块源**！"停止加速"只结束 iSCSI 这一层，**配对与连接必须保留**
-            // （用户要能立刻再启动、或换另一块对端盘）。协议客户端的生命周期归「断开配对」管
-            // （见 Form1.DisconnectRemote）；顺手 `EndService()` 通知对端收回盘也由 Form1 负责。
+            // 远程形态：**这里不碰块源**——"停止加速"只结束 iSCSI 这一层，配对与连接必须保留。
             _source = null;
             _sourceInfo = null;
             _device = null;
+            _cloneDiskNumbers.Clear();
 
-            if (!idle)
+            // ③ 判空闲：只用于决定账本是干净还是脏，不是等待的终点
+            bool idle = disk == null || disk.WaitForIdle(StopIdleProbeMs);
+            LedgerCommit commit = !idle && cache != null ? LedgerCommit.Dirty
+                : cache != null ? LedgerCommit.Clean
+                : LedgerCommit.None;
+            LastLedgerCommit = commit;
+
+            if (commit == LedgerCommit.Dirty)
             {
-                // 既不能写可信账本，也不能释放正在被命令使用的内存/句柄。
-                // 后台等待不改变远程的沉默等待语义；真正结束后才回收，期间挡住新启动。
-                Volatile.Write(ref _cleanupPending, 1);
-                LogService.DebugFile("等待在途 SCSI 命令超时（2 秒）；跳过 L2 账本提交，等待命令退出后释放资源");
-                new Thread(() =>
-                {
-                    try
-                    {
-                        if (!disk!.WaitForIdle(CleanupWaitLimitMs))
-                        {
-                            // 强制释放的前提是"再等也不会好"：打到日志里，便于事后分辨这一次是正常收尾还是被放弃
-                            LogService.DebugFile(
-                                $"在途 SCSI 命令在 {CleanupWaitLimitMs} ms 内仍未退出，放弃等待并强制释放（可能有命令仍在途）");
-                        }
-                        ReleaseStoppedResources(cache, device, restoreDeviceState, persistLedger: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogService.DebugFile($"停服后台收尾失败：{ex.Message}");
-                    }
-                    finally { Volatile.Write(ref _cleanupPending, 0); }
-                }) { IsBackground = true, Name = "FlyDisk.StopCleanup" }.Start();
-                return;
+                LogService.DebugFile("停止：在途命令 2 秒内未退出，本次账本将标记为脏（下次启动要求校验）");
             }
 
-            ReleaseStoppedResources(cache, device, restoreDeviceState, persistLedger: true);
-        }
-
-        private static void ReleaseStoppedResources(CacheService? cache, PhysicalDiskHandle? device,
-            bool restoreDeviceState, bool persistLedger)
-        {
+            // ④a 提交账本：脏路径只写 index.bin，不碰容器
+            Volatile.Write(ref _cleanupPending, 1);
             try
             {
                 cache?.FreezeForShutdown();
-                cache?.Shutdown(persistLedger);
+                cache?.CommitLedger(commit);
             }
             catch (Exception ex)
             {
-                LogService.DebugFile($"关闭缓存引擎时出错：{ex.Message}");
+                LogService.DebugFile($"提交 L2 账本时出错：{ex.Message}");
             }
-            finally
+
+            // ③ 继续（内联）：④b / ⑤ 必须等真正空闲，期间没有任何超时能越过
+            if (!idle && disk != null)
+            {
+                long waitedMs = 0;
+                while (!disk.WaitForIdle(IdleLogIntervalMs))
+                {
+                    waitedMs += IdleLogIntervalMs;
+                    LogService.DebugFile($"停止：仍在等待在途命令退出（已 {waitedMs / 1000} 秒）");
+                }
+                LogService.DebugFile($"停止：在途命令已退出（共等待约 {waitedMs / 1000} 秒），继续释放资源");
+            }
+
+            // ④b 释放：关容器、清索引、归还 Slab
+            try
+            {
+                cache?.Release();
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"释放缓存引擎时出错：{ex.Message}");
+            }
+
+            // ⑤ 关源盘句柄（盘保持脱机）
+            try
             {
                 if (restoreDeviceState) device?.RestoreAndClose();
                 else device?.Dispose();
             }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"关闭源盘句柄时出错：{ex.Message}");
+            }
+
+            Volatile.Write(ref _cleanupPending, 0);
         }
 
         #endregion
@@ -827,7 +906,17 @@ namespace FlyDisk.Engine
                     }
                 }
 
-                if (appeared.Count > 0) return EvaluateAppearedDisks(appeared);
+                if (appeared.Count > 0)
+                {
+                    string? problem = EvaluateAppearedDisks(appeared);
+                    if (problem == null)
+                    {
+                        // 记下克隆盘号：占用查询要靠它标注"(加速中)"，重新联机的守卫也要用它
+                        _cloneDiskNumbers.Clear();
+                        foreach (PhysicalDiskInfo disk in appeared) _cloneDiskNumbers.Add(disk.DiskNumber);
+                    }
+                    return problem;
+                }
 
                 if (Environment.TickCount64 >= deadline)
                 {
@@ -985,10 +1074,14 @@ namespace FlyDisk.Engine
     /// </summary>
     public sealed class EngineResult
     {
-        private EngineResult(EngineOutcome outcome, string message)
+        private EngineResult(EngineOutcome outcome, string message,
+            StopFailureKind failureKind = StopFailureKind.None, int connections = 0, uint logoutRc = 0)
         {
             Outcome = outcome;
             Message = message;
+            FailureKind = failureKind;
+            Connections = connections;
+            LogoutRc = logoutRc;
         }
 
         /// <summary>结果分类（决定 UI 走哪个分支）</summary>
@@ -996,6 +1089,15 @@ namespace FlyDisk.Engine
 
         /// <summary>给用户看的原因（已本地化）</summary>
         public string Message { get; }
+
+        /// <summary>停止失败的具体原因（只有 <see cref="Stop"/> 会填）</summary>
+        public StopFailureKind FailureKind { get; }
+
+        /// <summary>拒绝时本机监听端口上残留的 ESTABLISHED 连接数</summary>
+        public int Connections { get; }
+
+        /// <summary>本程序自动挂载会话的登出返回码（0 = 成功或未尝试）</summary>
+        public uint LogoutRc { get; }
 
         /// <summary>是否成功</summary>
         public bool Ok => Outcome == EngineOutcome.Ok;
@@ -1005,5 +1107,23 @@ namespace FlyDisk.Engine
 
         /// <summary>被拒：直接提示用户</summary>
         public static EngineResult Reject(string message) => new(EngineOutcome.Rejected, message);
+
+        /// <summary>停止被拒：带上可区分的原因，供界面拼分支框正文</summary>
+        public static EngineResult RejectStop(StopFailureKind kind, string message, int connections, uint logoutRc) =>
+            new(EngineOutcome.Rejected, message, kind, connections, logoutRc);
+    }
+
+    /// <summary>停止失败的原因分类（界面据此决定正文与可选出口）</summary>
+    public enum StopFailureKind
+    {
+        None = 0,
+        /// <summary>本程序自动挂载的会话登不出去（设备仍被占用）</summary>
+        InitiatorLogoutFailed = 1,
+        /// <summary>另有发起程序挂着这块盘（用户手动挂的会话）</summary>
+        ExternalConnections = 2,
+        /// <summary>还有在途命令没结束（此时尚未关闭命令入口，什么都没动）</summary>
+        InFlightBusy = 3,
+        /// <summary>其他内部错误</summary>
+        Internal = 4,
     }
 }
