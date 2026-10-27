@@ -188,13 +188,17 @@ namespace FlyDisk.Engine
         /// 用户刚刚在「选择硬盘」里选定的那块盘。**每次启动都要重新选**（见 后续待办.md 第一节的"选盘时机"）——
         /// 配置里只留一个"上次的选择"用于默认选中，绝不作为启动依据。
         /// </param>
-        public EngineResult Start(PhysicalDiskInfo target)
+        /// <param name="allowOnlineLedger">
+        /// **仅当用户在预检里明确选了「无视风险启动」时为 true**：允许在"盘原本联机"时装载 L2 账本。
+        /// 引擎不按设备类型自行放行，默认 false（见 AGENTS.md §2.3）。
+        /// </param>
+        public EngineResult Start(PhysicalDiskInfo target, bool allowOnlineLedger = false)
         {
             lock (_lifecycleLock)
             {
                 EngineResult pending = EnsureCleanupComplete();
                 if (!pending.Ok) return pending;
-                return StartLocalCore(target);
+                return StartLocalCore(target, allowOnlineLedger);
             }
         }
 
@@ -204,7 +208,7 @@ namespace FlyDisk.Engine
             return IsStopping ? EngineResult.Reject(Locale.T("engine.stop.pending")) : EngineResult.Success;
         }
 
-        private EngineResult StartLocalCore(PhysicalDiskInfo target)
+        private EngineResult StartLocalCore(PhysicalDiskInfo target, bool allowOnlineLedger = false)
         {
             if (IsRunning) return EngineResult.Success;
 
@@ -225,7 +229,7 @@ namespace FlyDisk.Engine
                                             $"原状态 {(target.IsOnline ? "联机" : "脱机（接管）")}，" +
                                             $"扇区 {target.BytesPerSector} B × {_config.SectorsPerBlock} = {target.BytesPerSector * _config.SectorsPerBlock} B/块");
 
-                return RunWithSource(device, device.ToBlockSourceInfo());
+                return RunWithSource(device, device.ToBlockSourceInfo(allowOnlineLedger));
             }
             catch (IscsiCloneCheckException)
             {
@@ -515,6 +519,8 @@ namespace FlyDisk.Engine
         ///
         /// 联机后那份跨重启的 L2 账本会自动作废：下次启动 <see cref="PhysicalDiskHandle.Probe"/> 会读到该盘已联机
         /// （<c>WasOnline = true</c>）⇒ <c>BlockSourceInfo.FromDisk</c> 标脏 ⇒ SsdCacheService 判其过期、要求校验。
+        /// **热插拔盘例外**：预检会多给一个「无视风险启动」，用户选了才放行（见 <see cref="BlockSourceInfo.AllowOnlineLedger"/>），
+        /// 所以对它们"联机"不必然等于"作废"。
         /// 无需额外代码，界面只负责把这件事提前告诉用户。
         /// </summary>
         /// <returns>成功 <c>true</c>；失败 <c>false</c> 且 <paramref name="error"/> 给出可读原因（不抛，供界面直接展示）</returns>

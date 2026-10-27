@@ -42,8 +42,35 @@ namespace FlyDisk.Engine
         public bool IsOnline { get; set; }
         public bool IsReadOnly { get; set; }
 
-        /// <summary>可移动介质（U 盘/读卡器等）——不做加速目标</summary>
+        /// <summary>介质本身可移动（设备描述符的 RMB 位）</summary>
         public bool RemovableMedia { get; set; }
+
+        /// <summary>设备描述符里的总线类型（<c>STORAGE_DEVICE_DESCRIPTOR.BusType</c>；0 = 未知）</summary>
+        public int BusType { get; set; }
+
+        /// <summary>
+        /// 设备可从运行中的系统上拔下（<c>IOCTL_STORAGE_GET_HOTPLUG_INFO</c> 的 <c>DeviceHotplug</c>）。
+        /// 典型是 BIOS 里把 SATA 口设成热插拔 / 热插拔托架；查不到时保持 <c>false</c>（按内建盘处理）。
+        /// </summary>
+        public bool DeviceHotplug { get; set; }
+
+        /// <summary>
+        /// **可移动设备**：总线是 USB / 1394 / SD / MMC，或介质本身可移动。
+        ///
+        /// 这类盘可能被拔下来拿到别的电脑上用，而"是否被写过"本机完全无法判断 ⇒
+        /// **只要使用 L2，每次启动都必须校验**，不提供任何绕过（见 <see cref="BlockSourceInfo.IsRemovableDevice"/>）。
+        /// 注意判据**不看联机状态**：实测可移动盘接上后并不保证被自动联机。
+        /// </summary>
+        public bool IsRemovableDevice => RemovableMedia || BusType is 4 or 7 or 12 or 13;
+
+        /// <summary>
+        /// **热插拔盘**：不是可移动设备，但设备本身能在运行中拔下（典型是开了热插拔的 SATA 口）。
+        ///
+        /// 这类盘同样会失去"脱机"标记的跨重插保证，但把用户当作有专业基础的人：
+        /// 启动预检在"盘原本联机"时除校验 / 清空 / 中止之外，额外给「无视风险启动」
+        /// （<see cref="BlockSourceInfo.AllowOnlineLedger"/>）。
+        /// </summary>
+        public bool IsHotPlugDisk => !IsRemovableDevice && DeviceHotplug;
 
         /// <summary>设备描述符里的厂商串（如 "ATA"）</summary>
         public string VendorId { get; set; } = string.Empty;
@@ -105,7 +132,8 @@ namespace FlyDisk.Engine
     ///
     /// **关闭时不自动联机**（2026-09-27 定下的口径）：盘归本程序管 ⇒ 程序没运行期间没人能写它
     /// ⇒ L2 账本（跨重启缓存）才敢直接采信。想看数据就再启动本程序并连接 iSCSI；
-    /// 要把盘还给系统则用「磁盘管理 → 联机」（那之后跨重启缓存会被判为过期而作废）。
+    /// 要把盘还给系统则用「磁盘管理 → 联机」（那之后跨重启缓存会被判为过期而作废；
+    /// **热插拔盘例外**——它们可以靠用户明确选「无视风险启动」绕过，见 <see cref="PhysicalDiskInfo.IsHotPlugDisk"/>）。
     /// 异常路径用 <see cref="RestoreAndClose"/> 把盘恢复原状，见其注释。
     ///
     /// 线程前提：读写的调用方是库的 target 工作线程（<c>SCSITarget</c> 每个 target 一个后台线程串行执行命令），
@@ -146,7 +174,9 @@ namespace FlyDisk.Engine
         public int BytesPerSector => Info.BytesPerSector;
 
         /// <summary>本块源的"身份与形状"（缓存层需要的那几项，见 <see cref="BlockSourceInfo"/>）</summary>
-        public BlockSourceInfo ToBlockSourceInfo() => BlockSourceInfo.FromDisk(Info, WasOnline);
+        /// <param name="allowOnlineLedger">用户明确选了「无视风险启动」时才传 true（见 <see cref="BlockSourceInfo.AllowOnlineLedger"/>）</param>
+        public BlockSourceInfo ToBlockSourceInfo(bool allowOnlineLedger = false)
+            => BlockSourceInfo.FromDisk(Info, WasOnline, allowOnlineLedger);
 
         #region 打开与关闭
 
@@ -174,6 +204,10 @@ namespace FlyDisk.Engine
 
             FillDeviceIdentity(probe, info);
             TryQuerySeekPenalty(probe, info);
+            TryQueryHotplugInfo(probe, info);
+            // 设备类型决定 L2 账本的启动前预检口径（可移动设备必须校验 / 热插拔盘可无视风险），出问题时这行是唯一线索
+            LogService.DebugFile($"磁盘 {info.DiskNumber} 总线类型 {info.BusType}，可移动介质 {info.RemovableMedia}，" +
+                                 $"设备可热插拔 {info.DeviceHotplug}（判为{(info.IsRemovableDevice ? "可移动设备" : info.IsHotPlugDisk ? "热插拔盘" : "内建盘")}）");
             return info;
         }
 
@@ -809,10 +843,12 @@ namespace FlyDisk.Engine
             {
                 STORAGE_DEVICE_DESCRIPTOR descriptor = PhysicalDiskControl.GetDeviceDescriptor(handle);
                 info.RemovableMedia = descriptor.RemovableMedia != 0;
+                info.BusType = descriptor.BusType;
                 info.VendorId = ReadDescriptorString(descriptor, descriptor.VendorIdOffset);
                 info.ProductId = ReadDescriptorString(descriptor, descriptor.ProductIdOffset);
                 info.ProductRevision = ReadDescriptorString(descriptor, descriptor.ProductRevisionOffset);
                 info.SerialNumber = ReadDescriptorString(descriptor, descriptor.SerialNumberOffset);
+                // 设备类型（可移动 / 热插拔）的判定与日志在 Probe 里统一做：那里还要查 IOCTL_STORAGE_GET_HOTPLUG_INFO
             }
             catch (Exception ex)
             {
@@ -886,6 +922,38 @@ namespace FlyDisk.Engine
             }
         }
 
+        /// <summary>
+        /// 查询"设备能否在运行中拔下"（<c>IOCTL_STORAGE_GET_HOTPLUG_INFO</c>）。
+        /// 与 <see cref="TryQuerySeekPenalty"/> 同口径：查不到就保持 <c>false</c>（按内建盘处理，行为与旧版一致）。
+        /// </summary>
+        private static void TryQueryHotplugInfo(SafeFileHandle handle, PhysicalDiskInfo info)
+        {
+            IntPtr outBuffer = IntPtr.Zero;
+            try
+            {
+                int outSize = Marshal.SizeOf(typeof(STORAGE_HOTPLUG_INFO));
+                outBuffer = Marshal.AllocHGlobal(outSize);
+                var target = new STORAGE_HOTPLUG_INFO { Size = (uint)outSize };
+                Marshal.StructureToPtr(target, outBuffer, false);
+
+                // 这条 IOCTL 没有输入缓冲：只把结构体放进 out，Size 由我们自己先填好
+                bool ok = PhysicalDiskControl.DeviceIoControl(handle, IOCTL_STORAGE_GET_HOTPLUG_INFO,
+                    IntPtr.Zero, 0, outBuffer, (uint)outSize, out _, IntPtr.Zero);
+                if (!ok) return;
+
+                var result = Marshal.PtrToStructure<STORAGE_HOTPLUG_INFO>(outBuffer);
+                info.DeviceHotplug = result.DeviceHotplug;
+            }
+            catch
+            {
+                // 属性不可用：保持"不可热插拔"
+            }
+            finally
+            {
+                if (outBuffer != IntPtr.Zero) Marshal.FreeHGlobal(outBuffer);
+            }
+        }
+
         #endregion
 
         #region Win32 API
@@ -898,6 +966,7 @@ namespace FlyDisk.Engine
         private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
         private const uint FILE_BEGIN = 0;
         private const uint IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400;
+        private const uint IOCTL_STORAGE_GET_HOTPLUG_INFO = 0x002D0C14;
 
         /// <summary>
         /// 写不经过系统写缓存。这是"写已落盘"在本层能做到的最大程度——
@@ -913,6 +982,27 @@ namespace FlyDisk.Engine
 
             [MarshalAs(UnmanagedType.I1)]
             public bool IncursSeekPenalty;
+        }
+
+        /// <summary>
+        /// <c>IOCTL_STORAGE_GET_HOTPLUG_INFO</c> 的输出结构：<c>DeviceHotplug</c> 为真表示设备能在运行中拔下。
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct STORAGE_HOTPLUG_INFO
+        {
+            public uint Size;
+
+            [MarshalAs(UnmanagedType.I1)]
+            public bool MediaRemovable;
+
+            [MarshalAs(UnmanagedType.I1)]
+            public bool MediaHotplug;
+
+            [MarshalAs(UnmanagedType.I1)]
+            public bool DeviceHotplug;
+
+            [MarshalAs(UnmanagedType.I1)]
+            public bool WriteCacheEnableOverride;
         }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

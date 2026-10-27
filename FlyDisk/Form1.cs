@@ -960,7 +960,7 @@ namespace FlyDisk
 
             // L2 启动前预检：本地 / 远程共用同一份本地 L2，所以口径完全一致
             // （差别只有两点：远程不判"盘原本是否联机"，也不支持逐块校验，见 PrepareL2BeforeStart）。
-            if (!PrepareL2BeforeStart(_config, info, -1, localOnlineCheck: false))
+            if (!PrepareL2BeforeStart(_config, info, -1, localOnlineCheck: false, out _))
             {
                 await EndRemoteServiceQuietly(peer);
                 return;
@@ -1579,13 +1579,14 @@ namespace FlyDisk
                     session = CreateSession(disk, index);
 
                     // L2 预检只在第一轮做；重试时不再问用户（他刚才已经对 L2 拍过板）
-                    if (runL2Preflight && !RunL2Preflight(session.Config, disk))
+                    bool allowOnlineLedger = false;
+                    if (runL2Preflight && !RunL2Preflight(session.Config, disk, out allowOnlineLedger))
                     {
                         Log(Locale.T("main.log.startCancelledAtL2", DiskText.Full(disk)));
                         return StartFailKind.Cancelled;
                     }
 
-                    (bool ok, string failure) = await StartTargetCore(session.Engine, disk);
+                    (bool ok, string failure) = await StartTargetCore(session.Engine, disk, allowOnlineLedger);
                     if (!ok)
                     {
                         failures.Add(Locale.T("main.log.startAttemptFailed", DiskText.Full(disk), failure));
@@ -1621,8 +1622,14 @@ namespace FlyDisk
         /// 启动前的 L2 预检（**唯一一处**判定并询问 L2 账本该怎么办的地方）。
         /// 返回 false = 用户中止（本次启动按失败处理，整体终止）。
         /// </summary>
-        private bool RunL2Preflight(DiskConfig config, PhysicalDiskInfo disk)
+        /// <param name="allowOnlineLedger">
+        /// 用户在热插拔盘的提示里选了「无视风险启动」⇒ true（透传给引擎，见 BlockSourceInfo.AllowOnlineLedger）。
+        /// 其余情况一律 false。
+        /// </param>
+        private bool RunL2Preflight(DiskConfig config, PhysicalDiskInfo disk, out bool allowOnlineLedger)
         {
+            allowOnlineLedger = false;
+
             // 本次**不启用 L2**、但缓存目录里还留着**这块盘**的 L2 账本时，先问用户
             // （此刻还没脱机、系统状态一点没动；详细理由见 ConfirmL2LedgerUnused）。
             if (!ConfirmL2LedgerUnused(config, disk)) return false;
@@ -1631,7 +1638,7 @@ namespace FlyDisk
             // 紧随其后的启动若还看旧快照就会继续判"联机"、逼用户再点一次。
             bool wasOnlineNow = PhysicalDiskHandle.Probe(disk.DiskNumber).IsOnline;
             return PrepareL2BeforeStart(config, BlockSourceInfo.FromDisk(disk, wasOnlineNow),
-                disk.DiskNumber, localOnlineCheck: true);
+                disk.DiskNumber, localOnlineCheck: true, out allowOnlineLedger);
         }
 
         /// <summary>
@@ -1822,8 +1829,14 @@ namespace FlyDisk
         /// 的事都由 UI 在**脱机之前**问完——用户中止或这里报错时，系统状态一点没动。引擎那边因此不再返回
         /// 任何"要你去问"的结果；它在装载期遇到不自洽会**直接报错终止**（不再静默重建）。
         ///
-        /// 顺序：① 容器属于这块盘吗 → ② 这份账本可信吗（盘原本联机 / 上次没正常关服）→ ③ 容量变了吗 / 被夹取了吗。
+        /// 顺序：① 容器属于这块盘吗 → ② 这份账本可信吗（上次没正常关服 / 盘原本联机）→ ③ 容量变了吗 / 被夹取了吗。
         /// 每一步选"清空"都 = **删掉账本文件**（引擎随后会新建一份空的）。
+        ///
+        /// 第 ② 步的口径（2026-10-27，**旧规则优先，再按设备类型**）：
+        /// ① 身份戳不符（上次没正常关服）⇒ 校验 / 清空 / 中止，**所有类型都不给绕过**；
+        /// ② 戳没问题时：**可移动设备**（USB / 1394 / SD / 读卡器）不看联机状态，每次启动都要校验（无绕过）；
+        ///    **热插拔盘**（如开了热插拔的 SATA 口）**每次启动都提示**（联机、脱机都算），额外给「无视风险启动」；
+        ///    **内建盘**维持原判据（联机 ⇒ 校验；脱机 + 戳一致 ⇒ 直接启动）。
         /// </summary>
         /// <param name="source">目标块源（本地 = 本机这块盘；远程 = 对端那块盘）——设备身份探测要用</param>
         /// <param name="diskNumber">本地形态的物理盘号（远程传 -1，只用于文案）</param>
@@ -1831,9 +1844,14 @@ namespace FlyDisk
         /// 是否要判"盘原本是否联机"：**只有本地形态需要**——远程盘的联机状态是对方的事，
         /// 而且远程**不支持逐块校验**（见下）。
         /// </param>
+        /// <param name="allowOnlineLedger">
+        /// 只有当用户在热插拔盘的提示里选了「无视风险启动」时才为 true（交给引擎放行联机账本）。
+        /// </param>
         /// <returns>true = 可以继续启动；false = 用户中止或预检失败</returns>
-        private bool PrepareL2BeforeStart(DiskConfig config, BlockSourceInfo source, int diskNumber, bool localOnlineCheck)
+        private bool PrepareL2BeforeStart(DiskConfig config, BlockSourceInfo source, int diskNumber,
+            bool localOnlineCheck, out bool allowOnlineLedger)
         {
+            allowOnlineLedger = false;
             try
             {
                 if (!config.EnableSsdCache || string.IsNullOrWhiteSpace(config.SsdCachePath)) return true;
@@ -1841,11 +1859,44 @@ namespace FlyDisk
                 // ① "容器属于哪块盘"不再单独判：缓存目录本身按设备身份散列命名，换盘/换卷时新目录是空的。
                 if (!SsdCacheService.LedgerExists(config)) return true;   // 没有账本：引擎会新建一份空的
 
-                // ② 这份账本可信吗？两种情形都不算：盘本来联机（上次之后可能被写过）、上次没正常关服
+                // ② 账本可信吗？**旧规则优先**：上次没正常关服（身份戳不符）时，对所有设备类型都
+                //    只给 校验 / 清空 / 中止，不给任何绕过——那种账本本身就是没写完的快照。
+                string stamp = SsdCacheService.LedgerStampMismatch(config);
+
+                // 旧规则通过后，才按**设备类型**决定要不要提示：
+                //  · 可移动设备（USB / 1394 / SD / 读卡器）：不看联机状态，只要用 L2 就**每次启动都校验**，
+                //    不提供绕过——它可能被拿到别的电脑上写过，本机无法判断；
+                //  · 热插拔盘（如开了热插拔的 SATA 口）：明显是专业用户，**每次启动都提示**（无论联机还是脱机），
+                //    并额外给「无视风险启动」——脱机只说明系统没挂载它，不等于没人写过；
+                //  · 内建盘：维持原判据（联机 ⇒ 校验；脱机 + 戳一致 ⇒ 直接启动）。
                 bool online = localOnlineCheck && source.WasOnline;
-                string untrusted = online
-                    ? Locale.T("engine.start.l2OnlineNeedsVerify", diskNumber)
-                    : SsdCacheService.LedgerStampMismatch(config);
+                bool removable = localOnlineCheck && source.IsRemovableDevice;
+                bool hotPlug = localOnlineCheck && source.IsHotPlugDisk;
+                bool allowBypass = false;
+                string untrusted;
+                if (stamp.Length > 0)
+                {
+                    untrusted = stamp;
+                }
+                else if (removable)
+                {
+                    untrusted = Locale.T("engine.start.l2RemovableNeedsVerify", diskNumber);
+                }
+                else if (hotPlug)
+                {
+                    allowBypass = true;
+                    untrusted = Locale.T(online
+                        ? "engine.start.l2HotplugNeedsVerify"
+                        : "engine.start.l2HotplugOfflineNeedsVerify", diskNumber);
+                }
+                else if (online)
+                {
+                    untrusted = Locale.T("engine.start.l2OnlineNeedsVerify", diskNumber);
+                }
+                else
+                {
+                    untrusted = string.Empty;
+                }
 
                 if (untrusted.Length > 0)
                 {
@@ -1865,21 +1916,54 @@ namespace FlyDisk
                         return ClearLedgerForStart(config);
                     }
 
-                    int verifyChoice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"),
-                        Locale.T("main.msg.l2NeedsVerify", untrusted),
-                        Locale.T("l2.choose.verify"), Locale.T("l2.choose.clear"), Locale.T("l2.choose.abort"));
-
-                    if (verifyChoice == 2)
+                    if (allowBypass)
                     {
-                        // 关闭 / Esc 也落在这里：什么都不动，不启动
-                        Log(Locale.T("main.log.abortedL2Verify"));
-                        return false;
+                        // 热插拔盘专属：无视风险启动 / 校验 / 清空 / 中止（最后一项 = 什么都不做）
+                        int hotplugChoice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"),
+                            Locale.T("main.msg.l2NeedsVerifyHotplug", untrusted),
+                            Locale.T("l2.choose.startAnyway"), Locale.T("l2.choose.verify"),
+                            Locale.T("l2.choose.clear"), Locale.T("l2.choose.abort"));
+
+                        if (hotplugChoice == 0)
+                        {
+                            allowOnlineLedger = true;
+                            Log(Locale.T("main.log.l2BypassRisk", diskNumber));
+                            return ConfirmCapacityChange(config);
+                        }
+
+                        if (hotplugChoice == 3)
+                        {
+                            Log(Locale.T("main.log.abortedL2Verify"));
+                            return false;
+                        }
+
+                        if (hotplugChoice == 2)
+                        {
+                            Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userDeclinedVerify", untrusted)));
+                            return ClearLedgerForStart(config);
+                        }
+                        // hotplugChoice == 1 ⇒ 落到下面的校验
                     }
-
-                    if (verifyChoice == 1)
+                    else
                     {
-                        Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userDeclinedVerify", untrusted)));
-                        return ClearLedgerForStart(config);
+                        int verifyChoice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"),
+                            removable
+                                ? Locale.T("main.msg.l2NeedsVerifyRemovable", untrusted)
+                                : Locale.T("main.msg.l2NeedsVerify", untrusted),
+                            Locale.T("l2.choose.verify"), Locale.T("l2.choose.clear"), Locale.T("l2.choose.abort"));
+
+                        if (verifyChoice == 2)
+                        {
+                            // 关闭 / Esc 也落在这里：什么都不动，不启动
+                            Log(Locale.T("main.log.abortedL2Verify"));
+                            return false;
+                        }
+
+                        if (verifyChoice == 1)
+                        {
+                            Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userDeclinedVerify", untrusted)));
+                            return ClearLedgerForStart(config);
+                        }
                     }
 
                     // 校验窗口是模态的：它自己脱机 + 独占源盘、并抢 cache.lock（此刻引擎还没打开盘），跑完保持脱机
@@ -1993,9 +2077,10 @@ namespace FlyDisk
         /// **不弹窗**：失败原因交给批量编排聚合（见 <see cref="StartAllAsync"/>）；
         /// 真异常（例如 L2 初始化失败、克隆盘检查不通过）直接上抛，由编排层按类型分流。
         /// </summary>
-        private async Task<(bool ok, string failure)> StartTargetCore(TargetService engine, PhysicalDiskInfo target)
+        private async Task<(bool ok, string failure)> StartTargetCore(
+            TargetService engine, PhysicalDiskInfo target, bool allowOnlineLedger)
         {
-            EngineResult result = await Task.Run(() => engine.Start(target));
+            EngineResult result = await Task.Run(() => engine.Start(target, allowOnlineLedger));
             if (result.Ok) return (true, string.Empty);
 
             // Rejected：预期内的拒绝（选错盘 / 参数不对）

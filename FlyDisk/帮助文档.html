@@ -569,7 +569,7 @@
 <p>系统默认行为：直接从源盘读取（会有少量内存缓存，但通常可以忽略）</p>
 <p>我们的行为：优先从 L1 L2 中读取数据，若 L1 L2 中均没有对应数据，才回到源盘读取数据，并同时直接存放到 L1 中，按需存放到 L2 中以便下次读取到相同数据时的加速</p>
 <p>L2 缓存是按需增长的：只有真正读到的数据才会写进 L2，容器也随写入逐步扩大，不会预先占满你设定的预算。</p>
-<div class="note">L2 能跨重启保留，但在上次出现非正常退出、目标盘被手动联机等情况后需要进行全量校验以保证数据不出错，启动时若发现问题，程序会弹窗让你选择。</div>
+<div class="note">L2 能跨重启保留，但在上次出现非正常退出、目标盘被手动联机等情况后需要进行全量校验以保证数据不出错，启动时若发现问题，程序会弹窗让你选择。<strong>可移动设备</strong>（USB、1394、SD、读卡器）只要使用 L2，<strong>每次启动都必须先校验</strong>；<strong>可热插拔的盘</strong>（例如 BIOS 里把 SATA 口设成热插拔）<strong>每次启动都会提示</strong>，并额外提供「无视风险启动」，请自行判断。</div>
 <div class="warn"> <strong>⚠ 注意：</strong>在开启 L2 功能时，你<strong>有责任避免</strong>进行手动脱机、使用另一个电脑/双操作系统的另一个使用硬盘等会<strong>令 L2 和实际数据不一致</strong>的操作，这种操作我们的程序无法有效自动察觉，应<strong>手动触发一轮 L2 校验</strong>。如你不确定你的操作是否会导致上述问题，也应<strong>手动触发一轮 L2 校验</strong>。</div>
 
 <h2 id="mainui-zh">主界面说明</h2>
@@ -999,7 +999,7 @@
 <p>Default system behavior: read straight from the source disk (there is a small amount of memory caching, usually negligible).</p>
 <p>Our behavior: prefer reading from L1 / L2; only when the data is in neither do we fall back to the source disk, and then we store it directly into L1 and, as needed, into L2, so that reading the same data next time is accelerated.</p>
 <p>The L2 cache grows on demand: only data that is actually read is written into it, and the container expands as it is written to — it does not occupy the whole limit up front.</p>
-<div class="note">L2 survives reboots, but after an abnormal exit last time, the target disk being manually brought online, or similar cases, a full verification is needed to make sure the data is correct. If a problem is found at startup, the program shows a dialog for you to choose.</div>
+<div class="note">L2 survives reboots, but after an abnormal exit last time, the target disk being manually brought online, or similar cases, a full verification is needed to make sure the data is correct. If a problem is found at startup, the program shows a dialog for you to choose. <strong>Removable devices</strong> (USB, 1394, SD, card readers) <strong>must be verified on every start</strong> whenever they use L2; <strong>hot-pluggable disks</strong> (for example a SATA port configured as hot-plug in the BIOS) <strong>prompt on every start</strong> and additionally offer "Start Anyway" — judge at your own discretion.</div>
 <div class="warn"> <strong>⚠ Note:</strong> while L2 is enabled, <strong>it is your responsibility to avoid</strong> operations that make <strong>L2 and the actual data inconsistent</strong>, such as manually taking the disk offline or using the disk from another computer / another OS in a dual-boot setup. The program cannot reliably detect such operations automatically, so you should <strong>manually trigger a round of L2 verification</strong>. If you are unsure whether your operation could cause the above problem, you should also <strong>manually trigger a round of L2 verification</strong>.</div>
 
 <h2 id="mainui-en">Main Window</h2>

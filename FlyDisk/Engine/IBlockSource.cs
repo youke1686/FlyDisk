@@ -81,8 +81,28 @@ namespace FlyDisk.Engine
         /// </summary>
         public bool WasOnline { get; init; }
 
+        /// <summary>
+        /// 可移动设备（USB / 1394 / SD / MMC，或介质可移动）。本地从 <see cref="PhysicalDiskInfo.IsRemovableDevice"/> 复制；
+        /// **远端恒 false**。UI 用它决定"只要用 L2 就必须每次启动校验、不给绕过"。
+        /// </summary>
+        public bool IsRemovableDevice { get; init; }
+
+        /// <summary>
+        /// 热插拔盘（不是可移动设备，但设备能在运行中拔下，典型是开了热插拔的 SATA 口）。**远端恒 false**。
+        /// UI 用它决定"盘原本联机时除校验 / 清空 / 中止之外，额外给「无视风险启动」"。
+        /// </summary>
+        public bool IsHotPlugDisk { get; init; }
+
+        /// <summary>
+        /// **允许在"盘原本联机"时装载账本**——只由界面在用户明确选了「无视风险启动」时置真，默认 <c>false</c>。
+        ///
+        /// 它是"用户知情后的一次性授权"，不是自动判定：引擎自己绝不替用户做这个决定
+        /// （见 AGENTS.md §2.3 的职责边界）。为真时仍强制校验账本身份戳（上次是否正常关服）。
+        /// </summary>
+        public bool AllowOnlineLedger { get; init; }
+
         /// <summary>由本地物理盘的只读信息构造</summary>
-        public static BlockSourceInfo FromDisk(PhysicalDiskInfo info, bool wasOnline) => new()
+        public static BlockSourceInfo FromDisk(PhysicalDiskInfo info, bool wasOnline, bool allowOnlineLedger = false) => new()
         {
             Model = info.Model,
             SerialNumber = info.SerialNumber,
@@ -91,7 +111,10 @@ namespace FlyDisk.Engine
             FirmwareRevision = info.ProductRevision,
             SizeBytes = info.SizeBytes,
             BytesPerSector = info.BytesPerSector,
-            WasOnline = wasOnline
+            WasOnline = wasOnline,
+            IsRemovableDevice = info.IsRemovableDevice,
+            IsHotPlugDisk = info.IsHotPlugDisk,
+            AllowOnlineLedger = allowOnlineLedger
         };
     }
 }
