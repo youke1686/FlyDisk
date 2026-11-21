@@ -90,18 +90,13 @@ namespace FlyDisk.Engine
     {
         #region 常量
 
-        private const int BLOCK_SIZE = ServiceConstants.BlockSize;
+        // 块大小 / Slab 大小 / 每 Slab 槽数不再是编译期常量：由 Models.BlockGeometry 按"源盘扇区 × 该盘 L2 条目"
+        // 推导（见 docs/可变缓存块大小与扇区对齐_设计与决策.md）。非 2 幂块（4160 / 4224）下 64 MiB 除不尽，
+        // Slab 只能取"装得下整数个块"的字节数（每个 Slab 浪费不足一个块），槽偏移公式保持不变。
 
-        /// <summary>整块大小（64 MB）。**L2 容器按 Slab 整块增长 / 截断**（见 docs/L2容器按需增长与容量缩放_设计.md §4）。</summary>
-        private const int SLAB_SIZE = ServiceConstants.SlabSize;
-
-        /// <summary>一个 Slab 的槽数（64 MB / 4 KB = 16384）。</summary>
-        private const int SLOTS_PER_SLAB = SLAB_SIZE / BLOCK_SIZE;
-
-        // 容器头部：占一个块，存"身份戳 + 设备身份"。用来识别"用户删掉了 cache.dat 但 index.bin 还在"
+        // 容器头部：占一个块（长度 = BlockSize），存"身份戳 + 设备身份"。用来识别"用户删掉了 cache.dat 但 index.bin 还在"
         // 与"换了另一块盘却沿用同一个目录"这两类情况——若不做这个校验，重建出来的容器（全零）会被旧索引
         // 当成有效缓存，把全零块当数据返回（静默错数据）。
-        private const int CONTAINER_HEADER_SIZE = BLOCK_SIZE;
         private const uint CONTAINER_MAGIC = 0x44434453;   // "SDCD"
         private const int CONTAINER_VERSION = 2;           // 2：头部加入设备身份（阶段一为 1，只有身份戳）
         private const int CONTAINER_HASH_LEN = 32;         // 头部自身校验和覆盖的字节数（含设备身份）
@@ -119,34 +114,36 @@ namespace FlyDisk.Engine
         private const byte FREQ_MASK = 0x03;               // 每块 2 bit 访问计数（0..3）
         private const int MAX_FREQ = 3;
 
-        // 容量下限 = 1 个 Slab（64 MiB）。容量必须**规整为整 Slab**，否则"整块增长"的批次边界不干净；
-        // 设置界面本来就是整 GiB（1 GiB = 16 个 Slab），所以这条对用户可选值无影响（见设计文档 §4 D1）。
-        private const int MIN_SLOTS = SLOTS_PER_SLAB;
-        // 容量上限 64 GiB。**上限的实质是内存**：索引/槽位结构常驻内存，约 MetadataBytesPerBlock 字节/块，
-        // 每 1 GiB 容量约 15 MiB，所以 64 GiB 大约要 930 MiB 常驻内存（设置界面会把这份估算摊给用户看）。
-        // 想再往上放就得改块大小（见 后续待办.md）或把索引也落盘，不能只改这个数。
-        private const long MAX_CAPACITY_BYTES = 64L * 1024 * 1024 * 1024;
-        private const int MAX_SLOTS = (int)(MAX_CAPACITY_BYTES / BLOCK_SIZE);
+        // 容量下限 = 1 个 Slab（约 64 MiB）。容量必须**规整为整 Slab**，否则"整块增长"的批次边界不干净；
+        // 设置界面本来就是整 GiB，所以这条对用户可选值无影响（见设计文档 §4 D1）。
+        // **不设容量字节上限**：容量只受缓存卷可用空间（预留 MIN_KEEP_FREE_BYTES）与下面的槽数存储上限约束。
+        // 槽数上限只为避免 int 溢出与"根本分配不出来"的数组（1<<30 槽），**不是容量策略**；
+        // 「较大 ⇒ 启动警告 / 过大 ⇒ 拒绝启动」这两档阈值另行设计（见 TODO「L2 容量上限改为槽位数上限」）。
+        private const int MAX_SLOT_COUNT = 1 << 30;
         // 为**缓存盘**保留的最小空闲空间（1 GiB）。SSD 快满时读写速度**可能明显变慢**，留一段空闲是保证
         // 加速运行流畅的必要条件，也顺带避免卷被缓存容器填满。UI 在"夹取警告"里会说明这一点。
         private const long MIN_KEEP_FREE_BYTES = 1L * 1024 * 1024 * 1024;
-
         private const int RING_SLACK = 4;                  // 环形缓冲余量，避免在边界上反复淘汰
 
         /// <summary>为缓存盘保留的最小空闲空间（字节）——UI 在"夹取警告"里要说明这个数</summary>
         public static long KeepFreeBytes => MIN_KEEP_FREE_BYTES;
 
         /// <summary>
-        /// 每块（<see cref="ServiceConstants.BlockSize"/>）索引的**常驻内存开销估算**（字节）。
-        /// 用于设置界面把"容量预算"折算成内存代价（每 1 GiB ≈ 15 MiB）。
-        /// 与 <see cref="MAX_SLOTS"/> 的注释同源；口径若有变动，两处一起改。
+        /// 每块索引的**常驻内存开销估算**（字节）。用于设置界面把"容量预算"折算成内存代价。
+        /// 与 <see cref="BlockGeometry.L2MetadataBytesPerBlock"/> 同源（后者供 UI 的 5% 自动规则使用）。
         /// </summary>
-        public const int MetadataBytesPerBlock = 58;
+        public const int MetadataBytesPerBlock = BlockGeometry.L2MetadataBytesPerBlock;
 
         private const string ContainerFileName = "cache.dat";
         private const string IndexFileName = "index.bin";
         private const string IndexTempFileName = "index.tmp";
         private const string LockFileName = "cache.lock";
+
+        /// <summary>
+        /// 只读探测容器头时最多读多少字节。头字段全部集中在前 40 字节、其余为零，
+        /// 因此读 4 KiB 前缀就能解析**任意块大小**（≤ 1 MiB）的容器头，启动预检不必知道块大小。
+        /// </summary>
+        private const int ContainerHeaderPeekBytes = 4096;
 
         #endregion
 
@@ -154,6 +151,11 @@ namespace FlyDisk.Engine
 
         private readonly string _dir;              // 缓存目录（容器与索引都在这里）
         private readonly long _deviceIdentity;     // 被加速设备的身份（型号 + 容量 + 扇区大小 的散列）
+
+        // ===== 块几何（本次会话的实际尺寸；见 Models.BlockGeometry）=====
+        private readonly int _blockSize;
+        private readonly int _slabBytes;
+        private readonly int _slotsPerSlab;
 
         private readonly int _slotCount;           // 总槽位数
         private readonly int _mLimit;              // M 队列目标长度（= 全部槽位：S 删掉后整条环都归 M）
@@ -230,10 +232,14 @@ namespace FlyDisk.Engine
         /// <exception cref="L2LedgerUnusableException">
         /// 账本存在但不可用：不完整 / 不属于本盘 / 盘原本联机 / 上次未正常关服
         /// </exception>
-        public SsdCacheService(DiskConfig config, BlockSourceInfo source)
+        public SsdCacheService(DiskConfig config, BlockSourceInfo source, BlockGeometry geometry)
         {
             _dir = Path.GetFullPath(config.SsdCachePath).TrimEnd('\\');
             _deviceIdentity = ComputeDeviceIdentity(source.Model, source.SerialNumber, source.SizeBytes, source.BytesPerSector);
+
+            _blockSize = geometry.BlockSize;
+            _slabBytes = geometry.SlabBytes;
+            _slotsPerSlab = geometry.SlotsPerSlab;
 
             Directory.CreateDirectory(_dir);
 
@@ -243,7 +249,7 @@ namespace FlyDisk.Engine
 
             try
             {
-                _slotCount = ComputeSlotCount(_dir, config.SsdCacheMaxBytes);
+                _slotCount = ComputeSlotCount(_dir, config.SsdCacheMaxBytes, geometry);
 
                 double ghostFraction = Clamp(config.SsdCacheGhostFraction, 0.0, 4.0);
                 if (Math.Abs(config.SsdCacheGhostFraction - ghostFraction) > 1e-9)
@@ -289,7 +295,7 @@ namespace FlyDisk.Engine
                 // "不再一次性初始化整个文件"、从而修掉"大 L2 启动卡住"的关键。
                 long previousId = 0;
                 int storedSlots = 0;
-                bool containerReady = _containerBytes >= BLOCK_SIZE && TryReadContainerHeader(out previousId, out storedSlots);
+                bool containerReady = _containerBytes >= CONTAINER_HASH_LEN + 8 && TryReadContainerHeader(out previousId, out storedSlots);
 
                 bool loaded;
                 if (!hadContainer && !hadIndex)
@@ -336,8 +342,8 @@ namespace FlyDisk.Engine
                 _loadedFromDisk = loaded;
 
                 LogService.DebugFile(
-                    $"SSD 二级缓存 {(loaded ? "已载入" : "已新建")}：{_slotCount} 槽位（{(long)_slotCount * BLOCK_SIZE / 1024 / 1024} MB / " +
-                    $"{(long)_slotCount / SLOTS_PER_SLAB} Slab）" +
+                    $"SSD 二级缓存 {(loaded ? "已载入" : "已新建")}：{_slotCount} 槽位（{(long)_slotCount * _blockSize / 1024 / 1024} MB / " +
+                    $"{(long)_slotCount / _slotsPerSlab} Slab / 块 {_blockSize} B）" +
                     (loaded && storedSlots != _slotCount ? $"，由上次 {storedSlots} 槽缩放而来" : "") +
                     $" / M={_mLimit} G={_ghostLimit}（保守门槛 {_fillingReserve} 空闲槽 / 保守线 {_conservativeOccupancy:P0}）/ 占用 {UsedSlots} 槽、空洞 {HoleSlots}" +
                     $" / 容器 {_containerBytes / 1024 / 1024} MB / 用时 {_loadMs} ms / 身份戳 0x{_containerId:X16}" +
@@ -397,10 +403,21 @@ namespace FlyDisk.Engine
             return string.IsNullOrEmpty(root) ? value.TrimEnd('\\') + "\\" : root;
         }
 
-        /// <summary>容量（字节）→ 槽位数：下限 1 Slab（64 MiB）、上限 64 GiB，为**缓存盘**留 1 GiB，**并规整为整 Slab**</summary>
-        public static int ComputeSlotCount(string dir, long maxBytes)
+        /// <summary>槽数存储上限（1&lt;&lt;30）：只为避免 int 溢出 / 不可能分配成功的数组，不再是"64 GiB 容量"策略上限</summary>
+        private static int MaxSlotsFor(BlockGeometry geometry)
+            => Math.Max(1, MAX_SLOT_COUNT);
+
+        /// <summary>
+        /// 容量（字节）→ 槽位数：下限 1 Slab，**不设容量字节上限**（只受卷可用空间与槽数存储上限约束），
+        /// 为**缓存盘**留 1 GiB，**并规整为整 Slab**。槽数与字节的换算口径全部来自 <paramref name="geometry"/>。
+        /// </summary>
+        public static int ComputeSlotCount(string dir, long maxBytes, BlockGeometry geometry)
         {
-            int slots = (int)Math.Clamp(maxBytes / BLOCK_SIZE, MIN_SLOTS, MAX_SLOTS);
+            int minSlots = geometry.SlotsPerSlab;
+            int maxSlots = MaxSlotsFor(geometry);
+            int blockSize = geometry.BlockSize;
+
+            int slots = (int)Math.Clamp(maxBytes / blockSize, minSlots, maxSlots);
             try
             {
                 string? root = Path.GetPathRoot(dir);
@@ -412,13 +429,13 @@ namespace FlyDisk.Engine
                     // 明明够放 8 GiB，却会被夹到 5.1 GiB）。
                     long l2Used = ContainerFootprint(dir);
                     long budget = free - MIN_KEEP_FREE_BYTES + l2Used;
-                    long wanted = (long)slots * BLOCK_SIZE;
+                    long wanted = (long)slots * blockSize;
                     if (wanted > budget)
                     {
-                        long allowed = Math.Max((long)MIN_SLOTS * BLOCK_SIZE, budget / BLOCK_SIZE * BLOCK_SIZE);
-                        int clamped = (int)Math.Clamp(allowed / BLOCK_SIZE, MIN_SLOTS, MAX_SLOTS);
+                        long allowed = Math.Max((long)minSlots * blockSize, budget / blockSize * blockSize);
+                        int clamped = (int)Math.Clamp(allowed / blockSize, minSlots, maxSlots);
                         LogService.DebugFile(
-                            $"SSD 二级缓存：容量超过该卷可用空间，已夹取 {wanted / 1024 / 1024} MiB → {clamped * (long)BLOCK_SIZE / 1024 / 1024} MiB" +
+                            $"SSD 二级缓存：容量超过该卷可用空间，已夹取 {wanted / 1024 / 1024} MiB → {clamped * (long)blockSize / 1024 / 1024} MiB" +
                             $"（可用 {free / 1024 / 1024} MiB，L2 已占用 {l2Used / 1024 / 1024} MiB，为缓存盘保留 {MIN_KEEP_FREE_BYTES / 1024 / 1024} MiB）");
                         slots = clamped;
                     }
@@ -430,7 +447,7 @@ namespace FlyDisk.Engine
             }
 
             // 容量必须规整为整 Slab（见设计文档 §4 D1）
-            return RoundDownToSlab(slots);
+            return RoundDownToSlab(slots, geometry);
         }
 
         /// <summary>L2 该目录下已占用的空间（容器 + 索引）——用于把"已被 available-free 扣掉的部分"加回预算</summary>
@@ -458,9 +475,11 @@ namespace FlyDisk.Engine
         public static int ComputeSlotCountFor(DiskConfig config)
         {
             if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return 0;
+            if (config.RuntimeGeometry is not { } geometry) return 0;
             try
             {
-                return ComputeSlotCount(Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), config.SsdCacheMaxBytes);
+                return ComputeSlotCount(Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'),
+                    config.SsdCacheMaxBytes, geometry);
             }
             catch
             {
@@ -471,27 +490,34 @@ namespace FlyDisk.Engine
         /// <summary>
         /// 按配置算出的**标称**槽数（只做 MIN/MAX 与整 Slab 规整，**不做可用空间夹取**）。
         /// 与 <see cref="ComputeSlotCountFor"/>（夹取后的实际值）配合，供 UI 判断"本次是否发生了夹取"。
+        /// 没有运行期几何（远程 / 未解析）时返回 0。
         /// </summary>
         public static int ConfiguredSlotCountFor(DiskConfig config)
         {
             if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return 0;
-            int slots = (int)Math.Clamp(config.SsdCacheMaxBytes / BLOCK_SIZE, (long)MIN_SLOTS, (long)MAX_SLOTS);
-            return RoundDownToSlab(slots);
+            if (config.RuntimeGeometry is not { } geometry) return 0;
+            int slots = (int)Math.Clamp(config.SsdCacheMaxBytes / geometry.BlockSize,
+                (long)geometry.SlotsPerSlab, (long)MaxSlotsFor(geometry));
+            return RoundDownToSlab(slots, geometry);
         }
 
         /// <summary>
         /// 按上限字节数算出的**标称**占用（与引擎同口径：MIN/MAX + 整 Slab 规整，不做空间夹取）。
         /// 供 UI 启动前把**同一缓存卷上多块盘**的上限合计起来校验。
         /// </summary>
-        public static long ConfiguredBytesFor(long maxBytes)
+        public static long ConfiguredBytesFor(long maxBytes, BlockGeometry geometry)
         {
-            int slots = (int)Math.Clamp(maxBytes / BLOCK_SIZE, (long)MIN_SLOTS, (long)MAX_SLOTS);
-            return (long)RoundDownToSlab(slots) * BLOCK_SIZE;
+            int slots = (int)Math.Clamp(maxBytes / geometry.BlockSize,
+                (long)geometry.SlotsPerSlab, (long)MaxSlotsFor(geometry));
+            return (long)RoundDownToSlab(slots, geometry) * geometry.BlockSize;
         }
 
-        /// <summary>把槽数向下规整到一个整 Slab（下限 1 Slab、上限 MAX_SLOTS）</summary>
-        private static int RoundDownToSlab(int slots)
-            => Math.Clamp(slots / SLOTS_PER_SLAB * SLOTS_PER_SLAB, SLOTS_PER_SLAB, MAX_SLOTS);
+        /// <summary>把槽数向下规整到一个整 Slab（下限 1 Slab，上限为槽数存储上限）</summary>
+        private static int RoundDownToSlab(int slots, BlockGeometry geometry)
+        {
+            int perSlab = geometry.SlotsPerSlab;
+            return Math.Clamp(slots / perSlab * perSlab, perSlab, MaxSlotsFor(geometry));
+        }
 
         /// <summary>
         /// 缓存目录里是否存在一份**看起来可供校验**的账本（容器与索引都在）。只做存在性判断、不读内容——
@@ -542,8 +568,10 @@ namespace FlyDisk.Engine
                 using var fs = new FileStream(containerPath, FileMode.Open, FileAccess.ReadWrite,
                     FileShare.None, bufferSize: 1, FileOptions.None);
 
-                byte[] header = new byte[BLOCK_SIZE];
-                fs.ReadExactly(header, 0, BLOCK_SIZE);
+                int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, fs.Length);
+                if (headerBytes < CONTAINER_HASH_LEN + 8) return false;
+                byte[] header = new byte[headerBytes];
+                fs.ReadExactly(header, 0, headerBytes);
 
                 if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
                     BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
@@ -557,7 +585,7 @@ namespace FlyDisk.Engine
                 BitConverter.GetBytes(Hash(header, 0, CONTAINER_HASH_LEN)).CopyTo(header, CONTAINER_HASH_LEN);
 
                 fs.Position = 0;
-                fs.Write(header, 0, BLOCK_SIZE);
+                fs.Write(header, 0, headerBytes);
                 fs.Flush(true);
                 return true;
             }
@@ -617,9 +645,10 @@ namespace FlyDisk.Engine
         /// 走与装载相同的一套头部校验（魔数 / 版本 / 头部哈希）；任何情况下都不写盘。
         /// </summary>
         /// <returns>读到返回 true；没有容器 / 头部不合法 / 打不开 / 槽数非正 返回 false</returns>
-        public static bool TryPeekContainerSlotCount(DiskConfig config, out int slotCount)
+        public static bool TryPeekContainerSlotCount(DiskConfig config, out int slotCount, out int blockBytes)
         {
             slotCount = 0;
+            blockBytes = 0;
             try
             {
                 if (string.IsNullOrWhiteSpace(config.SsdCachePath)) return false;
@@ -628,10 +657,12 @@ namespace FlyDisk.Engine
                     Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), ContainerFileName);
                 if (!File.Exists(containerPath)) return false;
 
-                byte[] header = new byte[BLOCK_SIZE];
                 using var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                if (fs.Length < BLOCK_SIZE) return false;
-                fs.ReadExactly(header, 0, BLOCK_SIZE);
+                int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, fs.Length);
+                if (headerBytes < CONTAINER_HASH_LEN + 8) return false;
+
+                byte[] header = new byte[headerBytes];
+                fs.ReadExactly(header, 0, headerBytes);
 
                 if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
                     BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
@@ -641,6 +672,7 @@ namespace FlyDisk.Engine
                 }
 
                 slotCount = BitConverter.ToInt32(header, 16);
+                blockBytes = BitConverter.ToInt32(header, 20);
                 return slotCount > 0;
             }
             catch (Exception ex)
@@ -719,16 +751,18 @@ namespace FlyDisk.Engine
 
             bool recognized = false;
             int storedSlots = 0;
+            int storedBlockBytes = 0;
             long ownerIdentity = 0;
             long containerStamp = 0;
-            if (containerBytes >= BLOCK_SIZE)
+            if (containerBytes >= CONTAINER_HASH_LEN + 8)
             {
                 try
                 {
-                    byte[] header = new byte[BLOCK_SIZE];
+                    int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, containerBytes);
+                    byte[] header = new byte[headerBytes];
                     using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                     {
-                        fs.ReadExactly(header, 0, BLOCK_SIZE);
+                        fs.ReadExactly(header, 0, headerBytes);
                     }
                     if (BitConverter.ToUInt32(header, 0) == CONTAINER_MAGIC &&
                         BitConverter.ToInt32(header, 4) == CONTAINER_VERSION &&
@@ -736,6 +770,7 @@ namespace FlyDisk.Engine
                     {
                         recognized = true;
                         storedSlots = BitConverter.ToInt32(header, 16);
+                        storedBlockBytes = BitConverter.ToInt32(header, 20);
                         ownerIdentity = BitConverter.ToInt64(header, 24);
                         containerStamp = BitConverter.ToInt64(header, 8);
                     }
@@ -790,6 +825,7 @@ namespace FlyDisk.Engine
                 IndexBytes = indexBytes,
                 Recognized = recognized,
                 StoredSlots = storedSlots,
+                StoredBlockBytes = storedBlockBytes,
                 OwnerIdentity = ownerIdentity,
                 LastShutdownClean = lastClean,
                 IsConfigured = isConfigured,
@@ -819,11 +855,13 @@ namespace FlyDisk.Engine
                 string indexPath = Path.Combine(dir, IndexFileName);
                 if (!File.Exists(containerPath) || !File.Exists(indexPath)) return string.Empty;
 
-                byte[] ch = new byte[BLOCK_SIZE];
+                byte[] ch;
                 using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
-                    if (fs.Length < BLOCK_SIZE) return string.Empty;
-                    fs.ReadExactly(ch, 0, BLOCK_SIZE);
+                    if (fs.Length < CONTAINER_HASH_LEN + 8) return string.Empty;
+                    int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, fs.Length);
+                    ch = new byte[headerBytes];
+                    fs.ReadExactly(ch, 0, headerBytes);
                 }
                 if (BitConverter.ToUInt32(ch, 0) != CONTAINER_MAGIC ||
                     BitConverter.ToInt32(ch, 4) != CONTAINER_VERSION ||
@@ -1058,8 +1096,8 @@ namespace FlyDisk.Engine
 
             try
             {
-                _container!.Position = (long)(slot + 1) * BLOCK_SIZE;
-                _container.Write(buffer, offset, BLOCK_SIZE);
+                _container!.Position = (long)(slot + 1) * _blockSize;
+                _container.Write(buffer, offset, _blockSize);
                 return true;
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
@@ -1322,8 +1360,8 @@ namespace FlyDisk.Engine
 
         private void ReadSlot(int slot, byte[] buffer, int offset)
         {
-            _container!.Position = (long)(slot + 1) * BLOCK_SIZE;   // +1：跳过容器头部
-            _container.ReadExactly(buffer, offset, BLOCK_SIZE);
+            _container!.Position = (long)(slot + 1) * _blockSize;   // +1：跳过容器头部
+            _container.ReadExactly(buffer, offset, _blockSize);
         }
 
         /// <summary>
@@ -1351,7 +1389,7 @@ namespace FlyDisk.Engine
         /// <returns>true = 已覆盖该槽（或本来就在范围内）；false = 本块放弃准入</returns>
         private bool GrowToCoverSlot(int slot)
         {
-            long needed = BLOCK_SIZE + ((long)slot / SLOTS_PER_SLAB + 1) * SLAB_SIZE;
+            long needed = _blockSize + ((long)slot / _slotsPerSlab + 1) * _slabBytes;
             if (needed <= _containerBytes) return true;
             if (_growthBlocked) return false;
 
@@ -1418,8 +1456,8 @@ namespace FlyDisk.Engine
             }
 
             long needed = maxUsedSlot < 0
-                ? BLOCK_SIZE
-                : BLOCK_SIZE + ((long)maxUsedSlot / SLOTS_PER_SLAB + 1) * SLAB_SIZE;
+                ? _blockSize
+                : _blockSize + ((long)maxUsedSlot / _slotsPerSlab + 1) * _slabBytes;
 
             if (_containerBytes > needed)
             {
@@ -1439,7 +1477,7 @@ namespace FlyDisk.Engine
         {
             _containerId = Random.Shared.NextInt64();
 
-            byte[] buf = new byte[BLOCK_SIZE];
+            byte[] buf = new byte[_blockSize];
             using (var ms = new MemoryStream(buf))
             using (var w = new BinaryWriter(ms))
             {
@@ -1447,12 +1485,12 @@ namespace FlyDisk.Engine
                 w.Write(CONTAINER_VERSION);
                 w.Write(_containerId);
                 w.Write(_slotCount);
-                w.Write(BLOCK_SIZE);
+                w.Write(_blockSize);
                 w.Write(_deviceIdentity);
                 w.Write(Hash(buf, 0, CONTAINER_HASH_LEN));
             }
             _container!.Position = 0;
-            _container.Write(buf, 0, BLOCK_SIZE);
+            _container.Write(buf, 0, _blockSize);
             _container.Flush(true);
         }
 
@@ -1464,14 +1502,16 @@ namespace FlyDisk.Engine
         {
             containerId = 0;
             storedSlotCount = 0;
-            byte[] buf = new byte[BLOCK_SIZE];
+            int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, _container!.Length);
+            if (headerBytes < CONTAINER_HASH_LEN + 8) return false;
+            byte[] buf = new byte[headerBytes];
             _container!.Position = 0;
-            _container.ReadExactly(buf, 0, BLOCK_SIZE);
+            _container.ReadExactly(buf, 0, headerBytes);
 
             if (Hash(buf, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(buf, CONTAINER_HASH_LEN)) return false;
             if (BitConverter.ToUInt32(buf, 0) != CONTAINER_MAGIC) return false;
             if (BitConverter.ToInt32(buf, 4) != CONTAINER_VERSION) return false;
-            if (BitConverter.ToInt32(buf, 20) != BLOCK_SIZE) return false;
+            if (BitConverter.ToInt32(buf, 20) != _blockSize) return false;
             if (BitConverter.ToInt64(buf, 24) != _deviceIdentity) return false;   // 换了另一块盘 ⇒ 容器作废
 
             storedSlotCount = BitConverter.ToInt32(buf, 16);   // 允许与本次配置不同（缩放）
@@ -1499,8 +1539,8 @@ namespace FlyDisk.Engine
             try
             {
                 // 清空 = 只留头部块；其余空间按需再长（顺带把旧容器占的物理空间还回卷）
-                if (_container!.Length != BLOCK_SIZE) _container.SetLength(BLOCK_SIZE);
-                _containerBytes = BLOCK_SIZE;
+                if (_container!.Length != _blockSize) _container.SetLength(_blockSize);
+                _containerBytes = _blockSize;
             }
             catch (Exception ex)
             {
@@ -1568,7 +1608,7 @@ namespace FlyDisk.Engine
                 {
                     hw.Write(INDEX_MAGIC);
                     hw.Write(INDEX_VERSION);
-                    hw.Write(BLOCK_SIZE);
+                    hw.Write(_blockSize);
                     hw.Write(_slotCount);
                     hw.Write(0);            // 原 S 队列目标长度：S 已删（保留字段只为不动头部布局）
                     hw.Write(_mLimit);
@@ -1678,7 +1718,7 @@ namespace FlyDisk.Engine
                     headerHash = hr.ReadUInt64();
                 }
 
-                if (magic != INDEX_MAGIC || version != INDEX_VERSION || blockSize != BLOCK_SIZE) return false;
+                if (magic != INDEX_MAGIC || version != INDEX_VERSION || blockSize != _blockSize) return false;
                 // sLimit 在 v3 里恒为 0 —— 非 0 说明这是删掉 S 之前的账本（版本号本该先拦住，这里再兜一道）
                 if (oldSlotCount <= 0 || sLimit != 0) return false;
                 if (storedContainerId != containerId) return false;   // 容器被重建过（例如只删了 cache.dat）
@@ -2045,6 +2085,9 @@ namespace FlyDisk.Engine
 
         /// <summary>容器头记的槽位数（0 = 未知；仅 <see cref="Recognized"/> 为真时有意义）</summary>
         public int StoredSlots { get; init; }
+
+        /// <summary>容器头记的块字节数（0 = 未知）。与本次几何不一致 ⇒ 块大小不符，只能清空重建</summary>
+        public int StoredBlockBytes { get; init; }
 
         /// <summary>容器头记的**归属身份散列**（0 = 未知）；用来和配置里每盘条目匹配</summary>
         public long OwnerIdentity { get; init; }

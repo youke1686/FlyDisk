@@ -46,6 +46,24 @@ namespace FlyDisk.Models
         /// <summary>默认上限：8 GiB（回收条目时容器头读不出槽数就用它）</summary>
         public const long DefaultMaxBytes = 8L * 1024 * 1024 * 1024;
 
+        /// <summary>
+        /// 一个缓存块包含几个**逻辑扇区**（块字节数 = 该盘扇区大小 × 它）。
+        /// **0 = 未设置**：按最小块（`ceil(4096 / 扇区)` 个扇区）处理——旧配置没有这个字段时即为此值，
+        /// 512 扇区盘等价于 8、4Kn 盘等价于 1，与旧行为一致。
+        /// 该值在「L2 管理」里维护：存在可识别容器后只读（块大小锁定）。
+        /// </summary>
+        public int SectorsPerBlock { get; set; }
+
+        /// <summary>
+        /// 该盘逻辑扇区的**快照**（只在首次得知时写入，之后不更新）。
+        /// 用途：盘没接上时仍能在「L2 管理」里折算索引内存、校验扇区数上下限。
+        /// 0 = 尚未记录。
+        /// </summary>
+        public int BytesPerSector { get; set; }
+
+        /// <summary>逐字段深拷贝（全部是字符串 / 值类型，浅拷贝即深拷贝）</summary>
+        public L2DiskConfig Clone() => (L2DiskConfig)MemberwiseClone();
+
         /// <summary>找到这块盘的配置条目；没有返回 null</summary>
         public static L2DiskConfig? Find(List<L2DiskConfig> list, string diskIdentity)
         {
@@ -69,6 +87,14 @@ namespace FlyDisk.Models
     {
         /// <summary>浅拷贝（字符串 / 值类型安全；列表按引用共享）。会话副本与 L2 校验都用它。</summary>
         public DiskConfig Clone() => (DiskConfig)MemberwiseClone();
+
+        /// <summary>
+        /// **运行期**块几何（不落盘）。由 `Form1.BuildSessionConfig` 按"该盘的 L2 条目 + 源盘扇区"算好后
+        /// 随会话副本一起交给引擎与启动前预检；远程形态由引擎按最小块自行推导，可能为 null。
+        /// 不参与序列化：块大小属于"每份 L2 的配置"，不属于全局配置。
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public BlockGeometry? RuntimeGeometry { get; set; }
 
         // ===== 界面 =====
 
@@ -122,13 +148,6 @@ namespace FlyDisk.Models
 
         /// <summary>监听端口（iSCSI 标准端口 3260）</summary>
         public int ListenPort { get; set; } = 3260;
-
-        /// <summary>
-        /// 一个缓存块包含几个**逻辑扇区**；块字节数 = BytesPerSector × 它。
-        /// 512 字节扇区的盘填 8、4Kn 盘填 1 —— 两者都恒等于 4096。
-        /// 启动时校验"块字节数 == 4096"，不满足直接拒绝启动（见 阶段二-iSCSI块设备形态.md §3.5）。
-        /// </summary>
-        public int SectorsPerBlock { get; set; } = 8;
 
         // ===== 远程形态（见 后续待办.md 第一节）=====
         // **刻意没有"角色"字段**：三职责互斥是**运行期状态**，由"谁监听 / 谁配对"协商产生，

@@ -27,17 +27,24 @@ namespace FlyDisk.Models
     public static class ServiceConstants
     {
         /// <summary>
-        /// 缓存块大小（4KB）。**唯一定义点**：缓存引擎的 Block、块设备的 "BytesPerSector × SectorsPerBlock"
-        /// 校验都必须引用它，避免"同一事实多处硬编码"（见 未解决的疑点.md TD-20）。
+        /// 缓存块的**默认**字节数（4 KiB）。块大小现在是**每次会话按块几何推导**的实例属性
+        /// （见 <see cref="BlockGeometry"/>），这里只是"没有 L2 时取最接近 4 KiB"与 UI 估算的基准值。
         /// </summary>
-        public const int BlockSize = 4096;
+        public const int DefaultBlockSize = BlockGeometry.MinBlockBytes;
+
+        /// <summary>块字节数下限（= 4 KiB），与 <see cref="BlockGeometry.MinBlockBytes"/> 同源</summary>
+        public const int MinBlockSize = BlockGeometry.MinBlockBytes;
+
+        /// <summary>块字节数上限（= 1 MiB），与 <see cref="BlockGeometry.MaxBlockBytes"/> 同源</summary>
+        public const int MaxBlockSize = BlockGeometry.MaxBlockBytes;
 
         /// <summary>
-        /// Slab（整块）大小（64MB）。**不特指某种介质**：L1 非托管内存池按它向系统申请 / 归还内存，
+        /// Slab 的**目标**大小（64 MiB）。**不特指某种介质**：L1 非托管内存池按它向系统申请 / 归还内存，
         /// L2 容器按它整块增长 / 截断（见 docs/L2容器按需增长与容量缩放_设计.md）。
-        /// 与 <see cref="BlockSize"/> 一起作为唯一定义点（见 未解决的疑点.md TD-20）。
+        /// 实际 Slab 字节数 =「装得下的整数个块」（见 <see cref="BlockGeometry.SlabBytes"/>）：
+        /// 非 2 幂块下会略小于 64 MiB，每个 Slab 浪费不足一个块。
         /// </summary>
-        public const int SlabSize = 64 * 1024 * 1024;
+        public const int TargetSlabSize = 64 * 1024 * 1024;
 
         /// <summary>
         /// SSD 二级缓存（L2）在缓存盘上的目录名。UI 用"缓存盘 + 该目录名"组合出 `SsdCachePath`，

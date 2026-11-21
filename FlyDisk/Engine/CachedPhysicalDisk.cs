@@ -43,7 +43,7 @@ namespace FlyDisk.Engine
     /// </summary>
     public sealed class CachedPhysicalDisk : Disk
     {
-        private const int BlockSize = ServiceConstants.BlockSize;
+        private readonly int BlockSize;   // 本次会话的实际块大小（见 Models.BlockGeometry，不再固定 4096）
 
         /// <summary>
         /// 单条 SCSI READ/WRITE 的字节上限。协商的 MaxTransferLength 只有 32768 扇区（16MB），
@@ -59,12 +59,12 @@ namespace FlyDisk.Engine
         /// 所以把**连续未命中的块合并成一次读**；这个上限同时约束中转缓冲的大小与单次读的延迟。
         /// </summary>
         private const int MaxMergedReadBytes = 1024 * 1024;
-        private const int MaxMergedBlocks = MaxMergedReadBytes / BlockSize;
+        private readonly int MaxMergedBlocks;
 
         private readonly IBlockSource _raw;
         private readonly CacheService _cache;
-        private readonly byte[] _scratch = new byte[BlockSize];               // 单工作线程串行 ⇒ 可复用
-        private readonly byte[] _readBuffer = new byte[MaxMergedReadBytes];   // 合并回源的中转缓冲（同上，可复用）
+        private readonly byte[] _scratch;               // 单工作线程串行 ⇒ 可复用
+        private readonly byte[] _readBuffer;            // 合并回源的中转缓冲（同上，可复用）
 
         private long _readCommands;
         private long _readSectors;
@@ -76,10 +76,17 @@ namespace FlyDisk.Engine
         private readonly object _lifecycleLock = new();
         private readonly ManualResetEventSlim _idle = new(true);
 
-        public CachedPhysicalDisk(IBlockSource raw, CacheService cache)
+        public CachedPhysicalDisk(IBlockSource raw, CacheService cache, int blockSize)
         {
+            if (blockSize <= 0) throw new ArgumentOutOfRangeException(nameof(blockSize));
+
             _raw = raw;
             _cache = cache;
+            BlockSize = blockSize;
+            // 块可以大到 1 MiB：合并上限至少装得下一块，否则这类配置会退化成"永远不合并"
+            MaxMergedBlocks = Math.Max(1, MaxMergedReadBytes / BlockSize);
+            _scratch = new byte[blockSize];
+            _readBuffer = new byte[MaxMergedBlocks * BlockSize];
         }
 
         public override int BytesPerSector => _raw.BytesPerSector;
@@ -244,7 +251,7 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>把一块里"请求真正覆盖的那一段"拷进结果缓冲（块与请求都可能只是部分重叠）</summary>
-        private static void CopyBlockToResult(byte[] buffer, int bufferOffset, long blockIndex,
+        private void CopyBlockToResult(byte[] buffer, int bufferOffset, long blockIndex,
                                               byte[] result, long requestStart, long requestEnd)
         {
             long blockStart = blockIndex * BlockSize;

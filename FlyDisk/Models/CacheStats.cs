@@ -47,8 +47,14 @@ namespace FlyDisk.Models
         /// <summary>逻辑扇区大小（跟随源盘：512e 盘为 512，4Kn 盘为 4096）</summary>
         public int BytesPerSector { get; set; }
 
-        /// <summary>一个缓存块包含几个逻辑扇区（BytesPerSector × 它 == 4096）</summary>
+        /// <summary>一个缓存块包含几个逻辑扇区（块字节 = BytesPerSector × 它）</summary>
         public int SectorsPerBlock { get; set; }
+
+        /// <summary>实际块字节数（随源盘扇区与「L2 管理」里的扇区数变化，不再固定 4096）</summary>
+        public int BlockSizeBytes { get; set; }
+
+        /// <summary>实际 Slab 字节数（= 整数个块；非 2 幂块时略小于 64 MiB）</summary>
+        public int SlabBytes { get; set; }
 
         /// <summary>启动时该盘是否**已经是脱机**状态——这是"上次的 L2 账本是否可信"的判据（见 SsdCacheService 类注释）</summary>
         public bool DeviceWasOffline { get; set; }

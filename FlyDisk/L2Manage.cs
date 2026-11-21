@@ -156,6 +156,8 @@ namespace FlyDisk
     internal sealed class L2ManageForm : ThemedForm, ILocalizable
     {
         private const decimal GiB = 1024m * 1024 * 1024;
+        /// <summary>上限输入的安全上限（只为避免 long 溢出；实际能配多少由缓存卷可用空间决定）</summary>
+        private static readonly decimal MaxLimitGiB = long.MaxValue / GiB;
         private const long DefaultMaxBytes = 8L * 1024 * 1024 * 1024;
 
         private readonly DiskConfig _config;
@@ -171,8 +173,13 @@ namespace FlyDisk
         private readonly Label _hdrVolume = new();
         private readonly Label _hdrLimit = new();
         private readonly Label _hdrUsed = new();
+        private readonly Label _hdrSectors = new();
+        private readonly Label _hdrMemory = new();
         private readonly Label _hdrEnabled = new();
         private readonly Label _hdrStatus = new();
+
+        /// <summary>底部合计：所有启用行的索引内存估算之和（被动信息，不做启动拦截）</summary>
+        private readonly Label _lblMemoryTotal = new();
 
         private readonly Button _add = new();
         private readonly Button _delete = new();
@@ -189,6 +196,12 @@ namespace FlyDisk
             public long OwnerHash;
             public string CacheVolume = string.Empty;
             public long MaxBytes;
+            /// <summary>每块扇区数（0 = 未知 / 未设置）</summary>
+            public int SectorsPerBlock;
+            /// <summary>该盘扇区大小（0 = 未接上且没有快照）</summary>
+            public int BytesPerSector;
+            /// <summary>索引内存估算（字节）</summary>
+            public long IndexMemoryBytes;
             public string CacheDirectory = string.Empty;
             public long ActualBytes;
             public bool IsRecognized = true;
@@ -222,9 +235,12 @@ namespace FlyDisk
             public Label VolumeText = new();
             public TextBox Limit = new();
             public Label Used = new();
+            public TextBox Sectors = new();
+            public Label Memory = new();
             public CheckBox EnableBox = new();
             public Label Status = new();
             public string LastValidLimit = string.Empty;
+            public string LastValidSectors = string.Empty;
         }
 
         public L2ManageForm(DiskConfig config)
@@ -287,8 +303,11 @@ namespace FlyDisk
             _hdrVolume.Text = Locale.T("l2m.col.volume");
             _hdrLimit.Text = Locale.T("l2m.col.limit");
             _hdrUsed.Text = Locale.T("l2m.col.used");
+            _hdrSectors.Text = Locale.T("l2m.col.sectors");
+            _hdrMemory.Text = Locale.T("l2m.col.memory");
             _hdrEnabled.Text = Locale.T("l2m.col.enabled");
             _hdrStatus.Text = Locale.T("l2m.col.status");
+            UpdateMemoryTotal();
 
             foreach (RowView view in _rowViews)
             {
@@ -390,13 +409,18 @@ namespace FlyDisk
         private void BuildLayout()
         {
             var header = new Panel { Location = new Point(12, 12), Size = new Size(836, 24) };
-            ConfigureHeader(_hdrDisk, 8, 270, "l2m.col.disk");
-            ConfigureHeader(_hdrVolume, 282, 106, "l2m.col.volume");
-            ConfigureHeader(_hdrLimit, 392, 88, "l2m.col.limit");
-            ConfigureHeader(_hdrUsed, 484, 86, "l2m.col.used");
-            ConfigureHeader(_hdrEnabled, 574, 36, "l2m.col.enabled");
-            ConfigureHeader(_hdrStatus, 614, 192, "l2m.col.status");
-            header.Controls.AddRange(new Control[] { _hdrDisk, _hdrVolume, _hdrLimit, _hdrUsed, _hdrEnabled, _hdrStatus });
+            ConfigureHeader(_hdrDisk, 8, 230, "l2m.col.disk");
+            ConfigureHeader(_hdrVolume, 242, 88, "l2m.col.volume");
+            ConfigureHeader(_hdrLimit, 334, 72, "l2m.col.limit");
+            ConfigureHeader(_hdrUsed, 410, 72, "l2m.col.used");
+            ConfigureHeader(_hdrSectors, 486, 56, "l2m.col.sectors");
+            ConfigureHeader(_hdrMemory, 546, 94, "l2m.col.memory");
+            ConfigureHeader(_hdrEnabled, 644, 32, "l2m.col.enabled");
+            ConfigureHeader(_hdrStatus, 680, 152, "l2m.col.status");
+            header.Controls.AddRange(new Control[]
+            {
+                _hdrDisk, _hdrVolume, _hdrLimit, _hdrUsed, _hdrSectors, _hdrMemory, _hdrEnabled, _hdrStatus
+            });
             Controls.Add(header);
 
             _rowsPanel.Location = new Point(12, 38);
@@ -412,6 +436,11 @@ namespace FlyDisk
             _rowsPanel.Controls.Add(_rows);
             _rowsPanel.ClientSizeChanged += (s, e) => ResizeRows();
             Controls.Add(_rowsPanel);
+
+            _lblMemoryTotal.Location = new Point(12, 412);
+            _lblMemoryTotal.Size = new Size(836, 20);
+            _lblMemoryTotal.TextAlign = ContentAlignment.MiddleLeft;
+            Controls.Add(_lblMemoryTotal);
         }
 
         private static void ConfigureHeader(Label label, int x, int width, string key)
@@ -499,12 +528,30 @@ namespace FlyDisk
                         ? Locale.T("l2m.statusNeedsVerify")
                         : Locale.T("l2m.statusDisabled");
 
+                // 块大小：已初始化的行以**容器头里存的值**为准（配置可能被手改过）；
+                // 其余行按条目（0 = 用最小块）；未接上的盘用扇区快照。
+                // 快照缺失（旧配置）时按 512 B **估算扇区数**，只用于显示/夹取；索引内存仍显示“—”。
+                int snapshotSector = choice?.Info?.BytesPerSector ?? entry.BytesPerSector;
+                int estimateSector = snapshotSector > 0 ? snapshotSector : 512;
+                int storedBlock = initialized && cache != null ? cache.StoredBlockBytes : 0;
+                int sectors = storedBlock > 0
+                    ? Math.Max(1, storedBlock / estimateSector)
+                    : entry.SectorsPerBlock > 0
+                        ? entry.SectorsPerBlock
+                        : BlockGeometry.PreferredMinSectorsFor(estimateSector);
+                long indexMemory = initialized && cache != null && cache.StoredSlots > 0
+                    ? (long)cache.StoredSlots * BlockGeometry.L2MetadataBytesPerBlock
+                    : snapshotSector > 0 ? ComputeIndexMemory(entry.MaxBytes, sectors, snapshotSector) : 0;
+
                 AddRowView(new Row
                 {
                     DiskIdentity = entry.DiskIdentity,
                     OwnerHash = ownerHash,
                     CacheVolume = entry.CacheVolume,
                     MaxBytes = entry.MaxBytes,
+                    SectorsPerBlock = sectors,
+                    BytesPerSector = snapshotSector,
+                    IndexMemoryBytes = indexMemory,
                     CacheDirectory = initialized ? cache!.Directory : dir,
                     ActualBytes = initialized ? cache!.TotalBytes : 0,
                     IsConfig = true,
@@ -523,12 +570,21 @@ namespace FlyDisk
                 if (cache.Recognized)
                 {
                     string identity = FindIdentity(cache.OwnerIdentity);
+                    DiskChoice? choice = _diskChoices.Find(c => c.OwnerHash == cache.OwnerIdentity);
+                    int sectorSize = choice?.Info?.BytesPerSector ?? 0;
+                    int sectors = cache.StoredBlockBytes > 0 && sectorSize > 0
+                        ? Math.Max(1, cache.StoredBlockBytes / sectorSize) : 0;
+                    long storedBlock = cache.StoredBlockBytes > 0
+                        ? cache.StoredBlockBytes : ServiceConstants.DefaultBlockSize;
                     AddRowView(new Row
                     {
                         DiskIdentity = identity,
                         OwnerHash = cache.OwnerIdentity,
                         CacheVolume = cache.DriveRoot.TrimEnd('\\'),
-                        MaxBytes = cache.StoredSlots > 0 ? (long)cache.StoredSlots * ServiceConstants.BlockSize : DefaultMaxBytes,
+                        MaxBytes = cache.StoredSlots > 0 ? (long)cache.StoredSlots * storedBlock : DefaultMaxBytes,
+                        SectorsPerBlock = sectors,
+                        BytesPerSector = sectorSize,
+                        IndexMemoryBytes = (long)cache.StoredSlots * BlockGeometry.L2MetadataBytesPerBlock,
                         CacheDirectory = cache.Directory,
                         ActualBytes = cache.TotalBytes,
                         Enabled = identity.Length > 0,
@@ -556,6 +612,7 @@ namespace FlyDisk
             }
 
             ResizeRows();
+            UpdateMemoryTotal();
         }
 
         private string FindIdentity(long ownerHash)
@@ -594,14 +651,14 @@ namespace FlyDisk
             view.Disk = new ComboBox
             {
                 Location = new Point(8, 3),
-                Size = new Size(270, 24),
+                Size = new Size(230, 24),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 FlatStyle = FlatStyle.Flat,
             };
             view.DiskPrompt = new Label
             {
                 Location = new Point(12, 6),
-                Size = new Size(238, 18),
+                Size = new Size(198, 18),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Text = Locale.T("l2m.pickDisk"),
                 Cursor = Cursors.Hand,
@@ -609,41 +666,48 @@ namespace FlyDisk
             view.DiskText = new Label
             {
                 Location = new Point(8, 3),
-                Size = new Size(270, 24),
+                Size = new Size(230, 24),
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true,
             };
             view.Volume = new ComboBox
             {
-                Location = new Point(282, 3),
-                Size = new Size(106, 24),
+                Location = new Point(242, 3),
+                Size = new Size(88, 24),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 FlatStyle = FlatStyle.Flat,
             };
             view.VolumeText = new Label
             {
-                Location = new Point(282, 3),
-                Size = new Size(106, 24),
+                Location = new Point(242, 3),
+                Size = new Size(88, 24),
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true,
             };
-            view.Limit = new TextBox { Location = new Point(392, 3), Size = new Size(88, 24) };
+            view.Limit = new TextBox { Location = new Point(334, 3), Size = new Size(72, 24) };
             view.Used = new Label
             {
-                Location = new Point(484, 7),
-                Size = new Size(86, 20),
+                Location = new Point(410, 7),
+                Size = new Size(72, 20),
+                TextAlign = ContentAlignment.MiddleLeft,
+            };
+            view.Sectors = new TextBox { Location = new Point(486, 3), Size = new Size(56, 24) };
+            view.Memory = new Label
+            {
+                Location = new Point(546, 7),
+                Size = new Size(94, 20),
                 TextAlign = ContentAlignment.MiddleLeft,
             };
             view.Status = new Label
             {
-                Location = new Point(614, 7),
-                Size = new Size(192, 20),
+                Location = new Point(680, 7),
+                Size = new Size(152, 20),
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true,
             };
             view.EnableBox = new CheckBox
             {
-                Location = new Point(574, 5),
+                Location = new Point(644, 5),
                 Size = new Size(20, 20),
                 Checked = row.Enabled,
                 CheckAlign = ContentAlignment.MiddleCenter,
@@ -680,17 +744,25 @@ namespace FlyDisk
             view.VolumeText.Visible = row.Initialized;
 
             view.Limit.Text = row.MaxBytes > 0
-                ? ((decimal)row.MaxBytes / GiB).ToString(CultureInfo.CurrentCulture)
+                ? ((decimal)row.MaxBytes / GiB).ToString("0.####", CultureInfo.CurrentCulture)
                 : string.Empty;
             view.LastValidLimit = view.Limit.Text;
             view.Used.Text = FormatBytes(row.ActualBytes);
+            view.Sectors.Text = row.SectorsPerBlock > 0
+                ? row.SectorsPerBlock.ToString(CultureInfo.CurrentCulture)
+                : string.Empty;
+            view.LastValidSectors = view.Sectors.Text;
             view.Status.Text = row.Status;
+            UpdateIndexMemory(view);
 
             bool diskReadOnly = !row.IsRecognized || (!row.IsConfig && row.CacheDirectory.Length > 0);
             bool valueReadOnly = !row.IsRecognized || IsScannedUnmapped(row);
             view.Disk.Enabled = view.Disk.Enabled && !diskReadOnly;
             view.Volume.Enabled = !valueReadOnly;
             view.Limit.ReadOnly = valueReadOnly;
+            // 块大小：已初始化后锁定；未选盘 / 未识别时不可编辑（未接上的盘允许手动填，按 512 B 估算夹取）
+            view.Sectors.ReadOnly = row.Initialized || valueReadOnly;
+            view.Sectors.Enabled = !row.Initialized && !valueReadOnly;
             view.EnableBox.Enabled = !valueReadOnly;
 
             // 初始值设完再挂事件，避免被当成用户修改
@@ -708,16 +780,21 @@ namespace FlyDisk
             view.Limit.KeyPress += LimitBox_KeyPress;
             view.Limit.TextChanged += (s, e) => LimitTextChanged(view);
             view.Limit.Leave += (s, e) => NormalizeLimit(view);
+            view.Sectors.KeyPress += SectorsBox_KeyPress;
+            view.Sectors.TextChanged += (s, e) => SectorsTextChanged(view);
+            view.Sectors.Leave += (s, e) => NormalizeSectors(view);
 
             view.Disk.Enter += (s, e) => SelectView(view);
             view.Volume.Enter += (s, e) => SelectView(view);
             view.Limit.Enter += (s, e) => SelectView(view);
+            view.Sectors.Enter += (s, e) => SelectView(view);
             view.EnableBox.Enter += (s, e) => SelectView(view);
             view.EnableBox.CheckedChanged += (s, e) =>
             {
                 row.Enabled = view.EnableBox.Checked;
                 row.Status = row.Enabled ? row.StatusEnabled : row.StatusDisabled;
                 view.Status.Text = row.Status;
+                UpdateMemoryTotal();
             };
             view.Used.Click += (s, e) => SelectView(view);
             view.Status.Click += (s, e) => SelectView(view);
@@ -729,7 +806,7 @@ namespace FlyDisk
             view.Container.Controls.AddRange(new Control[]
             {
                 view.Accent, view.Disk, view.DiskText, view.Volume, view.VolumeText, view.Limit, view.Used,
-                view.EnableBox, view.Status, view.DiskPrompt,
+                view.Sectors, view.Memory, view.EnableBox, view.Status, view.DiskPrompt,
             });
             view.DiskPrompt.BringToFront();
             StylePrompt(view);
@@ -777,7 +854,12 @@ namespace FlyDisk
                 row.OwnerHash = 0;
                 row.CacheDirectory = string.Empty;
                 row.ActualBytes = 0;
+                row.BytesPerSector = 0;
+                row.SectorsPerBlock = 0;
+                view.Sectors.Text = string.Empty;
+                view.Sectors.Enabled = false;
                 view.Used.Text = FormatBytes(0);
+                UpdateIndexMemory(view);
                 ResetEditedStatus(row);
                 view.Status.Text = row.Status;
                 UpdateDiskPrompt(view);
@@ -802,6 +884,7 @@ namespace FlyDisk
             row.DiskIdentity = choice.Identity;
             row.OwnerHash = choice.OwnerHash;
             row.IsConfig = true;
+            row.BytesPerSector = choice.Info?.BytesPerSector ?? row.BytesPerSector;
 
             // 换盘后旧目录/实占不再属于这一行；按新盘 + 当前卷给出预期目录（可能尚不存在）。
             string volume = view.Volume.SelectedItem as string ?? string.Empty;
@@ -810,6 +893,8 @@ namespace FlyDisk
                 : string.Empty;
             row.ActualBytes = 0;
             view.Used.Text = FormatBytes(0);
+            view.Sectors.Enabled = !row.Initialized;
+            ApplyAutoSectors(view);   // 新盘的扇区大小可能不同：按 5% 规则重算块大小
             ResetEditedStatus(row);
             view.Status.Text = row.Status;
             UpdateDiskPrompt(view);
@@ -835,6 +920,7 @@ namespace FlyDisk
                 : string.Empty;
             row.ActualBytes = 0;
             view.Used.Text = FormatBytes(0);
+            UpdateIndexMemory(view);
             ResetEditedStatus(row);
             view.Status.Text = row.Status;
         }
@@ -890,12 +976,17 @@ namespace FlyDisk
         }
 
         /// <summary>结束编辑时归一化："1." / "001" → 1；空 / 非法 / &lt;=0 → 空白（未设置）</summary>
-        private static void NormalizeLimit(RowView view)
+        private void NormalizeLimit(RowView view)
         {
+            long previousMaxBytes = view.Data.MaxBytes;
+
             if (TryReadLimit(view.Limit.Text, out decimal parsed) && parsed > 0)
             {
-                view.Data.MaxBytes = (long)(parsed * GiB);
-                view.Limit.Text = parsed.ToString(CultureInfo.CurrentCulture);
+                // 只保留 4 位小数：GiB → 字节是十进制乘整数，截断会在回显时变成
+                // 0.19999999925… 这种长尾；先规整小数位再取最近字节，输入多少就显示多少。
+                parsed = Math.Round(Math.Min(parsed, MaxLimitGiB), 4);
+                view.Data.MaxBytes = (long)Math.Round(parsed * GiB);
+                view.Limit.Text = parsed.ToString("0.####", CultureInfo.CurrentCulture);
             }
             else
             {
@@ -912,6 +1003,110 @@ namespace FlyDisk
                 ? (view.Data.Enabled ? view.Data.StatusEnabled : view.Data.StatusDisabled)
                 : Locale.T("l2m.statusIncomplete");
             view.Status.Text = view.Data.Status;
+
+            // 只有上限**真的变了**才强制重算块大小——仅仅点进输入框再离开不该改动块大小
+            if (view.Data.MaxBytes != previousMaxBytes) ApplyAutoSectors(view);
+        }
+
+        /// <summary>索引内存估算：槽数 × 每块开销（槽数 = 上限 ÷ 块字节）</summary>
+        private static long ComputeIndexMemory(long maxBytes, int sectorsPerBlock, int bytesPerSector)
+        {
+            if (maxBytes <= 0 || sectorsPerBlock <= 0 || bytesPerSector <= 0) return 0;
+            long blockBytes = (long)sectorsPerBlock * bytesPerSector;
+            return maxBytes / blockBytes * BlockGeometry.L2MetadataBytesPerBlock;
+        }
+
+        private void UpdateIndexMemory(RowView view)
+        {
+            Row row = view.Data;
+            row.IndexMemoryBytes = row.Initialized
+                ? row.IndexMemoryBytes
+                : ComputeIndexMemory(row.MaxBytes, row.SectorsPerBlock, row.BytesPerSector);
+            bool known = row.Initialized
+                ? row.IndexMemoryBytes > 0
+                : row.BytesPerSector > 0 && row.SectorsPerBlock > 0 && row.MaxBytes > 0;
+            view.Memory.Text = known ? FormatBytes(row.IndexMemoryBytes) : "—";
+            UpdateMemoryTotal();
+        }
+
+        /// <summary>底部合计：启用行的索引内存之和（被动信息；启动时不做合计拦截）</summary>
+        private void UpdateMemoryTotal()
+        {
+            long total = 0;
+            foreach (RowView view in _rowViews)
+            {
+                if (!view.Data.Enabled || !view.Data.IsRecognized) continue;
+                total += view.Data.IndexMemoryBytes;
+            }
+
+            string text = Locale.T("l2m.memTotal", FormatBytes(total));
+            if (Engine.SystemMemory.TryRead(out MemoryStatus mem) && mem.TotalPhysicalBytes > 0)
+            {
+                text += "  " + Locale.T("l2m.memTotalPct",
+                    (total * 100.0 / mem.TotalPhysicalBytes).ToString("0.0", CultureInfo.CurrentCulture) + "%");
+            }
+            _lblMemoryTotal.Text = text;
+        }
+
+        /// <summary>5% 自动规则：按物理内存给出建议的每块扇区数（2 的幂），写回该行</summary>
+        private void ApplyAutoSectors(RowView view)
+        {
+            Row row = view.Data;
+            if (row.Initialized || row.BytesPerSector <= 0) return;
+
+            long totalMemory = 0;
+            if (Engine.SystemMemory.TryRead(out MemoryStatus mem)) totalMemory = (long)mem.TotalPhysicalBytes;
+            int suggested = BlockGeometry.SuggestSectors(row.MaxBytes, row.BytesPerSector, totalMemory);
+            if (suggested <= 0) return;
+
+            row.SectorsPerBlock = suggested;
+            view.Sectors.Text = suggested.ToString(CultureInfo.CurrentCulture);
+            view.LastValidSectors = view.Sectors.Text;
+            row.IndexMemoryBytes = ComputeIndexMemory(row.MaxBytes, suggested, row.BytesPerSector);
+            view.Memory.Text = row.MaxBytes > 0 ? FormatBytes(row.IndexMemoryBytes) : "—";
+            UpdateMemoryTotal();
+        }
+
+        /// <summary>块大小输入：只放行数字</summary>
+        private static void SectorsBox_KeyPress(object? sender, KeyPressEventArgs e)
+        {
+            if (char.IsControl(e.KeyChar)) return;
+            if (e.KeyChar >= '0' && e.KeyChar <= '9') return;
+            e.Handled = true;
+        }
+
+        /// <summary>粘贴 / 输入法上屏出现非法字符时整段回退</summary>
+        private static void SectorsTextChanged(RowView view)
+        {
+            string text = view.Sectors.Text;
+            if (text.Length == 0 || int.TryParse(text, out _))
+            {
+                view.LastValidSectors = text;
+                return;
+            }
+
+            int caret = view.Sectors.SelectionStart;
+            view.Sectors.Text = view.LastValidSectors;
+            view.Sectors.SelectionStart = Math.Min(caret, view.Sectors.Text.Length);
+        }
+
+        /// <summary>失焦/保存时把扇区数静默夹取到合法区间（[最小, 最大]，由块几何决定）</summary>
+        private void NormalizeSectors(RowView view)
+        {
+            Row row = view.Data;
+            if (row.Initialized) return;
+
+            int sector = row.BytesPerSector > 0 ? row.BytesPerSector : 512;   // 快照缺失时按 512 B 估算
+            int min = BlockGeometry.MinSectorsFor(sector);
+            int max = BlockGeometry.MaxSectorsFor(sector);
+            int fallback = Math.Min(BlockGeometry.PreferredMinSectorsFor(sector), max);
+            int value = int.TryParse(view.Sectors.Text, out int parsed) && parsed > 0 ? parsed : fallback;
+            value = Math.Clamp(value, min, max);
+
+            row.SectorsPerBlock = value;
+            view.Sectors.Text = value.ToString(CultureInfo.CurrentCulture);
+            view.LastValidSectors = view.Sectors.Text;
+            UpdateIndexMemory(view);
         }
 
         private static bool TryReadLimit(string text, out decimal value)
@@ -999,10 +1194,14 @@ namespace FlyDisk
             bool complete = row.DiskIdentity.Length > 0 && row.CacheVolume.Length > 0 && row.MaxBytes > 0;
             row.StatusEnabled = complete ? Locale.T("l2m.statusNoCache") : Locale.T("l2m.statusIncomplete");
             row.StatusDisabled = complete ? Locale.T("l2m.statusDisabled") : Locale.T("l2m.statusIncomplete");
-            row.Status = Locale.T("l2m.statusCleared");
+            // 清空后与"从未建立过缓存"是同一种状态：正常 · 待初始化（或待配置），不是"空"
+            row.Status = complete ? Locale.T("l2m.statusNoCache") : Locale.T("l2m.statusIncomplete");
             view.Used.Text = FormatBytes(0);
             view.Status.Text = row.Status;
             SetInitialized(view, false);
+            row.SectorsPerBlock = 0;
+            ApplyAutoSectors(view);   // 缓存已清空 ⇒ 块大小解锁，按当前上限重新给建议值
+            UpdateIndexMemory(view);
         }
 
         /// <summary>
@@ -1035,6 +1234,8 @@ namespace FlyDisk
             view.Disk.Enabled = true;
             view.Volume.Enabled = true;
             view.Limit.ReadOnly = false;
+            view.Sectors.ReadOnly = false;
+            view.Sectors.Enabled = true;
             view.EnableBox.Enabled = true;
             StylePrompt(view);
             UpdateDiskPrompt(view);
@@ -1064,6 +1265,8 @@ namespace FlyDisk
         {
             // 把仍在输入中的上限先归一化，再逐行读取
             foreach (RowView view in _rowViews) NormalizeLimit(view);
+            // 块大小：失焦/保存都静默夹取（已初始化行跳过）
+            foreach (RowView view in _rowViews) NormalizeSectors(view);
 
             var result = new List<L2DiskConfig>();
             foreach (RowView view in _rowViews)
@@ -1077,7 +1280,9 @@ namespace FlyDisk
                 bool enabled = view.EnableBox.Checked;
 
                 // 停用的行只保留配置，不参与本次的上限校验（重新启用时启动前会再校验）
-                if (enabled && volume.Length > 0 && (gib < 1 || gib > 64))
+                // 上限不再有 64 GiB 的程序上限：只要求 ≥ 0.1 GiB（引擎按整 Slab 规整，0.1 GiB 实际取 64 MiB），
+                // 能放多少由启动前按缓存卷可用空间判定
+                if (enabled && volume.Length > 0 && gib < 0.1m)
                 {
                     Dialogs.Notice(this, Locale.T("dialog.notice.limitRange"), Locale.T("l2m.msg.limitRange", Describe(row)));
                     return;
@@ -1096,7 +1301,10 @@ namespace FlyDisk
                     Enabled = enabled,
                     CacheVolume = volume,
                     // 卷为空 = 这一行还没配完：上限存 0，启动前会被拒绝（不静默当成"不启用 L2"）
-                    MaxBytes = volume.Length > 0 ? (long)(gib * GiB) : 0,
+                    // 用 NormalizeLimit 已取整好的 MaxBytes，避免这里再算一遍造成两套取整口径
+                    MaxBytes = volume.Length > 0 ? row.MaxBytes : 0,
+                    SectorsPerBlock = row.SectorsPerBlock,
+                    BytesPerSector = row.BytesPerSector,
                 });
             }
 
@@ -1158,12 +1366,17 @@ namespace FlyDisk
 
         private string Describe(Row row)
         {
-            if (row.CacheDirectory.Length > 0) return row.CacheDirectory;
-
-            // 优先用下拉框里的友好盘名（盘号 + 盘符/脱机 + 型号 + 容量），其次是身份串的人话形式
+            // 统一走 DiskText：盘是"这块盘是谁"的锚点，目录只是补充
             DiskChoice? choice = _diskChoices.Find(c => string.Equals(c.Identity, row.DiskIdentity, StringComparison.Ordinal));
-            if (choice != null) return choice.Text;
-            return row.DiskIdentity.Length > 0 ? DiskText.NotConnected(row.DiskIdentity) : Locale.T("l2m.unknownDisk");
+            string disk = choice?.Info != null
+                ? DiskText.Full(choice.Info)
+                : row.DiskIdentity.Length > 0
+                    ? DiskText.NotConnected(row.DiskIdentity)
+                    : Locale.T("l2m.unknownDisk");
+
+            return row.CacheDirectory.Length > 0
+                ? Locale.T("l2m.describeWithDir", disk, row.CacheDirectory)
+                : disk;
         }
 
         private static string FormatBytes(long bytes)

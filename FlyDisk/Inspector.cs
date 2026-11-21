@@ -354,8 +354,9 @@ namespace FlyDisk
             if (seconds <= 0) return CurrentSpeeds(state, 0, 0);
 
             long bytesPerSector = s.BytesPerSector > 0 ? s.BytesPerSector : 512;
+            int blockBytes = s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize;
             double delivered = (readSectors - read0) * (double)bytesPerSector / 1_000_000.0 / seconds;
-            double source = (sourceBlocks - source0) * (double)ServiceConstants.BlockSize / 1_000_000.0 / seconds;
+            double source = (sourceBlocks - source0) * (double)blockBytes / 1_000_000.0 / seconds;
 
             if (delivered > state.PeakDeliveredMBps) state.PeakDeliveredMBps = delivered;
             if (source > state.PeakSourceMBps) state.PeakSourceMBps = source;
@@ -423,8 +424,8 @@ namespace FlyDisk
 
             // ===== 效果：命中落在哪一层 =====
             ReadOutcomeWindow session = StatText.SessionWindow(s);
-            long blocks1M = 1024L * 1024 / ServiceConstants.BlockSize;
-            long blocks1G = 1024L * 1024 * 1024 / ServiceConstants.BlockSize;
+            long blocks1M = 1024L * 1024 / (s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize);
+            long blocks1G = 1024L * 1024 * 1024 / (s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize);
 
             sb.AppendLine();
             sb.AppendLine(Locale.T("insp.section.outcome"));
@@ -486,15 +487,15 @@ namespace FlyDisk
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.writeUpdate"),
                     Locale.T("insp.v.blocks", StatText.Num(s.L1WriteUpdateBlocksTotal))));
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.containerSlots"),
-                    Locale.T("insp.v.slotsWithSlabs", StatText.Num(s.TotalCacheSize / ServiceConstants.BlockSize),
+                    Locale.T("insp.v.slotsWithSlabs", StatText.Num(s.TotalCacheSize / (s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)),
                         StatText.Num(s.SlabCount), StatText.CapText(s.TotalCacheSize))));
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.slotLayout"), string.Empty));
                 sb.AppendLine(StatText.SubLine(Locale.T("insp.f.sub.occupied"),
                     Locale.T("insp.v.slotsWithCap", StatText.Num(s.UsedSlots),
-                        StatText.CapText(s.UsedSlots * ServiceConstants.BlockSize))));
+                        StatText.CapText(s.UsedSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)))));
                 sb.AppendLine(StatText.SubLine(Locale.T("insp.f.sub.free"),
                     Locale.T("insp.v.slotsWithCap", StatText.Num(s.FreeSlots),
-                        StatText.CapText(s.FreeSlots * ServiceConstants.BlockSize))));
+                        StatText.CapText(s.FreeSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)))));
 
                 sb.AppendLine();
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.autoEvict"),
@@ -506,7 +507,7 @@ namespace FlyDisk
                         s.LastEvictionMs.ToString("F0", CultureInfo.CurrentCulture))));
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.totalReleased"),
                     Locale.T("insp.v.slabsReleased", StatText.Num(s.ReleasedSlabsTotal),
-                        StatText.CapText(s.ReleasedSlabsTotal * ServiceConstants.SlabSize))));
+                        StatText.CapText(s.ReleasedSlabsTotal * (long)(s.SlabBytes > 0 ? s.SlabBytes : ServiceConstants.DefaultBlockSize)))));
             }
 
             sb.AppendLine();
@@ -539,17 +540,17 @@ namespace FlyDisk
                     Locale.T("insp.v.blocks", StatText.Num(s.SsdWriteUpdateBlocksTotal))));
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.containerSlots"),
                     Locale.T("insp.v.slotsWithCap", StatText.Num(s.SsdTotalSlots),
-                        StatText.CapText(s.SsdTotalSlots * ServiceConstants.BlockSize))));
+                        StatText.CapText(s.SsdTotalSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)))));
                 sb.AppendLine(StatText.Line(Locale.T("insp.f.slotLayout"), string.Empty));
                 sb.AppendLine(StatText.SubLine(Locale.T("insp.f.sub.data"),
                     Locale.T("insp.v.slotsWithCap", StatText.Num(s.SsdUsedSlots),
-                        StatText.CapText(s.SsdUsedSlots * ServiceConstants.BlockSize))));
+                        StatText.CapText(s.SsdUsedSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)))));
                 sb.AppendLine(StatText.SubLine(Locale.T("insp.f.sub.hole"),
                     Locale.T("insp.v.slotsWithCap", StatText.Num(s.SsdHoleSlots),
-                        StatText.CapText(s.SsdHoleSlots * ServiceConstants.BlockSize))));
+                        StatText.CapText(s.SsdHoleSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)))));
                 sb.AppendLine(StatText.SubLine(Locale.T("insp.f.sub.available"),
                     Locale.T("insp.v.slotsWithCapPct", StatText.Num(s.SsdFreeSlots),
-                        StatText.CapText(s.SsdFreeSlots * ServiceConstants.BlockSize),
+                        StatText.CapText(s.SsdFreeSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)),
                         StatText.Pct(s.SsdFreeSlots, s.SsdTotalSlots))));
 
                 sb.AppendLine();
@@ -576,7 +577,7 @@ namespace FlyDisk
                 Locale.T("insp.v.device", StatText.Model(s), StatText.Serial(s))));
             sb.AppendLine(StatText.Line(Locale.T("insp.f.capacity"), StatText.CapText(s.DeviceSizeBytes)));
             sb.AppendLine(StatText.Line(Locale.T("insp.f.blockSize"),
-                Locale.T("insp.v.blockSize", StatText.Num(s.BytesPerSector * s.SectorsPerBlock),
+                Locale.T("insp.v.blockSize", StatText.Num(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : s.BytesPerSector * s.SectorsPerBlock),
                     StatText.Num(s.BytesPerSector), StatText.Num(s.SectorsPerBlock))));
             sb.AppendLine(StatText.Line(Locale.T("insp.f.endpoint"),
                 Locale.T("insp.v.endpoint", s.ListenEndpoint, s.TargetIqn)));
@@ -715,9 +716,8 @@ namespace FlyDisk
         private const int LineH = 19;
         private const int BoxSide = 16;     // 吞吐"方框"的边长（略高于条，好看出深浅）
 
-        // 窗口"满了"的判据：引擎那边给的就是 min(已写格数, 窗口长度)，所以取到的格数等于窗口长度即为满
-        private const int BlocksPerMB = 1024 * 1024 / ServiceConstants.BlockSize;
-        private const int BlocksPerGB = 1024 * 1024 * 1024 / ServiceConstants.BlockSize;
+        // 窗口"满了"的判据：引擎那边给的就是 min(已写格数, 窗口长度)，所以取到的格数等于窗口长度即为满。
+        // 窗口长度按**当前块大小**折算（块可变），因此不再写成常量。
 
         private CacheStats? _stats;
         private string? _error;
@@ -852,8 +852,10 @@ namespace FlyDisk
             // ③ 效果（二）：三根堆叠条（窗口没满不画——没满的窗口只是噪声）
             Draw(g, Locale.T("insp.section.outcome"), PadX, y, SubTextColor);
             y += LineH;
-            DrawOutcomeRow(g, ref y, barLeft, barW, Locale.T("insp.b.rows.1mb"), s.Recent1MB, BlocksPerMB);
-            DrawOutcomeRow(g, ref y, barLeft, barW, Locale.T("insp.b.rows.1gb"), s.Recent1GB, BlocksPerGB);
+            DrawOutcomeRow(g, ref y, barLeft, barW, Locale.T("insp.b.rows.1mb"), s.Recent1MB,
+                Math.Max(1, 1024 * 1024 / (s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)));
+            DrawOutcomeRow(g, ref y, barLeft, barW, Locale.T("insp.b.rows.1gb"), s.Recent1GB,
+                Math.Max(1, 1024 * 1024 * 1024 / (s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)));
             DrawOutcomeRow(g, ref y, barLeft, barW, Locale.T("insp.b.rows.session"), StatText.SessionWindow(s), 0);
             y += 8;
 
@@ -1062,8 +1064,8 @@ namespace FlyDisk
             y += LineH;
 
             Draw(g, Locale.T("insp.b.l2Note",
-                    StatText.CapText(s.SsdUsedSlots * ServiceConstants.BlockSize),
-                    StatText.CapText(s.SsdHoleSlots * ServiceConstants.BlockSize),
+                    StatText.CapText(s.SsdUsedSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)),
+                    StatText.CapText(s.SsdHoleSlots * (long)(s.BlockSizeBytes > 0 ? s.BlockSizeBytes : ServiceConstants.DefaultBlockSize)),
                     StatText.Pct(s.SsdFreeSlots, total),
                     s.SsdConservativeThreshold.ToString("P0", CultureInfo.CurrentCulture)),
                  barLeft, y, SubTextColor);

@@ -67,6 +67,8 @@ namespace FlyDisk.Engine
         /// <summary>账本里同一块号被两个槽登记的条目数</summary>
         public long DuplicateBlocks { get; set; }
         public long SourceTotalBlocks { get; set; }
+        /// <summary>本次校验使用的块字节数（按块几何推导，不再固定 4 KiB）</summary>
+        public int BlockSizeBytes { get; set; }
         public long Generation { get; set; }
         public long ContainerId { get; set; }
         public double ElapsedMs { get; set; }
@@ -109,7 +111,14 @@ namespace FlyDisk.Engine
     {
         #region 常量（账本格式的只读镜像；与 SsdCacheService 一一对应）
 
-        private const int BLOCK_SIZE = ServiceConstants.BlockSize;
+        /// <summary>
+        /// 本次校验的块字节数。**不是常量**：由「源盘扇区 × 该盘 L2 条目里的扇区数」推导
+        /// （见 Models.BlockGeometry），在 <see cref="ValidateTargetDisk"/> 里确定。
+        /// </summary>
+        private int _blockSize = ServiceConstants.DefaultBlockSize;
+
+        /// <summary>只读探测容器头时最多读多少字节（头字段都在前 40 字节，其余为零）</summary>
+        private const int ContainerHeaderPeekBytes = 4096;
 
         private const uint CONTAINER_MAGIC = 0x44434453;   // "SDCD"
         private const int CONTAINER_VERSION = 2;
@@ -125,8 +134,8 @@ namespace FlyDisk.Engine
         private const string IndexFileName = "index.bin";
         private const string LockFileName = "cache.lock";
 
-        /// <summary>源盘单次连续读的最大块数（= 1 MB，与 PhysicalDiskHandle 的单次搬运上限一致）</summary>
-        private const int MAX_RUN_BLOCKS = 256;
+        /// <summary>源盘单次连续读的最大块数（按 1 MB 折算；块越大读的块数越少）</summary>
+        private int _maxRunBlocks = 256;
         /// <summary>错误明细最多写多少行（其余只在摘要里计数）</summary>
         private const int MAX_DETAIL_LINES = 200;
         /// <summary>连续多少块读失败就判定为介质故障并中止（避免坏盘上白跑几小时）</summary>
@@ -165,9 +174,9 @@ namespace FlyDisk.Engine
         private readonly List<int> _mismatch = new();
         private L2VerifyResult? _lastVerify;
 
-        private readonly byte[] _srcBuf = new byte[BLOCK_SIZE * MAX_RUN_BLOCKS];
-        private readonly bool[] _srcOk = new bool[MAX_RUN_BLOCKS];
-        private readonly byte[] _slotBuf = new byte[BLOCK_SIZE];
+        private byte[] _srcBuf = Array.Empty<byte>();
+        private bool[] _srcOk = Array.Empty<bool>();
+        private byte[] _slotBuf = Array.Empty<byte>();
 
         #endregion
 
@@ -241,13 +250,14 @@ namespace FlyDisk.Engine
             _container = new FileStream(containerPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
                 bufferSize: 1, FileOptions.RandomAccess);
 
-            // 容器**按需、按 Slab 增长** ⇒ 长度不再等于整容量；这里只要求"至少含一个头部块"，
+            // 容器**按需、按 Slab 增长** ⇒ 长度不再等于整容量；这里只要求"含得下头部字段"，
             // "是否覆盖账本用到的每个槽"由 LoadIndex 拿到实际槽位后再校验（见设计文档 §5.5）。
-            if (_container.Length < BLOCK_SIZE)
-                throw new InvalidOperationException(Locale.T("l2v.err.containerLength", _container.Length, BLOCK_SIZE));
+            if (_container.Length < CONTAINER_HASH_LEN + 8)
+                throw new InvalidOperationException(Locale.T("l2v.err.containerLength", _container.Length, CONTAINER_HASH_LEN + 8));
 
-            byte[] header = new byte[BLOCK_SIZE];
-            _container.ReadExactly(header, 0, BLOCK_SIZE);
+            int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, _container.Length);
+            byte[] header = new byte[headerBytes];
+            _container.ReadExactly(header, 0, headerBytes);
 
             if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
                 BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
@@ -262,11 +272,11 @@ namespace FlyDisk.Engine
             long deviceIdentity = BitConverter.ToInt64(header, 24);
             _deviceIdentity = deviceIdentity;
 
-            if (blockSize != BLOCK_SIZE || _slotCount <= 0)
+            if (blockSize != _blockSize || _slotCount <= 0)
                 throw new InvalidOperationException(Locale.T("l2v.err.containerHeaderParams", blockSize, _slotCount));
 
             // 槽位数以盘上记录为准：不重算（见类注释第 2 条）
-            _totalBlocks = info.SizeBytes / BLOCK_SIZE;
+            _totalBlocks = info.SizeBytes / _blockSize;
             if (deviceIdentity != ComputeDeviceIdentity(info))
             {
                 throw new InvalidOperationException(
@@ -288,7 +298,7 @@ namespace FlyDisk.Engine
         /// <summary>重写容器头部的身份戳（其余字段原样保留）并强制落盘</summary>
         private void WriteContainerHeader(long containerId)
         {
-            byte[] header = new byte[BLOCK_SIZE];
+            byte[] header = new byte[_blockSize];
             using (var ms = new MemoryStream(header))
             using (var w = new BinaryWriter(ms))
             {
@@ -296,13 +306,13 @@ namespace FlyDisk.Engine
                 w.Write(CONTAINER_VERSION);
                 w.Write(containerId);
                 w.Write(_slotCount);
-                w.Write(BLOCK_SIZE);
+                w.Write(_blockSize);
                 w.Write(_deviceIdentity);
                 w.Write(Hash(header, 0, CONTAINER_HASH_LEN));
             }
 
             _container!.Position = 0;
-            _container.Write(header, 0, BLOCK_SIZE);
+            _container.Write(header, 0, _blockSize);
             _container.Flush(true);
             _containerId = containerId;
         }
@@ -342,12 +352,25 @@ namespace FlyDisk.Engine
         /// </summary>
         private void ValidateTargetDisk(PhysicalDiskInfo info)
         {
-            int blockBytes = info.BytesPerSector * Math.Max(0, _config.SectorsPerBlock);
-            if (info.BytesPerSector <= 0 || _config.SectorsPerBlock <= 0 || blockBytes != ServiceConstants.BlockSize)
+            // 块几何：与引擎同一套推导（该盘 L2 条目里的扇区数；无条目 / 停用 ⇒ 最接近 4 KiB 的整扇区数）。
+            // 这里同时把缓冲区按实际块大小分配好——**绝不**假设块是 4096。
+            BlockGeometry geometry;
+            try
             {
-                throw new InvalidOperationException(Locale.T("l2v.err.blockSize",
-                    info.BytesPerSector, _config.SectorsPerBlock, blockBytes, ServiceConstants.BlockSize));
+                geometry = _config.RuntimeGeometry
+                           ?? BlockGeometry.ForDisk(_config, PhysicalDiskHandle.DescribeIdentity(info),
+                               info.BytesPerSector, info.SizeBytes);
             }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(Locale.T("l2v.err.blockSize", info.BytesPerSector, ex.Message));
+            }
+
+            _blockSize = geometry.BlockSize;
+            _maxRunBlocks = Math.Max(1, (1024 * 1024) / _blockSize);
+            _srcBuf = new byte[_blockSize * _maxRunBlocks];
+            _srcOk = new bool[_maxRunBlocks];
+            _slotBuf = new byte[_blockSize];
 
             string blocked = PhysicalDiskHandle.DescribeTargetDiskBlockReason(info.DiskNumber);
             if (blocked.Length > 0)
@@ -398,7 +421,7 @@ namespace FlyDisk.Engine
             long generation = BitConverter.ToInt64(header, 44);
             long containerId = BitConverter.ToInt64(header, 52);
 
-            if (magic != INDEX_MAGIC || version != INDEX_VERSION || blockSize != BLOCK_SIZE)
+            if (magic != INDEX_MAGIC || version != INDEX_VERSION || blockSize != _blockSize)
                 throw new InvalidOperationException(Locale.T("l2v.err.indexHeaderBad"));
             if (Hash(header, 0, INDEX_HEADER_HASH_OFFSET) != BitConverter.ToUInt64(header, INDEX_HEADER_HASH_OFFSET))
                 throw new InvalidOperationException(Locale.T("l2v.err.indexHeaderHash"));
@@ -479,7 +502,7 @@ namespace FlyDisk.Engine
             }
 
             // 容器必须**覆盖账本用到的每一个槽**（容器按需增长 ⇒ 长度不固定，只校验"够不够用"，见设计文档 §5.5）
-            long needed = (long)(maxSlot + 2) * BLOCK_SIZE;
+            long needed = (long)(maxSlot + 2) * _blockSize;
             if (_container.Length < needed)
             {
                 throw new InvalidOperationException(
@@ -539,6 +562,7 @@ namespace FlyDisk.Engine
                 OutOfRangeBlocks = _outOfRangeBlocks,
                 DuplicateBlocks = _duplicateBlocks,
                 SourceTotalBlocks = _totalBlocks,
+                BlockSizeBytes = _blockSize,
                 Generation = _generation,
                 ContainerId = _containerId
             };
@@ -565,7 +589,7 @@ namespace FlyDisk.Engine
 
                 // 连续块合并成一次读：机械盘的顺序读就是它的最优序
                 int run = 1;
-                while (i + run < total && run < MAX_RUN_BLOCKS && _blocks[i + run] == _blocks[i + run - 1] + 1) run++;
+                while (i + run < total && run < _maxRunBlocks && _blocks[i + run] == _blocks[i + run - 1] + 1) run++;
 
                 ReadSourceRun(_blocks[i], run);
                 bool abortedHere = false;
@@ -589,7 +613,7 @@ namespace FlyDisk.Engine
                     consecutiveFailures = 0;
 
                     ReadContainerSlot(_slots[idx]);
-                    if (_srcBuf.AsSpan(k * BLOCK_SIZE, BLOCK_SIZE).SequenceEqual(_slotBuf.AsSpan(0, BLOCK_SIZE)))
+                    if (_srcBuf.AsSpan(k * _blockSize, _blockSize).SequenceEqual(_slotBuf.AsSpan(0, _blockSize)))
                     {
                         result.MatchedBlocks++;
                     }
@@ -658,7 +682,7 @@ namespace FlyDisk.Engine
                 if (ct.IsCancellationRequested) { result.Cancelled = true; break; }
 
                 int run = 1;
-                while (i + run < total && run < MAX_RUN_BLOCKS &&
+                while (i + run < total && run < _maxRunBlocks &&
                        _blocks[_mismatch[i + run]] == _blocks[_mismatch[i + run - 1]] + 1) run++;
 
                 ReadSourceRun(_blocks[_mismatch[i]], run);
@@ -670,7 +694,7 @@ namespace FlyDisk.Engine
 
                     try
                     {
-                        WriteContainerSlot(_slots[idx], k * BLOCK_SIZE);
+                        WriteContainerSlot(_slots[idx], k * _blockSize);
                         result.RepairedBlocks++;
                     }
                     catch (IOException ex)
@@ -726,7 +750,7 @@ namespace FlyDisk.Engine
         {
             try
             {
-                _device!.Read(firstBlock * BLOCK_SIZE, _srcBuf, 0, count * BLOCK_SIZE);
+                _device!.Read(firstBlock * _blockSize, _srcBuf, 0, count * _blockSize);
                 for (int k = 0; k < count; k++) _srcOk[k] = true;
                 return;
             }
@@ -739,7 +763,7 @@ namespace FlyDisk.Engine
             {
                 try
                 {
-                    _device!.Read((firstBlock + k) * BLOCK_SIZE, _srcBuf, k * BLOCK_SIZE, BLOCK_SIZE);
+                    _device!.Read((firstBlock + k) * _blockSize, _srcBuf, k * _blockSize, _blockSize);
                     _srcOk[k] = true;
                 }
                 catch (IOException ex)
@@ -752,14 +776,14 @@ namespace FlyDisk.Engine
 
         private void ReadContainerSlot(int slot)
         {
-            _container!.Position = (long)(slot + 1) * BLOCK_SIZE;
-            _container.ReadExactly(_slotBuf, 0, BLOCK_SIZE);
+            _container!.Position = (long)(slot + 1) * _blockSize;
+            _container.ReadExactly(_slotBuf, 0, _blockSize);
         }
 
         private void WriteContainerSlot(int slot, int bufferOffset)
         {
-            _container!.Position = (long)(slot + 1) * BLOCK_SIZE;
-            _container.Write(_srcBuf, bufferOffset, BLOCK_SIZE);
+            _container!.Position = (long)(slot + 1) * _blockSize;
+            _container.Write(_srcBuf, bufferOffset, _blockSize);
         }
 
         private static void Report(Action<L2VerifyProgress>? progress, L2VerifyPhase phase,
@@ -801,11 +825,13 @@ namespace FlyDisk.Engine
                     Path.GetFullPath(config.SsdCachePath).TrimEnd('\\'), ContainerFileName);
                 if (!File.Exists(containerPath)) return null;
 
-                byte[] header = new byte[BLOCK_SIZE];
+                int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, new FileInfo(containerPath).Length);
+                if (headerBytes < CONTAINER_HASH_LEN + 8) return null;
+                byte[] header = new byte[headerBytes];
                 using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite, bufferSize: 1, FileOptions.RandomAccess))
                 {
-                    fs.ReadExactly(header, 0, BLOCK_SIZE);
+                    fs.ReadExactly(header, 0, headerBytes);
                 }
 
                 if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
@@ -1290,7 +1316,7 @@ namespace FlyDisk
         {
             string duration = FormatDuration(r.ElapsedMs);
             string speed = r.ScannedBlocks > 0
-                ? FormatSpeed(r.ScannedBlocks * (long)ServiceConstants.BlockSize, r.ElapsedMs)
+                ? FormatSpeed(r.ScannedBlocks * (long)r.BlockSizeBytes, r.ElapsedMs)
                 : "—";
 
             if (r.Aborted)

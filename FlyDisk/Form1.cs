@@ -279,20 +279,19 @@ namespace FlyDisk
             // 加速运行中时菜单项已被置灰（见 RefreshStatus），这里不再重复判断。
 
             // 在**副本**上编辑：设置窗口里点「取消」不能改到正在使用的配置对象。
-            // L2Disks 是引用类型列表，必须逐项深拷贝，否则 L2 管理里的修改仍会漏回全局配置。
+            // L2Disks 是引用类型列表，必须逐项深拷贝（`L2DiskConfig.Clone`，**包含块大小与扇区快照**），
+            // 否则 L2 管理里的修改会漏回全局配置，或者块大小在拷贝时被静默清成 0。
             DiskConfig working = _config.Clone();
-            working.L2Disks = _config.L2Disks
-                .Select(e => new L2DiskConfig
-                {
-                    DiskIdentity = e.DiskIdentity,
-                    OwnerHash = e.OwnerHash,
-                    Enabled = e.Enabled,
-                    CacheVolume = e.CacheVolume,
-                    MaxBytes = e.MaxBytes,
-                })
-                .ToList();
+            working.L2Disks = _config.L2Disks.Select(e => e.Clone()).ToList();
 
-            using (var settingsForm = new Settings(working))
+            // 「L2 管理」有自己的「确定」：它一确认就立即落到磁盘与全局配置，
+            // 不随设置窗口的「取消」一起丢弃（否则用户改了块大小、关掉设置就静默失效）。
+            using (var settingsForm = new Settings(working, entries =>
+                {
+                    _config.L2Disks = entries.Select(e => e.Clone()).ToList();
+                    if (ConfigService.Save(_config, out string saveError)) return null;
+                    return saveError;
+                }))
             {
                 if (settingsForm.ShowDialog() != DialogResult.OK) return;
             }
@@ -1493,7 +1492,7 @@ namespace FlyDisk
             foreach (PhysicalDiskInfo disk in disks)
             {
                 // 顺带把"配置丢失但容器还在"的条目恢复出来，否则汇总会漏掉这块盘。
-                if (!ResolveL2(disk, out string cacheDir, out long maxBytes)) continue;
+                if (!ResolveL2(disk, out string cacheDir, out long maxBytes, out int l2Sectors)) continue;
 
                 string root = Path.GetPathRoot(cacheDir) ?? string.Empty;
                 if (root.Length == 0) continue;
@@ -1505,7 +1504,8 @@ namespace FlyDisk
                 }
 
                 budget.Disks++;
-                budget.PlannedBytes += SsdCacheService.ConfiguredBytesFor(maxBytes);
+                BlockGeometry geometry = BlockGeometry.Clamped(disk.BytesPerSector, l2Sectors, disk.SizeBytes);
+                budget.PlannedBytes += SsdCacheService.ConfiguredBytesFor(maxBytes, geometry);
 
                 // 同一目录只加一次（正常不会发生，防配置异常时重复计算）
                 if (budget.Directories.Add(cacheDir))
@@ -1638,7 +1638,7 @@ namespace FlyDisk
             // 紧随其后的启动若还看旧快照就会继续判"联机"、逼用户再点一次。
             bool wasOnlineNow = PhysicalDiskHandle.Probe(disk.DiskNumber).IsOnline;
             return PrepareL2BeforeStart(config, BlockSourceInfo.FromDisk(disk, wasOnlineNow),
-                disk.DiskNumber, localOnlineCheck: true, out allowOnlineLedger);
+                disk.DiskNumber, localOnlineCheck: true, out allowOnlineLedger, disk);
         }
 
         /// <summary>
@@ -1681,10 +1681,11 @@ namespace FlyDisk
         /// **旧布局（`&lt;卷根&gt;\FlyDisk.Cache\cache.dat|index.bin`）不再支持、不再迁移**：
         /// 程序启动时会提示用户删除（见 <see cref="L2Manage.PromptRemoveLegacyCaches"/>）。
         /// </summary>
-        private bool ResolveL2(PhysicalDiskInfo disk, out string cacheDir, out long maxBytes)
+        private bool ResolveL2(PhysicalDiskInfo disk, out string cacheDir, out long maxBytes, out int sectorsPerBlock)
         {
             cacheDir = string.Empty;
             maxBytes = L2DiskConfig.DefaultMaxBytes;
+            sectorsPerBlock = 0;
 
             string identity = PhysicalDiskHandle.DescribeIdentity(disk);
             L2DiskConfig? entry = L2DiskConfig.Find(_config.L2Disks, identity);
@@ -1698,14 +1699,19 @@ namespace FlyDisk
                 L2CacheInfo? existing = owned.Count > 0 ? owned[0] : null;
                 if (existing == null) return false;
 
+                int storedBlock = existing.StoredBlockBytes > 0
+                    ? existing.StoredBlockBytes : ServiceConstants.DefaultBlockSize;
                 entry = new L2DiskConfig
                 {
                     DiskIdentity = identity,
                     OwnerHash = hash,
                     CacheVolume = existing.DriveRoot.TrimEnd('\\'),
                     MaxBytes = existing.StoredSlots > 0
-                        ? (long)existing.StoredSlots * ServiceConstants.BlockSize
+                        ? (long)existing.StoredSlots * storedBlock
                         : L2DiskConfig.DefaultMaxBytes,
+                    // 容器头记的是块字节数：按源盘扇区折回"每块扇区数"，保持配置口径统一
+                    SectorsPerBlock = disk.BytesPerSector > 0 ? Math.Max(1, storedBlock / disk.BytesPerSector) : 0,
+                    BytesPerSector = disk.BytesPerSector,
                 };
                 _config.L2Disks.Add(entry);
                 if (!ConfigService.Save(_config, out string saveError))
@@ -1722,10 +1728,19 @@ namespace FlyDisk
                     LogService.DebugFile($"L2 配置：保存身份散列失败（下次启动会重试）：{saveError}");
             }
 
+            // 扇区大小快照：只在首次得知时写入（之后不更新）
+            if (entry.BytesPerSector <= 0 && disk.BytesPerSector > 0)
+            {
+                entry.BytesPerSector = disk.BytesPerSector;
+                if (!ConfigService.Save(_config, out string saveError))
+                    LogService.DebugFile($"L2 配置：保存扇区大小快照失败（下次启动会重试）：{saveError}");
+            }
+
             if (string.IsNullOrWhiteSpace(entry.CacheVolume)) return false;
 
             cacheDir = SsdCacheService.GetDiskCacheDirectory(entry.CacheVolume, entry.OwnerHash);
             maxBytes = entry.MaxBytes;
+            sectorsPerBlock = entry.SectorsPerBlock;
             return true;
         }
 
@@ -1742,9 +1757,10 @@ namespace FlyDisk
             bool l2Enabled;
             string l2Path;
             long l2Max;
+            int l2Sectors = 0;
             if (disk != null)
             {
-                l2Enabled = ResolveL2(disk, out l2Path, out l2Max);
+                l2Enabled = ResolveL2(disk, out l2Path, out l2Max, out l2Sectors);
             }
             else
             {
@@ -1759,6 +1775,10 @@ namespace FlyDisk
             config.EnableSsdCache = l2Enabled;
             config.SsdCachePath = l2Path;
             config.SsdCacheMaxBytes = l2Max;
+            // 本地：按该盘 L2 条目 + 源盘扇区推导块几何；远程没有本地条目，留给引擎按最小块推导
+            config.RuntimeGeometry = disk != null
+                ? BlockGeometry.Clamped(disk.BytesPerSector, l2Sectors, disk.SizeBytes)
+                : null;
             return config;
         }
 
@@ -1849,15 +1869,31 @@ namespace FlyDisk
         /// </param>
         /// <returns>true = 可以继续启动；false = 用户中止或预检失败</returns>
         private bool PrepareL2BeforeStart(DiskConfig config, BlockSourceInfo source, int diskNumber,
-            bool localOnlineCheck, out bool allowOnlineLedger)
+            bool localOnlineCheck, out bool allowOnlineLedger, PhysicalDiskInfo? disk = null)
         {
             allowOnlineLedger = false;
             try
             {
+                // 所有"清空"类提示都要**精确到盘**，并统一走 DiskText（远程没有本地盘时退回缓存目录）
+                string diskText = disk != null
+                    ? DiskText.Full(disk)
+                    : diskNumber >= 0 ? DiskText.Short(diskNumber) : config.SsdCachePath;
+                // 远程形态没有会话副本可携带几何：clone 一份并补上最小块，避免污染全局配置
+                // （全局配置随后还会被「L2 校验」等流程 clone，若带上别的盘的几何会推导出错误的块大小）。
+                if (config.RuntimeGeometry == null)
+                {
+                    config = config.Clone();
+                    config.RuntimeGeometry = BlockGeometry.Minimal(source.BytesPerSector, source.SizeBytes);
+                }
+
                 if (!config.EnableSsdCache || string.IsNullOrWhiteSpace(config.SsdCachePath)) return true;
 
                 // ① "容器属于哪块盘"不再单独判：缓存目录本身按设备身份散列命名，换盘/换卷时新目录是空的。
                 if (!SsdCacheService.LedgerExists(config)) return true;   // 没有账本：引擎会新建一份空的
+
+                // ①′ **块大小必须与容器一致**：不一致时连校验都跑不了（校验器同样要求块大小一致），
+                //     只能清空重建或中止。放在"要不要校验"之前问，避免用户白跑一趟校验窗口。
+                if (!HandleBlockSizeMismatch(config, diskText)) return false;
 
                 // ② 账本可信吗？**旧规则优先**：上次没正常关服（身份戳不符）时，对所有设备类型都
                 //    只给 校验 / 清空 / 中止，不给任何绕过——那种账本本身就是没写完的快照。
@@ -1928,7 +1964,7 @@ namespace FlyDisk
                         {
                             allowOnlineLedger = true;
                             Log(Locale.T("main.log.l2BypassRisk", diskNumber));
-                            return ConfirmCapacityChange(config);
+                            return ConfirmCapacityChange(config, diskText);
                         }
 
                         if (hotplugChoice == 3)
@@ -1987,7 +2023,7 @@ namespace FlyDisk
                 }
 
                 // ③ 容量变了吗 / 超过缓存盘可用空间了吗
-                return ConfirmCapacityChange(config);
+                return ConfirmCapacityChange(config, diskText);
             }
             catch (Exception ex)
             {
@@ -2016,21 +2052,49 @@ namespace FlyDisk
         }
 
         /// <summary>
+        /// 块大小与盘上容器不一致时（手改 config.json / 搬过目录 / 回滚旧版本）询问「清空重建 / 中止」。
+        /// 返回 true = 可以继续（没有容器 / 没有冲突 / 用户选择清空并已删掉）；false = 用户中止。
+        /// </summary>
+        private bool HandleBlockSizeMismatch(DiskConfig config, string diskText)
+        {
+            if (!config.EnableSsdCache || string.IsNullOrWhiteSpace(config.SsdCachePath)) return true;
+            if (config.RuntimeGeometry is not { } geometry) return true;
+            if (!SsdCacheService.TryPeekContainerSlotCount(config, out _, out int storedBlockBytes)) return true;
+            if (storedBlockBytes <= 0 || storedBlockBytes == geometry.BlockSize) return true;
+
+            int choice = Dialogs.Choose(this, Locale.T("dialog.l2BlockMismatch"),
+                Locale.T("main.msg.l2BlockMismatch", diskText, storedBlockBytes, geometry.BlockSize),
+                Locale.T("l2.choose.clearAndStart"), Locale.T("l2.choose.abort"));
+            if (choice != 0)
+            {
+                Log(Locale.T("main.log.abortedL2Verify"));
+                return false;
+            }
+
+            Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.mismatchUserReset")));
+            return ClearLedgerForStart(config);
+        }
+
+        /// <summary>
         /// 【容量检查 + 缩放确认】启动前预检的第三步。
         /// ① **容量超过缓存盘可用空间** ⇒ **阻止启动**（不再静默夹取），提示该卷最多还能用多少；
         /// ② **容量与上次不同**（用户改过上限）⇒ 说明将放大 / 缩小并保留缓存，由用户确认。
         /// </summary>
         /// <returns>true = 可以继续启动；false = 用户选择中止 / 容量超限</returns>
-        private bool ConfirmCapacityChange(DiskConfig config)
+        private bool ConfirmCapacityChange(DiskConfig config, string diskText)
         {
             if (!config.EnableSsdCache) return true;                    // 本次不用 L2：没有容量可谈
+            if (config.RuntimeGeometry is not { } geometry) return true; // 远程 / 未解析：不做本地容量预检
+
+            // ①′ 块大小不符（预检前段已问过；这里兜底，避免绕过预检的调用路径）
+            if (!HandleBlockSizeMismatch(config, diskText)) return false;
 
             int configuredSlots = SsdCacheService.ConfiguredSlotCountFor(config);   // 标称（不夹取）
             int effectiveSlots = SsdCacheService.ComputeSlotCountFor(config);       // 实际（可用空间上限）
             if (configuredSlots <= 0 || effectiveSlots <= 0) return true;
 
-            string configuredText = CapacityText(configuredSlots);
-            string effectiveText = CapacityText(effectiveSlots);
+            string configuredText = CapacityText(configuredSlots, geometry);
+            string effectiveText = CapacityText(effectiveSlots, geometry);
             string reserveText = ServiceConstants.FormatBytes(SsdCacheService.KeepFreeBytes);
 
             // ① 超限：**阻止启动**，让用户去「L2 管理」把上限调小——不再替用户静默夹取。
@@ -2044,12 +2108,12 @@ namespace FlyDisk
             }
 
             if (!SsdCacheService.LedgerExists(config)) return true;      // 没有可保留的账本：重建即可
-            if (!SsdCacheService.TryPeekContainerSlotCount(config, out int oldSlots)) return true;
+            if (!SsdCacheService.TryPeekContainerSlotCount(config, out int oldSlots, out _)) return true;
 
             // ② 容量变化：保留缓存、按新容量缩放（与之前一致）
             if (effectiveSlots == oldSlots) return true;
 
-            string oldText = CapacityText(oldSlots);
+            string oldText = CapacityText(oldSlots, geometry);
             string messageKey = effectiveSlots < oldSlots ? "main.msg.l2ResizeShrink" : "main.msg.l2ResizeGrow";
 
             int resizeChoice = Dialogs.Choose(this, Locale.T("dialog.l2Resize"),
@@ -2066,9 +2130,9 @@ namespace FlyDisk
             return true;
         }
 
-        /// <summary>槽数 → 容量文本（附槽数）</summary>
-        private static string CapacityText(int slots)
-            => $"{ServiceConstants.FormatBytes((long)slots * ServiceConstants.BlockSize)}（{slots:N0} 槽）";
+        /// <summary>槽数 → 容量文本（附槽数）；容量按该会话的实际块大小折算</summary>
+        private static string CapacityText(int slots, BlockGeometry geometry)
+            => $"{ServiceConstants.FormatBytes((long)slots * geometry.BlockSize)}（{slots:N0} 槽）";
 
         /// <summary>
         /// 启动（本地形态）。**L2 账本的一切已经在 <see cref="PrepareL2BeforeStart"/> 里问完了**，

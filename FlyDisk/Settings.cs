@@ -38,14 +38,17 @@ namespace FlyDisk
     public partial class Settings : ThemedForm, ILocalizable
     {
         private readonly DiskConfig _config;
+        /// <summary>「L2 管理」确认后的回调：把该列表立即并入全局配置并落盘；返回 null = 成功，否则为错误信息</summary>
+        private readonly Func<IReadOnlyList<L2DiskConfig>, string?>? _onL2Committed;
 
         /// <summary>控件登记表（见 <see cref="ILocalizable"/>）：静态文本键 → 控件</summary>
         public Dictionary<string, List<Control>> TextBindings { get; } = new();
 
-        public Settings(DiskConfig config)
+        public Settings(DiskConfig config, Func<IReadOnlyList<L2DiskConfig>, string?>? onL2Committed = null)
         {
             InitializeComponent();
             _config = config;
+            _onL2Committed = onL2Committed;
 
             // 静态文本全部登记在这里（Designer 里的中文初值随后被覆盖）；动态文本走 ApplyDynamicText
             Bind("settings.basicHeader", lblBasicHeader);
@@ -185,15 +188,15 @@ namespace FlyDisk
         /// 刷新窗口底部的「预计额外内存」提示。
         ///
         /// 口径（与引擎同源，见 Engine/SystemMemory.cs）：
-        /// - **L2 索引**：按所有已配置 L2 的容量之和折算，约
-        ///   <see cref="SsdCacheService.MetadataBytesPerBlock"/> 字节/块（块 = <see cref="ServiceConstants.BlockSize"/>）；
-        /// - **L1 索引**：按"当前内存到开始淘汰水位的差距"估；读不到系统内存时该项显示"—"。
+        /// - **L2 索引**：按**每份 L2 自己的块大小**折算（块大小见「L2 管理」），约 58 字节/块；
+        /// - **L1 索引**：按"当前内存到开始淘汰水位的差距"估，块大小按最小值 4 KiB 算（偏保守）；
+        ///   读不到系统内存时该项显示"—"。
         /// </summary>
         private void UpdateMemoryEstimate()
         {
             long l2Bytes = _config.L2Disks
                 .Where(e => e.Enabled && !string.IsNullOrWhiteSpace(e.CacheVolume))
-                .Sum(e => e.MaxBytes / ServiceConstants.BlockSize * SsdCacheService.MetadataBytesPerBlock);
+                .Sum(L2IndexBytes);
 
             long l1Bytes = 0;
             bool l1Known = true;
@@ -206,7 +209,7 @@ namespace FlyDisk
                     long headroom = (long)(trackEviction.Value / 100.0 * total) - used;
                     if (headroom > 0)
                     {
-                        l1Bytes = headroom / ServiceConstants.BlockSize * CacheService.MetadataBytesPerBlock;
+                        l1Bytes = headroom / ServiceConstants.DefaultBlockSize * CacheService.MetadataBytesPerBlock;
                     }
                 }
                 else
@@ -221,6 +224,17 @@ namespace FlyDisk
                 totalText, FormatCapacity(l2Bytes), l1Text);
         }
 
+        /// <summary>一份 L2 的索引内存估算（按它自己的块大小；扇区快照缺失时按 512 B 估）</summary>
+        private static long L2IndexBytes(L2DiskConfig entry)
+        {
+            int sector = entry.BytesPerSector > 0 ? entry.BytesPerSector : 512;
+            int sectors = entry.SectorsPerBlock > 0
+                ? entry.SectorsPerBlock : BlockGeometry.PreferredMinSectorsFor(sector);
+            long blockBytes = (long)sectors * sector;
+            if (blockBytes <= 0) return 0;
+            return entry.MaxBytes / blockBytes * SsdCacheService.MetadataBytesPerBlock;
+        }
+
         /// <summary>容量按 1024 进制显示（MiB/GiB）</summary>
         private static string FormatCapacity(long bytes)
         {
@@ -233,13 +247,21 @@ namespace FlyDisk
 
         /// <summary>
         /// 「L2 管理」：维护**每块盘**的 L2 卷与上限（见 <see cref="L2Manage"/>）。
-        /// 与 L2 是否正在运行无关；窗口内点「确定」才会改到配置对象上，窗口「取消」不生效。
+        /// 与 L2 是否正在运行无关；它的「确定」**立即生效并落盘**（不随本窗口的「取消」回滚）。
         /// </summary>
         private void btnL2Manage_Click(object sender, EventArgs e)
         {
             if (!L2Manage.Run(this, _config)) return;
             RefreshL2Summary();
             UpdateMemoryEstimate();
+
+            // L2 管理有自己的「确定」⇒ 立即落盘并同步到全局配置，不依赖本窗口的「保存」
+            string? error = _onL2Committed?.Invoke(_config.L2Disks);
+            if (error != null)
+            {
+                Dialogs.Fail(this, Locale.T("dialog.fail.configSave"),
+                    Locale.T("main.msg.configSaveFailed", error, ServiceConstants.ConfigFilePath));
+            }
         }
 
         /// <summary>打开随程序落盘的帮助文档（不在就先补一份）。</summary>

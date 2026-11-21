@@ -52,17 +52,19 @@ namespace FlyDisk.Engine
     public unsafe class CacheService
     {
         private readonly DiskConfig _config;
-        // 块大小是"缓存侧"与"块设备侧"必须一致的事实，唯一定义在 Models 的 ServiceConstants.BlockSize：
-        // 启动时会校验 BytesPerSector × SectorsPerBlock == 它，两边由构造保证一致（见 未解决的疑点.md TD-20）
-        private const int BLOCK_SIZE = ServiceConstants.BlockSize;
-        private const int SLAB_SIZE = ServiceConstants.SlabSize; // 64MB Slab 大小
-        private const int SLOTS_PER_SLAB = SLAB_SIZE / BLOCK_SIZE;
+
+        // ===== 块几何（本次会话的实际块 / Slab 尺寸，见 Models.BlockGeometry）=====
+        // 块大小不再是编译期常量：由"源盘扇区 × 该盘 L2 条目里的扇区数"推导（无 L2 时取最接近 4 KiB）。
+        // 因此 Slab 也不一定是 64 MiB —— 它是"装得下整数个块"的字节数（4160 B 块时 67,104,960 B）。
+        private readonly int _blockSize;
+        private readonly int _slabBytes;
+        private readonly int _slotsPerSlab;
 
         /// <summary>
-        /// 每块（<see cref="ServiceConstants.BlockSize"/>）**管理结构的常驻内存开销估算**（字节）。
+        /// 每块**管理结构的常驻内存开销估算**（字节）。
         /// L1 的数据本身在非托管池里——那算"缓存"，不算额外；这里只估**缓存以外**、随块数增长的那部分：
         /// 时间轮节点 <see cref="CacheNode"/> 24 B + 块索引 <see cref="_blocks"/> 的项（键/值/链 + 桶数组）≈ 60 B
-        /// + Slab 空闲栈（<see cref="Slab.FreeIdx"/>，每 64 MB Slab 一个 int[16384]）≈ 4 B，合计约 88 B。
+        /// + Slab 空闲栈（<see cref="Slab.FreeIdx"/>，每块一个 int）≈ 4 B，合计约 88 B。
         /// 设置界面据此把"L1 预期能攒到多少块"折算成内存代价，口径与 L2 的
         /// <see cref="SsdCacheService.MetadataBytesPerBlock"/> 同构；两处若有变动需一起改。
         /// </summary>
@@ -153,12 +155,13 @@ namespace FlyDisk.Engine
         // 每读一块写一格（0=L1 命中 / 1=L2 命中 / 2=回源）。**近 1GB = 整个环，近 1MB = 环的尾巴**，
         // 一个环同时喂那两根条。写入侧只做"写格 + 自增游标"，**不做增减计数**——要减掉被覆盖的那一格，
         // 就得把减法放到热路径上；计数改成快照时扫一遍（每秒 256KB，≈0.1ms）。
-        private const int READ_OUTCOME_RING = (int)(1024L * 1024 * 1024 / BLOCK_SIZE);   // 262144 格 = 1GB
-        private const int READ_OUTCOME_1M = (int)(1024L * 1024 / BLOCK_SIZE);            // 256 格 = 1MB
+        // 窗口长度按**字节量**折算成块数：块变大时格数按比例变少（1 MiB 块时"近 1 MB"只有 1 格，
+        // 统计意义变弱但不会出错；这是大块的已知代价之一，见设计文档 §八）。
+        private readonly int _readOutcome1M;
         private const byte OutcomeL1 = 0, OutcomeL2 = 1, OutcomeSource = 2;
 
-        private readonly byte[] _readOutcomeRing = new byte[READ_OUTCOME_RING];
-        private long _readOutcomeWritten;   // 累计写入格数（>= 环长时表示环已绕圈）
+        private readonly byte[] _readOutcomeRing;
+        private long _readOutcomeWritten;
 
         // ===== 二级缓存（L2：SSD，M 环 + ghost，跨重启存活）=====
         private readonly SsdCacheService? _ssd;
@@ -173,13 +176,19 @@ namespace FlyDisk.Engine
         /// （型号 + 序列号 + 容量 + 扇区大小）写进容器头部，防止"换了另一块盘却沿用旧容器"；
         /// 并用 <c>WasOnline</c> 判定盘上那份账本是否可信。**不区分块源在本地还是远端。**
         /// </param>
+        /// <param name="geometry">本次会话的块几何（块 / Slab / 每 Slab 槽数都从它来）</param>
         /// <remarks>
         /// **L2 初始化失败会直接抛出**（不再静默降级为"仅 L1"）：用户配了 L2 就必须让他知道它没生效。
         /// 所有"要不要清掉 / 要不要校验"的判定都在 UI 的启动前预检里（见 AGENTS.md §2.3）。
         /// </remarks>
-        public CacheService(DiskConfig config, BlockSourceInfo source)
+        public CacheService(DiskConfig config, BlockSourceInfo source, BlockGeometry geometry)
         {
             _config = config;
+            _blockSize = geometry.BlockSize;
+            _slabBytes = geometry.SlabBytes;
+            _slotsPerSlab = geometry.SlotsPerSlab;
+            _readOutcome1M = Math.Max(1, (int)(1024L * 1024 / _blockSize));
+            _readOutcomeRing = new byte[Math.Max(1, (int)(1024L * 1024 * 1024 / _blockSize))];
 
             _windowSeconds = Clamp(config.EvictionWindowSeconds, MIN_WINDOW_SECONDS, MAX_WINDOW_SECONDS);
             // 保留当前桶与宽限期的热块；裸指针生命周期另外由 _wheelLock 保护。
@@ -226,7 +235,7 @@ namespace FlyDisk.Engine
             {
                 try
                 {
-                    _ssd = new SsdCacheService(_config, source);
+                    _ssd = new SsdCacheService(_config, source, geometry);
                 }
                 catch (L2LedgerUnusableException)
                 {
@@ -254,7 +263,7 @@ namespace FlyDisk.Engine
         private static int NowSeconds() => (int)(Environment.TickCount64 / 1000);
 
         /// <summary>统计信息</summary>
-        public long TotalCacheSize => Interlocked.Read(ref _totalSlots) * BLOCK_SIZE;
+        public long TotalCacheSize => Interlocked.Read(ref _totalSlots) * _blockSize;
         public long UsedSlots => Interlocked.Read(ref _usedSlots);
         public long FreeSlots => Interlocked.Read(ref _totalSlots) - Interlocked.Read(ref _usedSlots);
         public long CachedBlocks => Interlocked.Read(ref _cachedBlocks);
@@ -276,8 +285,8 @@ namespace FlyDisk.Engine
             stats.L1HitBlocksTotal = Interlocked.Read(ref _hitBlocks);
             stats.L1MissBlocksTotal = Interlocked.Read(ref _missBlocks);
             stats.L1WriteUpdateBlocksTotal = Interlocked.Read(ref _writeUpdateBlocks);
-            stats.Recent1MB = ScanReadOutcome(READ_OUTCOME_1M);
-            stats.Recent1GB = ScanReadOutcome(READ_OUTCOME_RING);
+            stats.Recent1MB = ScanReadOutcome(_readOutcome1M);
+            stats.Recent1GB = ScanReadOutcome(_readOutcomeRing.Length);
             stats.SystemMemoryLoad = GetSystemMemoryLoad();
             stats.EvictionThreshold = _config.EvictionThreshold;
             stats.StopCachingThreshold = _config.StopCachingThreshold;
@@ -286,7 +295,7 @@ namespace FlyDisk.Engine
             stats.EvictedBlocksTotal = Interlocked.Read(ref _evictedBlocksTotal);
             stats.LastEvictionBlocks = _lastEvictionBlocks;
             stats.LastEvictionMs = _lastEvictionMs;
-            stats.SlabCount = Interlocked.Read(ref _totalSlots) / SLOTS_PER_SLAB;
+            stats.SlabCount = Interlocked.Read(ref _totalSlots) / _slotsPerSlab;
             stats.ReleasedSlabsTotal = Interlocked.Read(ref _releasedSlabs);
             stats.WatermarkEvictionsTotal = Interlocked.Read(ref _watermarkEvictions);
 
@@ -364,7 +373,7 @@ namespace FlyDisk.Engine
                     foreach (Slab slab in _slabs)
                     {
                         NativeMemory.Free((void*)slab.Base);
-                        GC.RemoveMemoryPressure(SLAB_SIZE);
+                        GC.RemoveMemoryPressure(_slabBytes);
                         Interlocked.Increment(ref _releasedSlabs);
                     }
                     _slabs.Clear();
@@ -400,11 +409,7 @@ namespace FlyDisk.Engine
         /// <summary>至少保留几个整块空闲的 Slab 才允许归还（保证下次填充不必立刻再向系统申请）</summary>
         private const int MIN_SPARE_SLABS = 1;
 
-        /// <summary>槽位地址（槽号 = 该地址在 Slab 内的偏移 / BLOCK_SIZE）</summary>
-        private static IntPtr SlotAddress(Slab slab, int index) => IntPtr.Add(slab.Base, index * BLOCK_SIZE);
-
-        /// <summary>
-        /// 从空闲链取一个槽位（占用计数 +1）。
+        /// <summary>从空闲链取一个槽位（占用计数 +1）。
         /// **只从"当前分配 Slab"取**——这条不变量是"整 Slab 可安全归还"的前提：
         /// 非当前 Slab 不可能被并发 pop，于是只要它整块空闲，就没人持有它的指针。
         /// </summary>
@@ -429,8 +434,8 @@ namespace FlyDisk.Engine
                     return false;
                 }
 
-                if (slab.FreeTop == SLOTS_PER_SLAB) slab.WholeFreeSinceTicks = 0;  // 不再整块空闲 ⇒ 撤销空闲计时
-                slot = new SlotRef(slab, slab.FreeIdx[--slab.FreeTop], -1);
+                if (slab.FreeTop == _slotsPerSlab) slab.WholeFreeSinceTicks = 0;  // 不再整块空闲 ⇒ 撤销空闲计时
+                slot = new SlotRef(slab, slab.FreeIdx[--slab.FreeTop], -1, _blockSize);
                 Interlocked.Increment(ref _usedSlots);
                 return true;
             }
@@ -449,7 +454,7 @@ namespace FlyDisk.Engine
             // 引用直接带所属 Slab，归还为 O(1)，不再为每个淘汰块遍历全部 Slab。
             Slab slab = slot.Owner;
             slab.FreeIdx[slab.FreeTop++] = slot.SlotIndex;
-            if (slab.FreeTop == SLOTS_PER_SLAB)
+            if (slab.FreeTop == _slotsPerSlab)
                 slab.WholeFreeSinceTicks = Environment.TickCount64;
         }
 
@@ -499,35 +504,35 @@ namespace FlyDisk.Engine
             bool pressureAdded = false;
             try
             {
-                basePtr = (IntPtr)NativeMemory.Alloc((nuint)SLAB_SIZE);
+                basePtr = (IntPtr)NativeMemory.Alloc((nuint)_slabBytes);
                 // 少数分配器/平台以"返回空指针"而非抛异常表示失败，一并当作失败处理
                 if (basePtr == IntPtr.Zero)
                 {
                     throw new OutOfMemoryException();
                 }
 
-                var slab = new Slab(basePtr);
-                for (int i = SLOTS_PER_SLAB - 1; i >= 1; i--)
+                var slab = new Slab(basePtr, _slotsPerSlab);
+                for (int i = _slotsPerSlab - 1; i >= 1; i--)
                 {
                     slab.FreeIdx[slab.FreeTop++] = i;
                 }
 
-                GC.AddMemoryPressure(SLAB_SIZE);
+                GC.AddMemoryPressure(_slabBytes);
                 pressureAdded = true;
                 lock (_poolLock)
                 {
                     _slabs.Add(slab);
                     _currentSlab = slab;
-                    Interlocked.Add(ref _totalSlots, SLOTS_PER_SLAB);
+                    Interlocked.Add(ref _totalSlots, _slotsPerSlab);
                 }
 
                 Interlocked.Increment(ref _usedSlots);   // 第 0 块直接返回给调用者，计入占用
-                return new SlotRef(slab, 0, -1);
+                return new SlotRef(slab, 0, -1, _blockSize);
             }
             catch (Exception ex)   // 任何形式的失败都进入冷却（不只 OOM），避免逐块重试 + 逐块刷日志
             {
                 if (basePtr != IntPtr.Zero) NativeMemory.Free((void*)basePtr);
-                if (pressureAdded) GC.RemoveMemoryPressure(SLAB_SIZE);
+                if (pressureAdded) GC.RemoveMemoryPressure(_slabBytes);
                 Volatile.Write(ref _allocFailCooldownUntilTicks, Environment.TickCount64 + ALLOC_FAIL_COOLDOWN_MS);
                 LogService.DebugFile(
                     $"CacheService：无法分配新的 Slab（{ex.GetType().Name}: {ex.Message}），" +
@@ -558,7 +563,7 @@ namespace FlyDisk.Engine
                 // 该还多少：按"越线部分 × 物理内存"估算。归还 Slab 后水位会回落，下一拍自然收敛；
                 // 若只是被别的进程临时抬高，下一拍也会自动停手（不会一路把缓存清空）。
                 long overBytes = (long)((load - _config.EvictionThreshold) * mem.TotalPhysicalBytes);
-                long budget = Math.Min(overBytes / BLOCK_SIZE, MAX_EVICT_PER_TICK);
+                long budget = Math.Min(overBytes / _blockSize, MAX_EVICT_PER_TICK);
                 int removed = 0;
                 while (budget > 0)
                 {
@@ -579,7 +584,7 @@ namespace FlyDisk.Engine
                     Interlocked.Increment(ref _watermarkEvictions);
                     LogService.DebugFile(
                         $"Evict 水位 {load:P0} ≥ 阈值 {_config.EvictionThreshold:P0}：" +
-                        $"主动摘除 {removed} 块（{removed * (long)BLOCK_SIZE / (1024 * 1024)} MB），归还整块空闲的 Slab {released} 个；" +
+                        $"主动摘除 {removed} 块（{removed * (long)_blockSize / (1024 * 1024)} MB），归还整块空闲的 Slab {released} 个；" +
                         $"当前已用 {Interlocked.Read(ref _usedSlots)} 块，累计归还 {Interlocked.Read(ref _releasedSlabs)} 个 Slab");
                 }
             }
@@ -603,20 +608,20 @@ namespace FlyDisk.Engine
                 int idle = 0;
                 foreach (Slab s in _slabs)
                 {
-                    if (s.FreeTop == SLOTS_PER_SLAB) idle++;
+                    if (s.FreeTop == _slotsPerSlab) idle++;
                 }
 
                 for (int i = _slabs.Count - 1; i >= 0 && idle > MIN_SPARE_SLABS; i--)
                 {
                     Slab s = _slabs[i];
                     if (ReferenceEquals(s, _currentSlab)) continue;
-                    if (s.FreeTop != SLOTS_PER_SLAB) continue;
+                    if (s.FreeTop != _slotsPerSlab) continue;
                     if (Environment.TickCount64 - s.WholeFreeSinceTicks < IDLE_SLAB_GRACE_MS) continue;
 
                     _slabs.RemoveAt(i);
                     NativeMemory.Free((void*)s.Base);
-                    GC.RemoveMemoryPressure(SLAB_SIZE);
-                    Interlocked.Add(ref _totalSlots, -SLOTS_PER_SLAB);
+                    GC.RemoveMemoryPressure(_slabBytes);
+                    Interlocked.Add(ref _totalSlots, -_slotsPerSlab);
                     Interlocked.Increment(ref _releasedSlabs);
                     released++;
                     idle--;
@@ -669,7 +674,7 @@ namespace FlyDisk.Engine
         private void RecordReadOutcome(byte outcome)
         {
             long n = Interlocked.Increment(ref _readOutcomeWritten);
-            _readOutcomeRing[(int)((n - 1) & (READ_OUTCOME_RING - 1))] = outcome;
+            _readOutcomeRing[(int)((n - 1) % _readOutcomeRing.Length)] = outcome;
         }
 
         /// <summary>
@@ -683,7 +688,7 @@ namespace FlyDisk.Engine
             long l1 = 0, l2 = 0, src = 0;
             for (int k = 1; k <= avail; k++)
             {
-                switch (_readOutcomeRing[(int)((written - k) & (READ_OUTCOME_RING - 1))])
+                switch (_readOutcomeRing[(int)((written - k) % _readOutcomeRing.Length)])
                 {
                     case OutcomeL1: l1++; break;
                     case OutcomeL2: l2++; break;
@@ -703,7 +708,7 @@ namespace FlyDisk.Engine
                 // **不再通知 L2**（2026-09-30）：L1 服务得了的块，L2 既不必留它、也不必记它的频次。
                 // 旧版在这里调 _ssd.Touch，把"L1 命中的块"持续灌进 L2 —— 正是 L2 的 S 长期满溢、
                 // M 饿死的成因（见 后续待办.md 第五节）。准入的唯一入口现在是"回源读到整块"。
-                Marshal.Copy(slotRef.Slot, buffer, offset, BLOCK_SIZE);
+                Marshal.Copy(slotRef.Slot, buffer, offset, _blockSize);
                 return true;
             }
         }
@@ -728,7 +733,7 @@ namespace FlyDisk.Engine
             {
                 if (_blocks.TryGetValue(blockIndex, out SlotRef existing))
                 {
-                    Marshal.Copy(buffer, offset, existing.Slot, BLOCK_SIZE);
+                    Marshal.Copy(buffer, offset, existing.Slot, _blockSize);
                     return;
                 }
             }
@@ -744,7 +749,7 @@ namespace FlyDisk.Engine
                 acquired = AcquireSlot();
                 if (!acquired.HasValue) return;
                 SlotRef slot = acquired.Value;
-                Marshal.Copy(buffer, offset, slot.Slot, BLOCK_SIZE);
+                Marshal.Copy(buffer, offset, slot.Slot, _blockSize);
                 int now = NowSeconds();
                 lock (_wheelLock)
                 {
@@ -752,7 +757,7 @@ namespace FlyDisk.Engine
                     int nodeIndex = AllocNode(blockIndex, now);
                     try
                     {
-                        if (_blocks.TryAdd(blockIndex, new SlotRef(slot.Owner, slot.SlotIndex, nodeIndex)))
+                        if (_blocks.TryAdd(blockIndex, new SlotRef(slot.Owner, slot.SlotIndex, nodeIndex, _blockSize)))
                         {
                             LinkToBucket(nodeIndex, NormalizeBucket(now), now);
                             Interlocked.Increment(ref _cachedBlocks);
@@ -797,7 +802,7 @@ namespace FlyDisk.Engine
                 if (_blocks.TryGetValue(blockIndex, out SlotRef slotRef))
                 {
                     TouchLocked(slotRef.NodeIndex, NowSeconds());
-                    Marshal.Copy(buffer, offset, slotRef.Slot, BLOCK_SIZE);
+                    Marshal.Copy(buffer, offset, slotRef.Slot, _blockSize);
                     Interlocked.Increment(ref _writeUpdateBlocks);
                 }
             }
@@ -1201,33 +1206,38 @@ namespace FlyDisk.Engine
         #region 内部类型
 
         /// <summary>
-        /// 一个 Slab（64MB）及其**自己的**空闲链。
+        /// 一个 Slab（目标 64 MiB，实际装整数个块）及其**自己的**空闲链。
         /// 空闲链按 Slab 分组是"整块归还系统"的前提：聚合了自己的空闲槽位之后，
         /// 一个 Slab 才可能被整体从流通中隔出来并 `free`（全局单栈做不到这一点，见 §6.9）。
         /// </summary>
         private sealed class Slab
         {
             public readonly IntPtr Base;
-            public readonly int[] FreeIdx = new int[SLOTS_PER_SLAB];   // 空闲槽号（栈；64KB/块）
-            public int FreeTop;                                        // 栈顶 = 当前空闲槽位数（0..SLOTS_PER_SLAB）
+            public readonly int[] FreeIdx;                             // 空闲槽号（栈；每块一个 int）
+            public int FreeTop;                                        // 栈顶 = 当前空闲槽位数（0..FreeIdx.Length）
             public long WholeFreeSinceTicks;                           // 整块空闲的起点（0 = 不是整块空闲）
 
-            public Slab(IntPtr basePtr) { Base = basePtr; }
+            public Slab(IntPtr basePtr, int slotsPerSlab)
+            {
+                Base = basePtr;
+                FreeIdx = new int[slotsPerSlab];
+            }
         }
 
-        /// <summary>所属 Slab + 槽号 + 时间轮节点索引，归还槽位无需搜索池</summary>
+        /// <summary>所属 Slab + 槽号 + 时间轮节点索引 + 槽位地址（构造时就按块大小算好，归还无需搜索池）</summary>
         private readonly struct SlotRef
         {
             public readonly Slab Owner;
             public readonly int SlotIndex;
             public readonly int NodeIndex;
-            public IntPtr Slot => SlotAddress(Owner, SlotIndex);
+            public readonly IntPtr Slot;
 
-            public SlotRef(Slab owner, int slotIndex, int nodeIndex)
+            public SlotRef(Slab owner, int slotIndex, int nodeIndex, int blockSize)
             {
                 Owner = owner;
                 SlotIndex = slotIndex;
                 NodeIndex = nodeIndex;
+                Slot = IntPtr.Add(owner.Base, slotIndex * blockSize);
             }
         }
 

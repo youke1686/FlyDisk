@@ -50,6 +50,12 @@ namespace FlyDisk.Engine
     {
         private readonly DiskConfig _config;
 
+        /// <summary>本次会话的块几何（启动校验时按"该盘的 L2 条目 + 源盘扇区"推导，随后交给缓存与 LUN）</summary>
+        private BlockGeometry? _geometry;
+
+        /// <summary>本地源盘的身份串（远程形态为 null）：决定"用哪个 L2 条目的块大小"</summary>
+        private string? _diskIdentity;
+
         /// <summary>本地形态的独占盘句柄（**远程形态为 null**——那边没有本地源盘要管）</summary>
         private PhysicalDiskHandle? _device;
 
@@ -214,6 +220,7 @@ namespace FlyDisk.Engine
 
             // 校验不通过（选错盘 / 参数不对）⇒ 直接把结果返回给 UI。
             // **此刻还没脱机**，所以用户中止时系统状态一点没动。
+            _diskIdentity = PhysicalDiskHandle.DescribeIdentity(target);
             EngineResult rejected = Validate(target);
             if (!rejected.Ok) return rejected;
 
@@ -225,9 +232,11 @@ namespace FlyDisk.Engine
             _device = device;   // 先登记：异常路径上 StopCore 要靠它把盘恢复原状
             try
             {
+                BlockGeometry geometry = _geometry ?? BlockGeometry.Minimal(target.BytesPerSector, target.SizeBytes);
                 LogService.DebugFileSession($"启动：磁盘 {target.DiskNumber}（{target.Model}），" +
                                             $"原状态 {(target.IsOnline ? "联机" : "脱机（接管）")}，" +
-                                            $"扇区 {target.BytesPerSector} B × {_config.SectorsPerBlock} = {target.BytesPerSector * _config.SectorsPerBlock} B/块");
+                                            $"扇区 {target.BytesPerSector} B × {geometry.SectorsPerBlock} = {geometry.BlockSize} B/块" +
+                                            $"（Slab {geometry.SlabBytes / 1024} KiB / {geometry.SlotsPerSlab} 槽）");
 
                 return RunWithSource(device, device.ToBlockSourceInfo(allowOnlineLedger));
             }
@@ -272,11 +281,13 @@ namespace FlyDisk.Engine
 
             LogService.TraceFileLoggingEnabled = _config.TraceFileLogging;
 
+            _diskIdentity = null;   // 远程没有本地 L2 条目 ⇒ 按最小块
             try
             {
+                _geometry = BlockGeometry.Minimal(remoteInfo.BytesPerSector, remoteInfo.SizeBytes);
                 LogService.DebugFileSession($"启动（远程）：{remoteInfo.Model}，序列号 {remoteInfo.SerialNumber}，" +
                                             $"{(double)remoteInfo.SizeBytes / 1024 / 1024 / 1024:F1} GiB，" +
-                                            $"{remoteInfo.BytesPerSector} B/扇区 × {_config.SectorsPerBlock} 扇区/块");
+                                            $"{remoteInfo.BytesPerSector} B/扇区 × {_geometry.Value.SectorsPerBlock} 扇区/块");
 
                 return RunWithSource(remoteSource, remoteInfo);
             }
@@ -294,8 +305,11 @@ namespace FlyDisk.Engine
             _source = source;
             _sourceInfo = info;
 
-            _cache = new CacheService(_config, info);
-            _disk = new CachedPhysicalDisk(source, _cache);
+            BlockGeometry geometry = _geometry ?? BlockGeometry.Minimal(info.BytesPerSector, info.SizeBytes);
+            _geometry = geometry;
+
+            _cache = new CacheService(_config, info, geometry);
+            _disk = new CachedPhysicalDisk(source, _cache, geometry.BlockSize);
 
             var target = new ISCSITarget(_config.TargetIqn, new List<Disk> { _disk });
             target.OnStandardInquiry += Target_OnStandardInquiry;
@@ -690,15 +704,24 @@ namespace FlyDisk.Engine
             if (!PhysicalDiskHandle.HasStableIdentity(info))
                 return EngineResult.Reject(Locale.T("engine.start.noIdentity", info.DiskNumber, info.Model));
 
-            // ① 块大小必须是 4096（见 阶段二-iSCSI块设备形态.md §3.5）：块 = 扇区 × SectorsPerBlock
-            int blockBytes = info.BytesPerSector * Math.Max(0, _config.SectorsPerBlock);
-            if (info.BytesPerSector <= 0 || _config.SectorsPerBlock <= 0 || blockBytes != ServiceConstants.BlockSize)
+            // ① 块几何：块 = 扇区 × 每块扇区数（扇区必须跟随源盘；块大小现在可以是任意值，
+            //    但必须落在 [4 KiB, 1 MiB] 且是整扇区——推导与夹取集中在 Models.BlockGeometry）
+            BlockGeometry geometry;
+            try
             {
-                int suggested = info.BytesPerSector > 0 ? ServiceConstants.BlockSize / info.BytesPerSector : 8;
-                return EngineResult.Reject(Locale.T("engine.start.blockSize",
-                    info.BytesPerSector, _config.SectorsPerBlock, blockBytes,
-                    ServiceConstants.BlockSize, suggested));
+                geometry = _config.RuntimeGeometry
+                           ?? BlockGeometry.ForDisk(_config, _diskIdentity, info.BytesPerSector, info.SizeBytes);
             }
+            catch (Exception ex)
+            {
+                return EngineResult.Reject(Locale.T("engine.start.blockSize", info.BytesPerSector, ex.Message));
+            }
+            if (geometry.BlockSize <= 0 || geometry.BlockSize > ServiceConstants.MaxBlockSize)
+            {
+                return EngineResult.Reject(Locale.T("engine.start.blockSize",
+                    info.BytesPerSector, $"{geometry.BlockSize} B"));
+            }
+            _geometry = geometry;
 
             // ② 不得是系统盘、不得是**本程序自己所在的那块盘**、也不得是**分页文件所在盘**：
             //    脱机是"整盘"动作，盘上所有卷会立刻消失——系统盘脱机会把 Windows 送走；
@@ -794,7 +817,9 @@ namespace FlyDisk.Engine
                 DeviceSerial = info?.SerialNumber ?? string.Empty,
                 DeviceSizeBytes = info?.SizeBytes ?? 0,
                 BytesPerSector = info?.BytesPerSector ?? 0,
-                SectorsPerBlock = _config.SectorsPerBlock,
+                SectorsPerBlock = _geometry?.SectorsPerBlock ?? 0,
+                BlockSizeBytes = _geometry?.BlockSize ?? 0,
+                SlabBytes = _geometry?.SlabBytes ?? 0,
                 DeviceWasOffline = info != null && !info.WasOnline,
                 ActiveConnections = IsRunning ? GetActiveConnectionCount() : 0,
                 TargetIqn = _config.TargetIqn,

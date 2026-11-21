@@ -1,0 +1,42 @@
+{
+    "questions": [
+        {
+            "id": "1",
+            "question": "你的使用场景是？",
+            "components": [
+                {
+                    "type": "multiple-checkbox",
+                    "options": [
+                        {
+                            "label": "游戏"
+                        },
+                        {
+                            "label": "工作"
+                        },
+                        {
+                            "label": "学习"
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "placeholder": "其他",
+                    "maxlength": 200
+                }
+            ]
+        },
+        {
+            "id": "2",
+            "question": "满分10分，你给FlyDisk打多少分？",
+            "components": [
+                {
+                    "type": "slider",
+                    "min": 0,
+                    "max": 10,
+                    "step": 1,
+                    "default": 5
+                }
+            ]
+        }
+    ]
+}
