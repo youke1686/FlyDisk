@@ -22,14 +22,13 @@ namespace FlyDisk.Models
     /// 同一条目且 <see cref="Enabled"/> = 这块盘参与 L2；停用只表示"本次不用 L2"，缓存文件保留。
     /// `CacheVolume` 为空或 `MaxBytes &lt;= 0` = 配置不完整，启动时会被拒绝
     /// （「L2 管理」允许先留空保存，但绝不静默当成"不启用"）。
+    ///
+    /// **只放用户可以手改的东西**：派生数据（设备身份散列、扇区快照）放在 <see cref="AppState"/>。
     /// </summary>
     public sealed class L2DiskConfig
     {
         /// <summary>盘身份串（`型号|序列号`）——与 <c>PhysicalDiskHandle.DescribeIdentity</c> 同口径</summary>
         public string DiskIdentity { get; set; } = string.Empty;
-
-        /// <summary>设备身份散列（与容器头里的归属身份同一套算法）；用于拼目录名与匹配扫描结果</summary>
-        public long OwnerHash { get; set; }
 
         /// <summary>
         /// 是否启用 L2。默认 true（旧 config.json 没有这个字段时保持原有行为）；
@@ -55,10 +54,17 @@ namespace FlyDisk.Models
         public int SectorsPerBlock { get; set; }
 
         /// <summary>
-        /// 该盘逻辑扇区的**快照**（只在首次得知时写入，之后不更新）。
-        /// 用途：盘没接上时仍能在「L2 管理」里折算索引内存、校验扇区数上下限。
-        /// 0 = 尚未记录。
+        /// **运行期派生数据**（不写 config.json；由 <see cref="StateService"/> 从 state.json 灌入）：
+        /// 设备身份散列，用于拼缓存目录名与匹配扫描结果。
         /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public long OwnerHash { get; set; }
+
+        /// <summary>
+        /// **运行期派生数据**（不写 config.json；由 <see cref="StateService"/> 从 state.json 灌入）：
+        /// 逻辑扇区大小快照，盘没接上时用于估算块大小。
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
         public int BytesPerSector { get; set; }
 
         /// <summary>逐字段深拷贝（全部是字符串 / 值类型，浅拷贝即深拷贝）</summary>
@@ -77,68 +83,65 @@ namespace FlyDisk.Models
     }
 
     /// <summary>
-    /// 配置模型（阶段二）：被加速的对象是**一整块物理盘**（`\\.\PhysicalDriveN`），
-    /// 对外以 iSCSI 块设备的形式交给上层。
+    /// **用户可手动修改**的配置（`%ProgramData%\FlyDisk\config.json`）。
     ///
-    /// 与阶段一 <c>FileSystemConfig</c> 的差别：不再有源目录 / 挂载点 / 卷名（那是"文件系统形态"的产物），
-    /// 换成了物理盘号、IQN、监听端点与"一个缓存块含几个逻辑扇区"。
+    /// 划分标准：这个文件里的每一项，用户都可以直接编辑；程序维护的"上次选了哪块盘 / 确认状态 /
+    /// 设备派生快照"一律不在这里，见 <see cref="AppState"/>。
+    /// 文件带 schema 版本；版本不符会直接出厂重置（不迁移，Beta 阶段口径）。
     /// </summary>
     public class DiskConfig
     {
+        /// <summary>配置格式版本；缺失 / 不符 ⇒ 出厂重置（见 <see cref="ConfigService"/>）</summary>
+        public int SchemaVersion { get; set; }
+
         /// <summary>浅拷贝（字符串 / 值类型安全；列表按引用共享）。会话副本与 L2 校验都用它。</summary>
         public DiskConfig Clone() => (DiskConfig)MemberwiseClone();
+
+        // ===== 运行期（不落盘）=====
 
         /// <summary>
         /// **运行期**块几何（不落盘）。由 `Form1.BuildSessionConfig` 按"该盘的 L2 条目 + 源盘扇区"算好后
         /// 随会话副本一起交给引擎与启动前预检；远程形态由引擎按最小块自行推导，可能为 null。
-        /// 不参与序列化：块大小属于"每份 L2 的配置"，不属于全局配置。
         /// </summary>
         [System.Text.Json.Serialization.JsonIgnore]
         public BlockGeometry? RuntimeGeometry { get; set; }
 
+        /// <summary>运行期：本次会话是否使用 L2（由每盘 L2 条目 / 远程旧字段解析后填入）</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool EnableSsdCache { get; set; }
+
+        /// <summary>运行期：本次会话的 L2 缓存目录</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string SsdCachePath { get; set; } = string.Empty;
+
+        /// <summary>运行期：本次会话的 L2 容量上限（字节）</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public long SsdCacheMaxBytes { get; set; } = L2DiskConfig.DefaultMaxBytes;
+
         // ===== 界面 =====
 
         /// <summary>
-        /// 界面语言（支持 {zh-CN, en-US}，见 后续待办.md 第八节）。
-        /// **空 = 尚未检测**：首次打开时按系统语言检测一次并写入（非中文系统 → en-US），此后以配置为准。
-        /// 取值规整由 <c>FlyDisk.Localization.Locale.Normalize</c> 负责。
+        /// 界面语言（支持 {zh-CN, en-US}）。空 = 尚未检测：
+        /// 首次打开时按系统语言检测一次并写入（非中文系统 → en-US），此后以配置为准。
         /// </summary>
         public string Language { get; set; } = string.Empty;
 
         /// <summary>
-        /// 是否已确认**使用前请知悉**（首次打开时由 `WarningForm` 弹出）。
-        /// 默认 false：旧配置没有该字段时会再确认一次；同意后写 true，之后不再弹。
-        /// </summary>
-        public bool WarningAccepted { get; set; }
-
-        /// <summary>
         /// 是否在启动加速时用 iSCSI 发起端**自动登录**目标。
-        ///
-        /// 关闭后：引擎照常起 target / 建 LUN，但不做自动登录，由用户在「iSCSI 发起程序」里手动挂载。
-        /// 它同时也是自动登录失败时的官方绕过路径（设置窗口里可关；便于调试与故障排查）。
+        /// 关闭后：引擎照常起 target / 建 LUN，但不做自动登录，由用户手动挂载。
         /// </summary>
         public bool EnableAutoIscsiLogin { get; set; } = true;
 
+        /// <summary>
+        /// **隐藏开关**：是否在"账本不可信"的提示里额外显示「无视风险启动」。
+        ///
+        /// 默认 false，界面**不提供**打开入口——必须手动编辑 config.json 才能开启；
+        /// 开启后首次启动还会弹一次风险确认（见 <c>RiskBypassForm</c>）。
+        /// 只对"盘启动时联机 / 计数变化 / 计数不可读"生效，不覆盖"上次没正常关服"。
+        /// </summary>
+        public bool AllowRiskBypass { get; set; }
+
         // ===== 目标设备（iSCSI target）=====
-
-        /// <summary>
-        /// 上次选择的那块物理盘的**身份串**（`型号|序列号`；无序列号时为空串，且这类盘会被直接拒绝加速）。
-        ///
-        /// **为什么不存盘号**：盘号只是**枚举顺序**，插拔顺序一变、或同时插着多块盘，
-        /// 同一个 N 就可能落到另一块盘上；而我们对目标盘做的是**整盘脱机**——
-        /// 选错等于把用户那块盘当场从系统里抹掉（见 后续待办.md 第四节）。
-        ///
-        /// 它只用于在选盘对话框里**默认选中**（仍须用户点确定），并作为"上次选的是哪块"的记忆。
-        /// **粒度是整盘，不是单分区**：同一块盘上的其他卷会一起被 export，停止时也一起回来。
-        /// </summary>
-        public string PhysicalDiskIdentity { get; set; } = string.Empty;
-
-        /// <summary>
-        /// 上次「启动加速」里选中的**全部**盘身份串（多盘同时加速，见 AGENTS.md §2.1）。
-        /// 与 <see cref="PhysicalDiskIdentity"/> 同口径：**只用于下次在选盘框里预选**，绝不作为启动依据
-        /// （保留单值那个字段是为了兼容旧配置与"上次那块盘"的既有用法）。
-        /// </summary>
-        public List<string> LastAcceleratedDiskIdentities { get; set; } = new();
 
         /// <summary>目标 IQN（发起程序里看到的目标名）</summary>
         public string TargetIqn { get; set; } = "iqn.flydisk:acceleration-disk";
@@ -149,20 +152,12 @@ namespace FlyDisk.Models
         /// <summary>监听端口（iSCSI 标准端口 3260）</summary>
         public int ListenPort { get; set; } = 3260;
 
-        // ===== 远程形态（见 后续待办.md 第一节）=====
-        // **刻意没有"角色"字段**：三职责互斥是**运行期状态**，由"谁监听 / 谁配对"协商产生，
-        // 不是配置里的静态值（"配对后选择硬盘前两端对等"）。这里只有两条需要持久化的信息。
+        // ===== 远程形态 =====
 
-        /// <summary>
-        /// 开放远程服务时的监听端口（默认 10808）。与 iSCSI 的 ListenPort 是两个独立端口：
-        /// 那个是本地回环给发起程序用的，这个是给对端配对用的。
-        /// </summary>
+        /// <summary>开放远程服务时的监听端口（默认 10808）。与 iSCSI 的 ListenPort 是两个独立端口</summary>
         public int RemoteListenPort { get; set; } = 10808;
 
-        /// <summary>
-        /// 上次配对的对端地址（`主机:端口`）。**只是地址输入框的记忆**，省得每次手敲——
-        /// 它不等于"保持配对"，配对本身每次重来。
-        /// </summary>
+        /// <summary>上次配对的对端地址（`主机:端口`）——只是地址输入框的记忆</summary>
         public string RemotePeerAddress { get; set; } = string.Empty;
 
         // ===== L1 内存缓存 =====
@@ -176,9 +171,6 @@ namespace FlyDisk.Models
         /// <summary>停止缓存的系统内存占用比例（越过该水位后不再接纳新数据）</summary>
         public double StopCachingThreshold { get; set; } = 0.9;
 
-        // 以下三项是 LRU 淘汰（时间桶）的参数，在「设置 → 高级 → L1 调参」里可改；
-        // 非法值一律夹到安全区间并落警告，不让配置错误把缓存打死（见 关于内存缓存的进一步讨论.md §6.6）。
-
         /// <summary>淘汰时间轮窗口（秒）：超过该窗口未被命中的块归入"冷尾"，优先被淘汰</summary>
         public int EvictionWindowSeconds { get; set; } = 3600;
 
@@ -188,51 +180,28 @@ namespace FlyDisk.Models
         /// <summary>单次淘汰摘除的块数（按需触发，摘出的槽位由后续回填复用）</summary>
         public int EvictionBatchBlocks { get; set; } = 256;
 
-        // ===== SSD 二级缓存（L2，见 关于内存缓存的进一步讨论.md §7）=====
-        // 定位：给机械盘做「跨重启存活」的持久缓存。**对 SSD 源盘毫无意义**（纯写放大），
-        // 因此启动时会拒绝「缓存目录所在的物理盘 == 被加速的物理盘」（那会让缓存读写与源数据抢同一块盘）。
+        // ===== SSD 二级缓存（L2）=====
 
         /// <summary>
-        /// **每块盘各自的 L2 配置**（阶段 3 起）：盘身份 + 该盘选的 L2 卷 + 容量上限。
+        /// **每块盘各自的 L2 配置**：盘身份 + 该盘选的 L2 卷 + 容量上限 + 每块扇区数。
         /// 没有条目的盘 = 不启用 L2；条目存在但 `CacheVolume` 为空（或 `MaxBytes &lt;= 0`）= **配置不完整**，
-        /// 启动前统一拦截（见 `Form1.ValidateL2ConfigForStart`），不会静默跳过。
+        /// 启动前统一拦截，不会静默跳过。
         /// </summary>
         public List<L2DiskConfig> L2Disks { get; set; } = new();
-
-        // ---- 以下三个是**旧版单盘 L2 配置**，仅用于远程形态兼容；本地形态已不再读取 ----
-
-        /// <summary>【旧版】是否启用 SSD 二级缓存（仅远程形态兜底）</summary>
-        public bool EnableSsdCache { get; set; } = false;
-
-        /// <summary>【旧版】L2 缓存目录（仅远程形态兜底）</summary>
-        public string SsdCachePath { get; set; } = string.Empty;
-
-        /// <summary>【旧版】L2 容器容量上限（仅远程形态兜底）</summary>
-        public long SsdCacheMaxBytes { get; set; } = 8L * 1024 * 1024 * 1024;
 
         /// <summary>L2 的 ghost 条目数相对 M 的倍率（默认 1.0；只存块号，无数据）</summary>
         public double SsdCacheGhostFraction { get; set; } = 1.0;
 
         /// <summary>
-        /// L2 转入**保守**准入的占用率（默认 0.80）。"占用" =（数据槽 + 空洞槽）/ 容器槽数，
-        /// 也就是"环上真正被占的份额"（空洞虽然没数据，但环位还占着、拿不回来，见 SsdCacheService 类注释）。
-        ///
-        /// 未达这条线时**激进**：回源块一律落位（有空闲槽就直接放，不触发淘汰）；
-        /// 达到后**保守**：只收 ghost 命中的块，每次准入都要先淘汰一个旧的。
-        ///
-        /// **引擎内部按"可用槽位"判定**（`_freeCount < 保留量`），本值是它的补数：占用 80% ⇔ 可用 20%。
-        /// 两者是同一个约束的两种说法，改这里时 SsdCacheService 里的换算要一起看。
-        /// 与 L1 的 <see cref="EvictionThreshold"/> / <see cref="StopCachingThreshold"/> 同族同单位（都是占用率）。
+        /// L2 转入**保守**准入的占用率（默认 0.80）。"占用" =（数据槽 + 空洞槽）/ 容器槽数。
+        /// 未达这条线时**激进**：回源块一律落位；达到后**保守**：只收 ghost 命中的块。
         /// </summary>
         public double SsdConservativeThreshold { get; set; } = 0.80;
 
-        // 注意：L2 的账本**只在正常关服时落盘一次**（运行期一次都不写），掉电/强杀/崩溃 ⇒ 整层作废重来。
-        // 所以这里没有"刷盘间隔"之类的配置项，运行期也没有任何写盘开销——见 关于内存缓存的进一步讨论.md §7.6。
+        // ===== 诊断 =====
 
         /// <summary>
-        /// 诊断开关：逐笔高频痕迹（如每轮淘汰的摘要）是否落盘。
-        /// 默认 false —— 本盘是给机械盘做加速的，逐笔同步写日志与产品目标相反（见 未解决的疑点.md TD-14）；
-        /// 失败/探针行**始终落盘**（不受本开关影响），排障时把它打开即可看到完整逐笔账本。
+        /// 诊断开关：逐笔高频痕迹是否落盘。默认 false；失败 / 探针行始终落盘。
         /// </summary>
         public bool TraceFileLogging { get; set; } = false;
     }

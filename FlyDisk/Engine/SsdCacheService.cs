@@ -94,17 +94,16 @@ namespace FlyDisk.Engine
         // 推导（见 docs/可变缓存块大小与扇区对齐_设计与决策.md）。非 2 幂块（4160 / 4224）下 64 MiB 除不尽，
         // Slab 只能取"装得下整数个块"的字节数（每个 Slab 浪费不足一个块），槽偏移公式保持不变。
 
-        // 容器头部：占一个块（长度 = BlockSize），存"身份戳 + 设备身份"。用来识别"用户删掉了 cache.dat 但 index.bin 还在"
-        // 与"换了另一块盘却沿用同一个目录"这两类情况——若不做这个校验，重建出来的容器（全零）会被旧索引
-        // 当成有效缓存，把全零块当数据返回（静默错数据）。
-        private const uint CONTAINER_MAGIC = 0x44434453;   // "SDCD"
-        private const int CONTAINER_VERSION = 2;           // 2：头部加入设备身份（阶段一为 1，只有身份戳）
-        private const int CONTAINER_HASH_LEN = 32;         // 头部自身校验和覆盖的字节数（含设备身份）
+        // 容器头部：占一个块（长度 = BlockSize），存"身份戳 + 设备身份"。
+        // 格式常量与读写统一在 <see cref="L2LedgerFormat"/>（不再在本文件手写偏移）。
+        private const uint CONTAINER_MAGIC = L2LedgerFormat.ContainerMagic;
+        private const int CONTAINER_VERSION = L2LedgerFormat.ContainerVersion;
+        private const int CONTAINER_HASH_LEN = L2LedgerFormat.ContainerHashLen;
 
-        private const uint INDEX_MAGIC = 0x31434453;       // "SDC1"
-        private const int INDEX_VERSION = 3;               // 3：删掉 S 环，正文只写 M 环（头部布局不变，sLimit/sCount 恒 0）
-        private const int INDEX_HEADER_SIZE = 96;
-        private const int INDEX_HEADER_HASH_OFFSET = 88;   // 头部校验和所在的偏移（= 它覆盖的字节数）
+        private const uint INDEX_MAGIC = L2LedgerFormat.IndexMagic;
+        private const int INDEX_VERSION = L2LedgerFormat.IndexVersion;
+        private const int INDEX_HEADER_SIZE = L2LedgerFormat.IndexHeaderSize;
+        private const int INDEX_HEADER_HASH_OFFSET = L2LedgerFormat.IndexHeaderHashOffset;
 
         // M 的"激进/保守"分界：可用槽位（_freeCount）占槽位总数低于保留量时，只收 ghost 命中的块。
         // 阈值本身是配置项（DiskConfig.SsdConservativeThreshold，占用率形态），这里只说明**为什么用 _freeCount 判**：
@@ -167,6 +166,7 @@ namespace FlyDisk.Engine
         private FileStream? _lockFile;             // 单实例锁（两个实例同时写容器会把索引写坏）
         private long _containerId;                 // 容器身份戳（写在容器头部，也写进索引）
         private long _containerBytes;              // 容器**当前长度**（按需增长后不再等于"整容量"）
+        private L2SourceState _loadedSourceState;  // 上次干净停止时写下的源盘写入基线（装载时读出）
         private volatile bool _sfvdUnavailable;    // 门闩：该卷不支持 VDL 语义 / 特权不可用 ⇒ 本会话扩展不再免零填充
         private volatile bool _growthBlocked;      // 门闩：容器扩展失败（卷满）⇒ 本会话只停"扩容"，L2 继续服务已覆盖范围
 
@@ -527,9 +527,8 @@ namespace FlyDisk.Engine
         {
             try
             {
-                string dir = Path.GetFullPath(config.SsdCachePath).TrimEnd('\\');
-                return File.Exists(Path.Combine(dir, ContainerFileName)) &&
-                       File.Exists(Path.Combine(dir, IndexFileName));
+                return TryReadLedgerStatus(config, out L2LedgerProbe probe) &&
+                       probe.Status != L2LedgerStatus.NoLedger;
             }
             catch (Exception ex)
             {
@@ -539,14 +538,152 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>
-        /// **把这份 L2 账本标记为失效**：只改容器头里的"身份戳"，索引原样不动 ⇒ 两者的戳不再一致，
-        /// 下次启用 L2 时 <see cref="LedgerStampMismatch"/> 会判"上次没有正常关服"，UI 从而要求**校验**
-        /// （而不是静默清空重来，也不是把它当正常账本直接采信）。
-        ///
-        /// **为什么不改头部的 VERSION**：版本不符会被判成"上一版格式"从而静默重建，那就丢掉了"让用户校验"的机会。
+        /// **只读**判断账本状态（启动前预检 / 管理界面用）：文件在不在、格式是否兼容、状态是
+        /// 干净 / 脏 / 失效 / 损坏。不写盘、不加锁。
+        /// </summary>
+        public static bool TryReadLedgerStatus(DiskConfig config, out L2LedgerProbe probe)
+        {
+            if (string.IsNullOrWhiteSpace(config.SsdCachePath))
+            {
+                probe = new L2LedgerProbe { Status = L2LedgerStatus.NoLedger };
+                return true;
+            }
+            return TryReadLedgerStatusAt(config.SsdCachePath, out probe);
+        }
+
+        /// <summary>按**目录**只读判断账本状态（管理界面用；目录可能来自扫描而不是配置）</summary>
+        public static bool TryReadLedgerStatusAt(string directory, out L2LedgerProbe probe)
+        {
+            probe = new L2LedgerProbe { Status = L2LedgerStatus.NoLedger };
+            string dir = Path.GetFullPath(directory).TrimEnd('\\');
+            string containerPath = Path.Combine(dir, ContainerFileName);
+            string indexPath = Path.Combine(dir, IndexFileName);
+
+            bool containerExists = File.Exists(containerPath);
+            bool indexExists = File.Exists(indexPath);
+            if (!containerExists && !indexExists) return true;
+
+            if (containerExists != indexExists)
+            {
+                probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
+                return true;
+            }
+
+            // ① 容器头：先只看魔数 / 版本（旧版本也要能识别出来）
+            byte[] containerBuffer;
+            using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                int headerBytes = (int)Math.Min(L2LedgerFormat.ContainerHeaderPeekBytes, fs.Length);
+                if (headerBytes < CONTAINER_HASH_LEN + 8)
+                {
+                    probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
+                    return true;
+                }
+                containerBuffer = new byte[headerBytes];
+                fs.ReadExactly(containerBuffer, 0, headerBytes);
+            }
+
+            if (BitConverter.ToUInt32(containerBuffer, 0) != CONTAINER_MAGIC)
+            {
+                probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
+                return true;
+            }
+            int containerVersion = BitConverter.ToInt32(containerBuffer, 4);
+            if (containerVersion != CONTAINER_VERSION)
+            {
+                probe = new L2LedgerProbe
+                {
+                    Status = L2LedgerStatus.Incompatible,
+                    ContainerVersion = containerVersion
+                };
+                return true;
+            }
+            if (!L2ContainerHeader.TryRead(containerBuffer, out L2ContainerHeader container))
+            {
+                probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
+                return true;
+            }
+
+            // ② 索引头：同样先看版本，再完整解析
+            byte[] indexBuffer = new byte[INDEX_HEADER_SIZE];
+            using (var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                if (fs.Length < 8)
+                {
+                    probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
+                    return true;
+                }
+                byte[] magicVersion = new byte[8];
+                fs.ReadExactly(magicVersion, 0, 8);
+                if (BitConverter.ToUInt32(magicVersion, 0) != INDEX_MAGIC)
+                {
+                    probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
+                    return true;
+                }
+                int indexVersion = BitConverter.ToInt32(magicVersion, 4);
+                if (indexVersion != INDEX_VERSION || fs.Length < INDEX_HEADER_SIZE + 8)
+                {
+                    probe = new L2LedgerProbe
+                    {
+                        Status = L2LedgerStatus.Incompatible,
+                        ContainerVersion = containerVersion,
+                        IndexVersion = indexVersion
+                    };
+                    return true;
+                }
+                fs.Position = 0;
+                fs.ReadExactly(indexBuffer, 0, INDEX_HEADER_SIZE);
+            }
+
+            if (!L2IndexHeader.TryRead(indexBuffer, out L2IndexHeader header))
+            {
+                probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
+                return true;
+            }
+
+            L2LedgerStatus status = header.State switch
+            {
+                L2LedgerState.Clean => L2LedgerStatus.Clean,
+                L2LedgerState.Dirty => L2LedgerStatus.Dirty,
+                _ => L2LedgerStatus.Stale
+            };
+
+            // 索引里记的容器戳与容器头不一致 ⇒ 上次运行没有正常收尾（等价于脏）
+            if (status == L2LedgerStatus.Clean && header.ContainerId != container.ContainerId)
+            {
+                status = L2LedgerStatus.Dirty;
+            }
+
+            probe = new L2LedgerProbe
+            {
+                Status = status,
+                ContainerVersion = containerVersion,
+                IndexVersion = INDEX_VERSION,
+                StoredSlotCount = container.SlotCount,
+                StoredBlockBytes = container.BlockSize,
+                OwnerIdentity = container.DeviceIdentity,
+                ContainerId = container.ContainerId,
+                Source = header.Source
+            };
+            return true;
+        }
+
+        /// <summary>只读取出账本里的源盘写入基线；账本不是 Clean 时返回 false。</summary>
+        public static bool TryReadSourceState(DiskConfig config, out L2SourceState state)
+        {
+            state = L2SourceState.Unknown;
+            if (!TryReadLedgerStatus(config, out L2LedgerProbe probe)) return false;
+            if (probe.Status != L2LedgerStatus.Clean) return false;
+            state = probe.Source;
+            return true;
+        }
+
+        /// <summary>
+        /// **把这份 L2 账本标记为失效**（状态改成 Stale）：下次启用 L2 时预检会判"账本已失效"，
+        /// 要求**校验 / 清空 / 中止**（而不是静默清空重来，也不是把它当正常账本直接采信）。
         ///
         /// 用于"本次不用 L2 加速这块盘、但缓存目录里还留着它的账本"：加速期间盘会被写透传改写，
-        /// 那份账本随即与盘不一致；若不让它失效，下次启用时它可能因为"盘是脱机打开的"而被直接采信 ⇒ 返回陈旧块。
+        /// 那份账本随即与盘不一致；若不让它失效，下次启用时它可能被直接采信 ⇒ 返回陈旧块。
         /// </summary>
         /// <returns>成功标记返回 true；没有可标记的账本（不存在 / 头部不合法 / 打不开 / 写失败）返回 false</returns>
         public static bool InvalidateLedger(DiskConfig config)
@@ -562,30 +699,23 @@ namespace FlyDisk.Engine
             {
                 if (string.IsNullOrWhiteSpace(dir)) return false;
 
-                string containerPath = Path.Combine(Path.GetFullPath(dir).TrimEnd('\\'), ContainerFileName);
-                if (!File.Exists(containerPath)) return false;
+                string indexPath = Path.Combine(Path.GetFullPath(dir).TrimEnd('\\'), IndexFileName);
+                if (!File.Exists(indexPath)) return false;
 
-                using var fs = new FileStream(containerPath, FileMode.Open, FileAccess.ReadWrite,
+                using var fs = new FileStream(indexPath, FileMode.Open, FileAccess.ReadWrite,
                     FileShare.None, bufferSize: 1, FileOptions.None);
 
-                int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, fs.Length);
-                if (headerBytes < CONTAINER_HASH_LEN + 8) return false;
-                byte[] header = new byte[headerBytes];
-                fs.ReadExactly(header, 0, headerBytes);
+                if (fs.Length < INDEX_HEADER_SIZE + 8) return false;
+                byte[] header = new byte[INDEX_HEADER_SIZE];
+                fs.ReadExactly(header, 0, INDEX_HEADER_SIZE);
 
-                if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
-                    BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
-                    BitConverter.ToInt32(header, 4) != CONTAINER_VERSION)
-                {
-                    return false;   // 头部本来就不合法：它下次会被静默重建，没什么可标记的
-                }
+                if (!L2IndexHeader.TryRead(header, out L2IndexHeader parsed)) return false;
+                parsed.State = L2LedgerState.Stale;
+                parsed.Source = L2SourceState.Unknown;   // 失效的账本不再保留可信基线
 
-                // 换掉身份戳（与 RotateContainerId 改的是同一个位置），再重算头部校验和写回。
-                BitConverter.GetBytes(Random.Shared.NextInt64()).CopyTo(header, 8);
-                BitConverter.GetBytes(Hash(header, 0, CONTAINER_HASH_LEN)).CopyTo(header, CONTAINER_HASH_LEN);
-
+                byte[] updated = parsed.ToBytes();
                 fs.Position = 0;
-                fs.Write(header, 0, headerBytes);
+                fs.Write(updated, 0, updated.Length);
                 fs.Flush(true);
                 return true;
             }
@@ -658,21 +788,16 @@ namespace FlyDisk.Engine
                 if (!File.Exists(containerPath)) return false;
 
                 using var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, fs.Length);
+                int headerBytes = (int)Math.Min(L2LedgerFormat.ContainerHeaderPeekBytes, fs.Length);
                 if (headerBytes < CONTAINER_HASH_LEN + 8) return false;
 
                 byte[] header = new byte[headerBytes];
                 fs.ReadExactly(header, 0, headerBytes);
 
-                if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
-                    BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
-                    BitConverter.ToInt32(header, 4) != CONTAINER_VERSION)
-                {
-                    return false;
-                }
+                if (!L2ContainerHeader.TryRead(header, out L2ContainerHeader parsed)) return false;
 
-                slotCount = BitConverter.ToInt32(header, 16);
-                blockBytes = BitConverter.ToInt32(header, 20);
+                slotCount = parsed.SlotCount;
+                blockBytes = parsed.BlockSize;
                 return slotCount > 0;
             }
             catch (Exception ex)
@@ -749,66 +874,28 @@ namespace FlyDisk.Engine
             long containerBytes = containerExists ? new FileInfo(containerPath).Length : 0;
             long indexBytes = indexExists ? new FileInfo(indexPath).Length : 0;
 
-            bool recognized = false;
-            int storedSlots = 0;
-            int storedBlockBytes = 0;
-            long ownerIdentity = 0;
-            long containerStamp = 0;
-            if (containerBytes >= CONTAINER_HASH_LEN + 8)
+            L2LedgerProbe probe;
+            try
             {
-                try
-                {
-                    int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, containerBytes);
-                    byte[] header = new byte[headerBytes];
-                    using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    {
-                        fs.ReadExactly(header, 0, headerBytes);
-                    }
-                    if (BitConverter.ToUInt32(header, 0) == CONTAINER_MAGIC &&
-                        BitConverter.ToInt32(header, 4) == CONTAINER_VERSION &&
-                        Hash(header, 0, CONTAINER_HASH_LEN) == BitConverter.ToUInt64(header, CONTAINER_HASH_LEN))
-                    {
-                        recognized = true;
-                        storedSlots = BitConverter.ToInt32(header, 16);
-                        storedBlockBytes = BitConverter.ToInt32(header, 20);
-                        ownerIdentity = BitConverter.ToInt64(header, 24);
-                        containerStamp = BitConverter.ToInt64(header, 8);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LogService.DebugFile($"管理 L2：读取 {containerPath} 头部失败：{ex.Message}");
-                }
+                TryReadLedgerStatusAt(full, out probe);
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"管理 L2：读取 {full} 头部失败：{ex.Message}");
+                probe = new L2LedgerProbe { Status = L2LedgerStatus.Corrupt };
             }
 
-            // 上次是否正常关服：索引里记的戳 == 容器头当前的戳（与 LedgerStampMismatch 同判据）。
-            // 两者戳一致也可能来自"校验后回写"，那种情况同样可安全装载，所以统一表述为"正常关服"。
-            bool? lastClean = null;
-            if (recognized && indexBytes >= INDEX_HEADER_SIZE)
+            bool recognized = probe.ContainerVersion == CONTAINER_VERSION;
+            bool? lastClean = probe.Status switch
             {
-                try
-                {
-                    byte[] ih = new byte[INDEX_HEADER_SIZE];
-                    using (var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    {
-                        fs.ReadExactly(ih, 0, INDEX_HEADER_SIZE);
-                    }
-                    if (BitConverter.ToUInt32(ih, 0) == INDEX_MAGIC &&
-                        BitConverter.ToInt32(ih, 4) == INDEX_VERSION &&
-                        Hash(ih, 0, INDEX_HEADER_HASH_OFFSET) == BitConverter.ToUInt64(ih, INDEX_HEADER_HASH_OFFSET))
-                    {
-                        lastClean = BitConverter.ToInt64(ih, 52) == containerStamp;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LogService.DebugFile($"管理 L2：读取 {indexPath} 头部失败：{ex.Message}");
-                }
-            }
+                L2LedgerStatus.Clean => true,
+                L2LedgerStatus.Dirty or L2LedgerStatus.Stale => false,
+                _ => null
+            };
 
             // 是否是配置里登记的目录：按容器头归属散列匹配
             L2DiskConfig? configuredEntry = recognized
-                ? config.L2Disks.Find(e => e.OwnerHash != 0 && e.OwnerHash == ownerIdentity)
+                ? config.L2Disks.Find(e => e.OwnerHash != 0 && e.OwnerHash == probe.OwnerIdentity)
                 : null;
             bool isConfigured = configuredEntry != null && !string.IsNullOrWhiteSpace(configuredEntry.CacheVolume);
 
@@ -824,9 +911,12 @@ namespace FlyDisk.Engine
                 ContainerBytes = containerBytes,
                 IndexBytes = indexBytes,
                 Recognized = recognized,
-                StoredSlots = storedSlots,
-                StoredBlockBytes = storedBlockBytes,
-                OwnerIdentity = ownerIdentity,
+                Status = probe.Status,
+                ContainerVersion = probe.ContainerVersion,
+                IndexVersion = probe.IndexVersion,
+                StoredSlots = probe.StoredSlotCount,
+                StoredBlockBytes = probe.StoredBlockBytes,
+                OwnerIdentity = probe.OwnerIdentity,
                 LastShutdownClean = lastClean,
                 IsConfigured = isConfigured,
                 ConfiguredDiskIdentity = configuredEntry?.DiskIdentity ?? string.Empty,
@@ -835,72 +925,30 @@ namespace FlyDisk.Engine
         }
 
         /// <summary>
-        /// 只读探测："容器头部的身份戳"与"索引里记的戳"是否**不符**——不符 = **上次没有正常关服**
-        /// （掉电/强杀/崩溃）：索引还是上一次正常关服时的快照，而容器已被之后的运行改过。
-        ///
-        /// 不一致**不代表账本没救**：索引结构仍自洽（校验器会逐条查），`L2Verifier` 逐块比对能把所有
-        /// 错乱的槽（含"索引指向的槽已被复用给别的块"）用源盘数据修回正确内容，修完由
-        /// `L2Verifier.ConfirmLedger` 把戳写回即重新自洽。所以这条归"需要校验"，而不是"静默作废"。
-        ///
-        /// 返回空串 = **正常**（含"校验后回写"：校验器把索引里的戳写回容器头，两者戳一致、槽数可能因缩放而不同），
-        /// 或"没有可校验的账本"（容器/索引不存在、头部不可信）。
-        /// 探测自身出意外时**原样上抛**（约定：不静默），由 UI 报错中止。
+        /// 兼容旧调用点：返回非空 = 账本"脏 / 已失效"（需要校验或清空）。
+        /// **新代码请直接用 <see cref="TryReadLedgerStatus"/>**——它还能区分损坏 / 旧格式。
         /// </summary>
         public static string LedgerStampMismatch(DiskConfig config)
         {
             try
             {
-                string dir = Path.GetFullPath(config.SsdCachePath).TrimEnd('\\');
-                string containerPath = Path.Combine(dir, ContainerFileName);
-                string indexPath = Path.Combine(dir, IndexFileName);
-                if (!File.Exists(containerPath) || !File.Exists(indexPath)) return string.Empty;
-
-                byte[] ch;
-                using (var fs = new FileStream(containerPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    if (fs.Length < CONTAINER_HASH_LEN + 8) return string.Empty;
-                    int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, fs.Length);
-                    ch = new byte[headerBytes];
-                    fs.ReadExactly(ch, 0, headerBytes);
-                }
-                if (BitConverter.ToUInt32(ch, 0) != CONTAINER_MAGIC ||
-                    BitConverter.ToInt32(ch, 4) != CONTAINER_VERSION ||
-                    Hash(ch, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(ch, CONTAINER_HASH_LEN))
-                {
-                    return string.Empty;   // 容器头部本身不可信：归"容器已重建"那条
-                }
-
-                byte[] ih = new byte[INDEX_HEADER_SIZE];
-                using (var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    if (fs.Length < INDEX_HEADER_SIZE + 8) return string.Empty;
-                    fs.ReadExactly(ih, 0, INDEX_HEADER_SIZE);
-                }
-                if (BitConverter.ToUInt32(ih, 0) != INDEX_MAGIC ||
-                    BitConverter.ToInt32(ih, 4) != INDEX_VERSION ||
-                    Hash(ih, 0, INDEX_HEADER_HASH_OFFSET) != BitConverter.ToUInt64(ih, INDEX_HEADER_HASH_OFFSET))
-                {
-                    return string.Empty;   // 索引头部不可信（上一版格式 / 没写完）：没有可校验的账本
-                }
-                // **戳一致 ⇒ 上次正常关服**。这当然也包括"校验后回写"的状态：校验器会把索引里的戳
-                // 写回容器头，此时两者的戳一致、而槽数可能因容量缩放而不同——那是正常的，不能报。
-                long containerStamp = BitConverter.ToInt64(ch, 8);
-                if (BitConverter.ToInt64(ih, 52) == containerStamp) return string.Empty;
-
-                // 戳不一致 = **上次没有正常关服**。**绝不能因为"槽数不同"就把它放过**：容器头每次开机
-                // 都被重写（含槽数），所以槽数不同这件事本身恰恰说明"索引落盘之后容器头又被写过"——
-                // 同样是没正常关服，必须一并报出来，交给用户"校验后保留 / 清空重建"。
-                return Locale.T("engine.l2.stampMismatch");
+                if (!TryReadLedgerStatus(config, out L2LedgerProbe probe)) return string.Empty;
+                return probe.Status is L2LedgerStatus.Dirty or L2LedgerStatus.Stale
+                    ? Locale.T("engine.l2.stampMismatch")
+                    : string.Empty;
             }
             catch (Exception ex)
             {
-                // 约定：不静默。探测本身出意外时不再"当作无需校验"放过——上抛，由 UI 报错中止。
+                // 约定：不静默。探测本身出意外时上抛，由 UI 报错中止。
                 throw new InvalidOperationException(
                     Locale.T("engine.l2.probeFailed", config.SsdCachePath, ex.Message), ex);
             }
         }
 
         public long TotalSlots => _slotCount;
+
+        /// <summary>装载时读到的源盘写入基线（UI 已据此判过；引擎只用它继承"活性已证明"标记）</summary>
+        public L2SourceState LoadedSourceState => _loadedSourceState;
         public long UsedSlots => Interlocked.Read(ref _usedSlots);
         public long FreeSlots => _freeCount;
         public long HoleSlots => Interlocked.Read(ref _holeSlots);
@@ -1478,17 +1526,14 @@ namespace FlyDisk.Engine
             _containerId = Random.Shared.NextInt64();
 
             byte[] buf = new byte[_blockSize];
-            using (var ms = new MemoryStream(buf))
-            using (var w = new BinaryWriter(ms))
+            new L2ContainerHeader
             {
-                w.Write(CONTAINER_MAGIC);
-                w.Write(CONTAINER_VERSION);
-                w.Write(_containerId);
-                w.Write(_slotCount);
-                w.Write(_blockSize);
-                w.Write(_deviceIdentity);
-                w.Write(Hash(buf, 0, CONTAINER_HASH_LEN));
-            }
+                ContainerId = _containerId,
+                SlotCount = _slotCount,
+                BlockSize = _blockSize,
+                DeviceIdentity = _deviceIdentity
+            }.Write(buf);
+
             _container!.Position = 0;
             _container.Write(buf, 0, _blockSize);
             _container.Flush(true);
@@ -1502,20 +1547,18 @@ namespace FlyDisk.Engine
         {
             containerId = 0;
             storedSlotCount = 0;
-            int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, _container!.Length);
+            int headerBytes = (int)Math.Min(L2LedgerFormat.ContainerHeaderPeekBytes, _container!.Length);
             if (headerBytes < CONTAINER_HASH_LEN + 8) return false;
             byte[] buf = new byte[headerBytes];
             _container!.Position = 0;
             _container.ReadExactly(buf, 0, headerBytes);
 
-            if (Hash(buf, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(buf, CONTAINER_HASH_LEN)) return false;
-            if (BitConverter.ToUInt32(buf, 0) != CONTAINER_MAGIC) return false;
-            if (BitConverter.ToInt32(buf, 4) != CONTAINER_VERSION) return false;
-            if (BitConverter.ToInt32(buf, 20) != _blockSize) return false;
-            if (BitConverter.ToInt64(buf, 24) != _deviceIdentity) return false;   // 换了另一块盘 ⇒ 容器作废
+            if (!L2ContainerHeader.TryRead(buf, out L2ContainerHeader header)) return false;
+            if (header.BlockSize != _blockSize) return false;
+            if (header.DeviceIdentity != _deviceIdentity) return false;   // 换了另一块盘 ⇒ 容器作废
 
-            storedSlotCount = BitConverter.ToInt32(buf, 16);   // 允许与本次配置不同（缩放）
-            containerId = BitConverter.ToInt64(buf, 8);
+            storedSlotCount = header.SlotCount;   // 允许与本次配置不同（缩放）
+            containerId = header.ContainerId;
             return true;
         }
 
@@ -1561,14 +1604,14 @@ namespace FlyDisk.Engine
         /// （此刻可能还有命令在写它，而 `FileStream` 不是线程安全的），并且把身份戳写成与容器不符，
         /// 下次启动必然要求校验。见 docs/停机改造与占用查询_施工计划.md §5。
         /// </summary>
-        public void CommitLedger(LedgerCommit kind)
+        public void CommitLedger(LedgerCommit kind, L2SourceState? sourceState = null)
         {
             if (kind == LedgerCommit.None) return;
             if (_container == null || !_persistLedger) return;
 
             try
             {
-                WriteSnapshot(kind);
+                WriteSnapshot(kind, sourceState ?? L2SourceState.Unknown);
             }
             catch (Exception ex)
             {
@@ -1577,7 +1620,7 @@ namespace FlyDisk.Engine
             }
         }
 
-        private void WriteSnapshot(LedgerCommit kind)
+        private void WriteSnapshot(LedgerCommit kind, L2SourceState sourceState)
         {
             long t0 = Environment.TickCount64;
             bool dirty = kind == LedgerCommit.Dirty;
@@ -1602,29 +1645,20 @@ namespace FlyDisk.Engine
 
             using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
             {
-                byte[] header = new byte[INDEX_HEADER_SIZE];
-                using (var ms = new MemoryStream(header))
-                using (var hw = new BinaryWriter(ms))
+                var header = new L2IndexHeader
                 {
-                    hw.Write(INDEX_MAGIC);
-                    hw.Write(INDEX_VERSION);
-                    hw.Write(_blockSize);
-                    hw.Write(_slotCount);
-                    hw.Write(0);            // 原 S 队列目标长度：S 已删（保留字段只为不动头部布局）
-                    hw.Write(_mLimit);
-                    hw.Write(_ghostLimit);
-                    hw.Write(usedSlotsWrite);
-                    hw.Write(0);            // 原 S 环条目数：恒 0
-                    hw.Write(mCountWrite);
-                    hw.Write(_ghostCount);
-                    hw.Write(generation);
-                    // 脏账本：故意写成与容器戳必然不等的值（~x 永远不等于 x），
-                    // 下次启动 LedgerStampMismatch 立即判"上次没有正常关服"，要求校验。
-                    hw.Write(dirty ? ~_containerId : _containerId);
-                    hw.Write(new byte[INDEX_HEADER_HASH_OFFSET - 60]);   // 保留区
-                    hw.Write(Hash(header, 0, INDEX_HEADER_HASH_OFFSET));
-                }
-                fs.Write(header, 0, INDEX_HEADER_SIZE);
+                    State = dirty ? L2LedgerState.Dirty : L2LedgerState.Clean,
+                    BlockSize = _blockSize,
+                    SlotCount = _slotCount,
+                    MCount = mCountWrite,
+                    GhostCount = _ghostCount,
+                    Generation = generation,
+                    ContainerId = _containerId,
+                    DeviceIdentity = _deviceIdentity,
+                    // 脏账本不写基线：下次启动必须校验 / 清空
+                    Source = dirty ? L2SourceState.Unknown : sourceState
+                };
+                fs.Write(header.ToBytes(), 0, INDEX_HEADER_SIZE);
 
                 ulong bodyHash;
                 using (var body = new HashingStream(fs))
@@ -1693,41 +1727,22 @@ namespace FlyDisk.Engine
                 byte[] header = new byte[INDEX_HEADER_SIZE];
                 fs.ReadExactly(header, 0, INDEX_HEADER_SIZE);
 
-                uint magic;
-                int version, blockSize, oldSlotCount, sLimit, oldGhostLimit;
-                int usedSlots, sCount, mCount, ghostCount;
-                long generation, storedContainerId;
-                ulong headerHash;
-                using (var ms = new MemoryStream(header))
-                using (var hr = new BinaryReader(ms))
-                {
-                    magic = hr.ReadUInt32();
-                    version = hr.ReadInt32();
-                    blockSize = hr.ReadInt32();
-                    oldSlotCount = hr.ReadInt32();
-                    sLimit = hr.ReadInt32();
-                    _ = hr.ReadInt32();        // 旧 M 上限：不再参与校验（mLimit/ghostLimit 一律由新配置推导）
-                    oldGhostLimit = hr.ReadInt32();
-                    usedSlots = hr.ReadInt32();
-                    sCount = hr.ReadInt32();
-                    mCount = hr.ReadInt32();
-                    ghostCount = hr.ReadInt32();
-                    generation = hr.ReadInt64();
-                    storedContainerId = hr.ReadInt64();
-                    hr.ReadBytes(INDEX_HEADER_HASH_OFFSET - 60);   // 保留区
-                    headerHash = hr.ReadUInt64();
-                }
+                if (!L2IndexHeader.TryRead(header, out L2IndexHeader h)) return false;
+                if (h.BlockSize != _blockSize || h.SlotCount <= 0) return false;
+                if (h.ContainerId != containerId) return false;   // 容器被重建过（例如只删了 cache.dat）
+                if (h.State != L2LedgerState.Clean) return false; // 脏 / 失效账本一律交给预检
+                if (h.DeviceIdentity != _deviceIdentity) return false;
 
-                if (magic != INDEX_MAGIC || version != INDEX_VERSION || blockSize != _blockSize) return false;
-                // sLimit 在 v3 里恒为 0 —— 非 0 说明这是删掉 S 之前的账本（版本号本该先拦住，这里再兜一道）
-                if (oldSlotCount <= 0 || sLimit != 0) return false;
-                if (storedContainerId != containerId) return false;   // 容器被重建过（例如只删了 cache.dat）
-                if (Hash(header, 0, INDEX_HEADER_HASH_OFFSET) != headerHash) return false;
-                if (usedSlots < 0 || sCount != 0) return false;       // S 已删：正文里不该再有 S 环条目
-                // **计数用"旧头部值"做 sanity 上界**（头部有 hash 校验、可信）：容量缩放后不能再拿当前数组长度当界，
+                int mCount = h.MCount;
+                int ghostCount = h.GhostCount;
+                long generation = h.Generation;
+
+                // **计数用头部值做 sanity 上界**（头部有 hash 校验、可信）：容量缩放后不能再拿当前数组长度当界，
                 // 否则损坏文件里一个巨大的计数会变成长时间循环 / _ghostSet 膨胀（见设计文档 §5 D6）。
-                if (mCount < 0 || mCount > oldSlotCount) return false;
-                if (oldGhostLimit < 0 || ghostCount < 0 || ghostCount > oldGhostLimit) return false;
+                if (mCount < 0 || mCount > h.SlotCount) return false;
+                if (ghostCount < 0 || ghostCount > (long)h.SlotCount * 4) return false;
+
+                _loadedSourceState = h.Source;
 
                 // 每个槽（下标）只能出现一次，且必须与环上的块号对得上。
                 // 最危险的形态是"块索引指向的槽不在环上"——那个槽会被当成空闲复用，旧条目就会读到别人的数据。
@@ -1762,9 +1777,9 @@ namespace FlyDisk.Engine
                     if (BitConverter.ToUInt64(trailer, 0) != bodyHash) return false;
                 }
 
-                // 交叉校验：① "登记 + 丢弃"必须等于头部记的"占用槽数"（缩容丢掉的也计入）；
+                // 交叉校验：① "登记 + 丢弃"必须等于头部记的条目数（缩容丢掉的也计入）；
                 //            ② 块索引的条目数必须等于登记数（两者都从同一批环条目重建，不等说明正文被改过）
-                if (registered + dropped != usedSlots) return false;
+                if (registered + dropped != mCount) return false;
                 if (_blocksByIndex.Count != registered) return false;
 
                 // 未出现在任何环上的槽 ⇒ 空闲。**降序压栈 ⇒ PopFree 升序出槽**（文件从头连续增长，见 §4 D3）
@@ -2082,6 +2097,15 @@ namespace FlyDisk.Engine
 
         /// <summary>容器头的 magic / version / 校验和都通过 = 确实是本程序的容器（否则是无法识别的残留）</summary>
         public bool Recognized { get; init; }
+
+        /// <summary>账本整体状态（干净 / 脏 / 失效 / 损坏 / 旧格式）</summary>
+        public L2LedgerStatus Status { get; init; }
+
+        /// <summary>容器头里记的格式版本（0 = 读不到）</summary>
+        public int ContainerVersion { get; init; }
+
+        /// <summary>索引头里记的格式版本（0 = 读不到）</summary>
+        public int IndexVersion { get; init; }
 
         /// <summary>容器头记的槽位数（0 = 未知；仅 <see cref="Recognized"/> 为真时有意义）</summary>
         public int StoredSlots { get; init; }

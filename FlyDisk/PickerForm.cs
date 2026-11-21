@@ -63,15 +63,31 @@ namespace FlyDisk
 
             public PhysicalDiskInfo? Local;
             public RemoteDiskInfo? Remote;
+
+            /// <summary>盘身份串（本地盘；远程为空）——查它自己的 L2 缓存落在哪块盘上</summary>
+            public string Identity = string.Empty;
+
+            /// <summary>与其它已勾选盘无关的固定拦截原因（只读 / 系统盘 / 程序盘 / 分页文件盘 / 无身份）</summary>
+            public List<string> BaseBlockReasons = new();
+
+            /// <summary>当前生效的全部拦截原因（固定原因 + 由勾选组合产生的 L2 冲突）</summary>
+            public List<string> CurrentReasons = new();
+
+            /// <summary>构造时的提示开关（可移动介质 / 搜寻惩罚等），动态重算明细时要沿用</summary>
+            public bool ShowAccelerationHints;
+
+            /// <summary>「重新联机」模式：不做 L2 冲突判定，明细里要保留那句说明</summary>
+            public bool OfflineOnly;
         }
 
         private readonly List<Entry> _entries = new();
 
         /// <summary>
-        /// 配置里 L2 缓存目录落在哪些物理盘上（可能有多块：每块被加速盘各有自己的 L2 卷）。
-        /// 用来拦下"拿缓存所在的那块盘去加速"——自己给自己加速是纯写放大，引擎启动时也会拒。
+        /// **每块加速盘自己的 L2 缓存落在哪块物理盘上**（身份串 → 物理盘号）。
+        /// 只有"本次勾选的盘确实用到某块盘上的 L2"时，那块盘才不能被同时加速；
+        /// 配置里别的盘用 L2 不影响本次选择。
         /// </summary>
-        private readonly HashSet<int> _l2CacheDiskNumbers = new();
+        private readonly Dictionary<string, int> _l2CacheDiskByTarget = new(StringComparer.Ordinal);
 
         /// <summary>
         /// 承载分页文件（pagefile.sys）的物理盘号集合，用于拦下"拿分页文件所在盘去加速"——
@@ -148,7 +164,9 @@ namespace FlyDisk
             : this(disks,
                    identityToPreselect.Length > 0 ? new List<string> { identityToPreselect } : new List<string>(),
                    offlineOnly,
-                   l2CacheDiskNumber >= 0 ? new[] { l2CacheDiskNumber } : Array.Empty<int>(),
+                   l2CacheDiskNumber >= 0 && identityToPreselect.Length > 0
+                       ? new Dictionary<string, int>(StringComparer.Ordinal) { [identityToPreselect] = l2CacheDiskNumber }
+                       : new Dictionary<string, int>(),
                    multiSelect: false,
                    occupancyMode,
                    okTextKey,
@@ -162,17 +180,20 @@ namespace FlyDisk
         /// </summary>
         /// <param name="disks">已枚举好的本机物理盘</param>
         /// <param name="identitiesToPreselect">上次加速过的盘（配置里的身份串），用来自动勾选</param>
-        /// <param name="l2CacheDiskNumbers">配置里各 L2 缓存目录所在的物理盘号（空 = 未启用 / 查不到）；这些盘会被标成不能加速</param>
+        /// <param name="l2CacheDiskByTarget">
+        /// 每块盘自己的 L2 缓存落在哪块物理盘上（身份串 → 物理盘号；空 = 没有盘用 L2）。
+        /// 只有**本次勾选的盘确实用到某块盘上的 L2**时，那块盘才不能被同时加速。
+        /// </param>
         public PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
-            IReadOnlyCollection<int> l2CacheDiskNumbers, string okTextKey = "common.ok")
-            : this(disks, identitiesToPreselect, offlineOnly: false, l2CacheDiskNumbers, multiSelect: true,
+            IReadOnlyDictionary<string, int> l2CacheDiskByTarget, string okTextKey = "common.ok")
+            : this(disks, identitiesToPreselect, offlineOnly: false, l2CacheDiskByTarget, multiSelect: true,
                    occupancyMode: false, okTextKey, acceleratedDiskNumbers: null)
         {
         }
 
         /// <summary>唯一的实现体：本地清单 + 预选（单个或多选）+ 只列脱机/只列联机 + 是否多选</summary>
         private PickerForm(IReadOnlyList<PhysicalDiskInfo> disks, IReadOnlyList<string> identitiesToPreselect,
-            bool offlineOnly, IReadOnlyCollection<int> l2CacheDiskNumbers, bool multiSelect,
+            bool offlineOnly, IReadOnlyDictionary<string, int> l2CacheDiskByTarget, bool multiSelect,
             bool occupancyMode, string okTextKey, IReadOnlyCollection<int>? acceleratedDiskNumbers)
             : this(occupancyMode ? "selectDisk.title.occupy"
                    : offlineOnly ? "selectDisk.title.online" : "selectDisk.title.local", multiSelect)
@@ -186,9 +207,9 @@ namespace FlyDisk
                 foreach (int number in acceleratedDiskNumbers) _acceleratedDiskNumbers.Add(number);
             }
             _emptyTextKey = offlineOnly ? "selectDisk.noOfflineDisks" : "selectDisk.noLocalDisks";
-            foreach (int number in l2CacheDiskNumbers)
+            foreach (KeyValuePair<string, int> pair in l2CacheDiskByTarget)
             {
-                if (number >= 0) _l2CacheDiskNumbers.Add(number);
+                if (pair.Value >= 0 && !string.IsNullOrEmpty(pair.Key)) _l2CacheDiskByTarget[pair.Key] = pair.Value;
             }
             // offlineOnly（重新联机）模式下用不到，但算一次也无妨：分页文件盘恰恰是最该联机回来的那块
             _pageFileDiskNumbers = PhysicalDiskHandle.GetPageFileDiskNumbers();
@@ -200,11 +221,11 @@ namespace FlyDisk
 
                 // offlineOnly（重新联机）/ occupancyMode（占用查询）不做任何"能不能加速"的判定：
                 // 系统盘恰恰是最需要联机回来的那块；占用查询本来就不是加速。
-                List<string> blockReasons = offlineOnly || occupancyMode
+                List<string> baseReasons = offlineOnly || occupancyMode
                     ? new List<string>()
-                    : BlockReasons(info, _l2CacheDiskNumbers, _pageFileDiskNumbers);
+                    : BaseBlockReasons(info, _pageFileDiskNumbers);
 
-                List<DetailLine> detail = BuildLocalDetail(info, blockReasons, showAccelerationHints: multiSelect);
+                List<DetailLine> detail = BuildLocalDetail(info, baseReasons, showAccelerationHints: multiSelect);
                 if (offlineOnly)
                 {
                     // 「重新联机」那句说明本来在对话框顶部；顶部提示行已删（2026-10-11），
@@ -214,6 +235,11 @@ namespace FlyDisk
                 _entries.Add(new Entry
                 {
                     Local = info,
+                    Identity = PhysicalDiskHandle.DescribeIdentity(info),
+                    BaseBlockReasons = baseReasons,
+                    CurrentReasons = baseReasons,
+                    ShowAccelerationHints = multiSelect,
+                    OfflineOnly = offlineOnly,
                     // 「确定」能不能用**只由错误行决定**：有任意一条"会阻止启动"的原因就选不了
                     Selectable = !detail.Exists(line => line.IsError),
                     Text = DiskText.Wide(info)
@@ -421,24 +447,25 @@ namespace FlyDisk
         }
 
         /// <summary>
-        /// 该盘**不能被加速**的全部原因（本地化文案，逐条一行；空 = 可以）。
+        /// 该盘**与其它已选盘无关**的固定拦截原因（本地化文案，逐条一行；空 = 可以）。
         ///
-        /// 五条硬拦，**逐条独立判定、全部列出**（一块盘可能同时踩中好几条，例如本程序就装在系统盘上、
+        /// 五条固定硬拦，**逐条独立判定、全部列出**（一块盘可能同时踩中好几条，例如本程序就装在系统盘上、
         /// 而系统盘又承载分页文件——用户需要一次看全"这块盘到底哪里不行"，而不是修好一条、重试、
         /// 再发现下一条）：
         /// - **只读**：做不了写透传；
+        /// - **无稳定身份**：无法可靠区分同型号设备；
         /// - **系统盘**：整盘脱机等于把 Windows 送走；
         /// - **本程序所在盘**：整盘脱机会把本程序（连同配置/日志/L2 容器）一起送走；
-        /// - **分页文件所在盘**：整盘脱机会让内核换页失败、当场蓝屏（KERNEL_DATA_INPAGE_ERROR 0x7A）；
-        /// - **L2 缓存所在盘**：自己给自己加速是纯写放大，引擎启动时也会拒。
+        /// - **分页文件所在盘**：整盘脱机会让内核换页失败、当场蓝屏（KERNEL_DATA_INPAGE_ERROR 0x7A）。
+        ///
+        /// **L2 缓存所在盘不在这里**：它取决于"本次勾选了哪些盘"，由
+        /// <see cref="RefreshConflictState"/> 动态计算——配置里别的盘用 L2 不该拦住本次选择。
         ///
         /// 系统盘 / 程序盘 / 分页文件盘三者与引擎启动校验、L2 校验/修复共用
         /// <see cref="PhysicalDiskHandle.DescribeTargetDiskBlockReason"/> 的同一条判据
-        /// （<paramref name="pageFileDiskNumbers"/> 由调用方一次性算好再传进来，避免逐盘重复全机扫描）；
-        /// L2 那条与启动校验 ⑥（缓存目录不得落在被加速的盘上）同源。
+        /// （<paramref name="pageFileDiskNumbers"/> 由调用方一次性算好再传进来，避免逐盘重复全机扫描）。
         /// </summary>
-        private static List<string> BlockReasons(PhysicalDiskInfo info, HashSet<int> l2CacheDiskNumbers,
-            HashSet<int> pageFileDiskNumbers)
+        private static List<string> BaseBlockReasons(PhysicalDiskInfo info, HashSet<int> pageFileDiskNumbers)
         {
             var reasons = new List<string>();
 
@@ -457,9 +484,6 @@ namespace FlyDisk
 
             if (pageFileDiskNumbers.Contains(info.DiskNumber))
                 reasons.Add(Locale.T("selectDisk.reason.pageFile"));
-
-            if (l2CacheDiskNumbers.Contains(info.DiskNumber))
-                reasons.Add(Locale.T("selectDisk.reason.l2CacheDisk"));
 
             return reasons;
         }
@@ -527,6 +551,73 @@ namespace FlyDisk
             UpdateSelection();
         }
 
+        /// <summary>
+        /// 多选：按**当前勾选组合**重算每块盘的 L2 冲突与明细。
+        ///
+        /// 规则只有一条：**同一次加速里，不能既选某块盘、又选承载它 L2 缓存的那块盘**。
+        /// 配置里别的盘用 L2 不影响本次选择；两块盘互相不沾 L2 就可以一起加速。
+        /// </summary>
+        private void RefreshConflictState()
+        {
+            if (!_multiSelect || _checkedList == null) return;
+
+            var checkedNumbers = new HashSet<int>();
+            var checkedIdentities = new List<string>();
+            foreach (int checkedIndex in _checkedList.CheckedIndices)
+            {
+                if (checkedIndex < 0 || checkedIndex >= _entries.Count) continue;
+                Entry entry = _entries[checkedIndex];
+                PhysicalDiskInfo? checkedLocal = entry.Local;
+                if (checkedLocal == null) continue;
+                checkedNumbers.Add(checkedLocal.DiskNumber);
+                if (entry.Identity.Length > 0) checkedIdentities.Add(entry.Identity);
+            }
+
+            foreach (Entry entry in _entries)
+            {
+                PhysicalDiskInfo? local = entry.Local;
+                if (local == null) continue;
+                if (entry.OfflineOnly)
+                {
+                    entry.CurrentReasons = entry.BaseBlockReasons;
+                    continue;
+                }
+
+                var reasons = new List<string>(entry.BaseBlockReasons);
+
+                int ownL2 = -1;
+                bool hasOwnL2 = entry.Identity.Length > 0 &&
+                                _l2CacheDiskByTarget.TryGetValue(entry.Identity, out ownL2);
+
+                // ①′ L2 配在自己盘上（非法配置）：无论勾没勾别的盘，它都不能作为加速目标
+                if (hasOwnL2 && ownL2 == local.DiskNumber)
+                {
+                    reasons.Add(Locale.T("selectDisk.reason.l2CacheDisk"));
+                }
+                // ① 这块盘自己的 L2 缓存落在另一块**已勾选**的盘上（勾了它就没法同时加速那个缓存盘）
+                else if (hasOwnL2 && checkedNumbers.Contains(ownL2))
+                {
+                    reasons.Add(Locale.T("selectDisk.reason.l2TargetConflict"));
+                }
+
+                // ② 这块盘是某个**已勾选**盘的 L2 缓存盘
+                foreach (string otherIdentity in checkedIdentities)
+                {
+                    if (string.Equals(otherIdentity, entry.Identity, StringComparison.Ordinal)) continue;
+                    if (_l2CacheDiskByTarget.TryGetValue(otherIdentity, out int l2Disk) &&
+                        l2Disk == local.DiskNumber)
+                    {
+                        reasons.Add(Locale.T("selectDisk.reason.l2CacheDisk"));
+                        break;
+                    }
+                }
+
+                entry.CurrentReasons = reasons;
+                entry.Detail = BuildLocalDetail(local, reasons, entry.ShowAccelerationHints);
+                entry.Selectable = !entry.Detail.Exists(line => line.IsError);
+            }
+        }
+
         private void UpdateSelection()
         {
             int index = _list.SelectedIndex;
@@ -535,12 +626,49 @@ namespace FlyDisk
             if (_multiSelect)
             {
                 // 多选：**勾选状态**决定"选了哪些盘"；行高亮只决定右侧显示哪块盘的详情。
+                RefreshConflictState();
                 _ok.Enabled = CheckedAllSelectable();
                 if (_detailReady)
                 {
-                    ShowDetail(hasSelection
-                        ? _entries[index].Detail
-                        : new List<DetailLine> { new(Locale.T(_emptyTextKey), false) });
+                    if (!hasSelection)
+                    {
+                        ShowDetail(new List<DetailLine> { new(Locale.T(_emptyTextKey), false) });
+                        return;
+                    }
+
+                    // 顶部先聚合**所有已勾选盘**的报错（不管当前高亮的是哪块），
+                    // 这样"勾了 A 之后 B 变成冲突"时，用户不用逐行点开也能看见。
+                    var lines = new List<DetailLine>();
+                    foreach (int checkedIndex in _checkedList.CheckedIndices)
+                    {
+                        if (checkedIndex < 0 || checkedIndex >= _entries.Count) continue;
+                        Entry checkedEntry = _entries[checkedIndex];
+                        PhysicalDiskInfo? checkedLocal = checkedEntry.Local;
+                        if (checkedLocal == null) continue;
+                        foreach (string reason in checkedEntry.CurrentReasons)
+                        {
+                            lines.Add(new DetailLine(
+                                Locale.T("selectDisk.detail.issuePrefix", DiskText.Short(checkedLocal.DiskNumber))
+                                + reason, true));
+                        }
+                    }
+
+                    if (lines.Count > 0)
+                    {
+                        lines.Insert(0, new DetailLine(Locale.T("selectDisk.detail.selectedIssues"), false));
+                        lines.Add(new DetailLine(string.Empty, false));
+                    }
+
+                    // 再显示当前高亮那块盘的完整明细。**报错行一律不再在这里出现**：
+                    // 所有"会阻止启动"的原因统一在上面的聚合区展示，避免同一句话出现两遍。
+                    Entry highlighted = _entries[index];
+                    foreach (DetailLine line in highlighted.Detail)
+                    {
+                        if (line.IsError) continue;
+                        lines.Add(line);
+                    }
+
+                    ShowDetail(lines);
                 }
                 return;
             }
@@ -558,20 +686,16 @@ namespace FlyDisk
         }
 
         /// <summary>
-        /// 多选：勾选状态变化后刷新「确定」的可用性。
+        /// 多选：勾选状态变化后刷新信息区与「确定」的可用性。
+        ///
+        /// **勾选本身永远允许**（包括 ❌ 不可加速的盘）：错误统一在信息区聚合展示，
+        /// 再由 <see cref="CheckedAllSelectable"/> 决定「确定」能不能点——不在复选框这一层拦截，
+        /// 否则用户看不到"为什么刚才没勾上"。
         /// 勾选状态在 <see cref="ItemCheck"/> 返回后才真正落定，所以这里延后一拍再读 <see cref="CheckedListBox.CheckedIndices"/>。
-        /// 同时拒绝勾选 ❌ 不可加速的盘（但允许选中该行查看原因）。
         /// </summary>
         private void OnItemCheck(object? sender, ItemCheckEventArgs e)
         {
             if (_checkedList == null) return;
-
-            if (e.Index >= 0 && e.Index < _entries.Count && !_entries[e.Index].Selectable
-                && e.NewValue == CheckState.Checked)
-            {
-                e.NewValue = CheckState.Unchecked;
-                return;
-            }
 
             // 构造期（FinishFill 里的 SetItemChecked）还没有窗口句柄，不能 BeginInvoke；
             // 构造末尾会统一 UpdateSelection 一次。

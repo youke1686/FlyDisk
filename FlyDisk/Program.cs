@@ -118,6 +118,16 @@ namespace FlyDisk
             // 语言：**只在首次打开时**按系统语言检测一次，结果写入配置，之后以配置为准（见 后续待办.md 第八节第 8 条）。
             // 必须赶在任何窗体构造之前定下来——窗体是在构造时取词的。
             DiskConfig config = ConfigService.Load();
+            AppState state = StateService.Load();
+            StateService.ApplySnapshots(config, state);
+            if (ConfigService.LastResetReason.Length > 0)
+            {
+                LogService.DebugFile($"config.json 已出厂重置：{ConfigService.LastResetReason}（旧文件保留为 config.json.old）");
+            }
+            if (StateService.LastResetReason.Length > 0)
+            {
+                LogService.DebugFile($"state.json 已重置：{StateService.LastResetReason}（旧文件保留为 state.json.old）");
+            }
             if (string.IsNullOrWhiteSpace(config.Language))
             {
                 config.Language = Locale.DetectSystemLanguage();
@@ -125,19 +135,65 @@ namespace FlyDisk
             }
             Locale.SetLanguage(config.Language);
 
+            // 出厂重置必须让用户看见：不能静默把配置 / 状态清掉
+            if (ConfigService.LastResetReason.Length > 0 || StateService.LastResetReason.Length > 0)
+            {
+                string details = string.Empty;
+                if (ConfigService.LastResetReason.Length > 0)
+                {
+                    details += Locale.T("main.msg.factoryResetConfig", ConfigService.LastResetReason) + "\r\n";
+                }
+                if (StateService.LastResetReason.Length > 0)
+                {
+                    details += Locale.T("main.msg.factoryResetState", StateService.LastResetReason);
+                }
+                Dialogs.Notice(null, Locale.T("dialog.factoryReset"),
+                    Locale.T("main.msg.factoryReset", details.TrimEnd()));
+            }
+
             // 首次打开：使用前风险确认。只有「同意并继续」才进入主界面；
             // 「不同意，退出」/ 关窗 = 直接退出，不触碰任何磁盘状态。
-            if (!config.WarningAccepted)
+            if (!state.WarningAccepted)
             {
                 using var warning = new WarningForm();
                 if (warning.ShowDialog() != DialogResult.OK) return;
-                config.WarningAccepted = true;
-                ConfigService.Save(config, out _);   // 写失败只会在下次启动再问一次
+                state.WarningAccepted = true;
+                StateService.Save(state, out _);   // 写失败只会在下次启动再问一次
+            }
+
+            // 隐藏的风险绕过开关：开启后首次启动必须确认；关掉再手动打开会重新确认。
+            if (config.AllowRiskBypass)
+            {
+                if (!state.RiskBypassAccepted)
+                {
+                    using var risk = new RiskBypassForm();
+                    if (risk.ShowDialog() != DialogResult.OK)
+                    {
+                        // 「恢复关闭」/ Esc / 关窗 = 把开关写回 false，最保守
+                        config.AllowRiskBypass = false;
+                        state.RiskBypassAccepted = false;
+                        ConfigService.Save(config, out _);
+                        StateService.Save(state, out _);
+                    }
+                    else
+                    {
+                        state.RiskBypassAccepted = true;
+                        StateService.Save(state, out _);
+                    }
+                }
+            }
+            else if (state.RiskBypassAccepted)
+            {
+                state.RiskBypassAccepted = false;
+                StateService.Save(state, out _);
             }
 
             // 旧布局 L2 缓存：新版不再支持、也不再迁移。启动时先问用户是否删除；
             // 选「否」= 直接退出（不在带着旧缓存的情况下继续跑）。
             if (!L2Manage.PromptRemoveLegacyCaches(config)) return;
+
+            // 旧版本的 L2 账本格式：不迁移，直接问「清空 / 退出」。
+            if (!L2Manage.PromptRemoveIncompatibleLedgers(config)) return;
 
             // 崩溃 / 强杀残留：上次进程被杀时，iSCSI 会话与发现门户还留在系统里。启动期幂等清理一次
             // （服务没在跑时内部直接跳过；任何失败都只记日志、不拦启动）。

@@ -178,6 +178,46 @@ namespace FlyDisk.Engine
         public BlockSourceInfo ToBlockSourceInfo(bool allowOnlineLedger = false)
             => BlockSourceInfo.FromDisk(Info, WasOnline, allowOnlineLedger);
 
+        /// <summary>
+        /// 用**当前句柄**读一次 SMART 累计写入计数。失败返回 false（桥 / 盘不支持，不是错误）。
+        /// 只应在停服 fence 之后调用（此时没有在途命令）。
+        /// </summary>
+        public bool TryReadSmartCounters(out SmartCounterSnapshot snapshot)
+        {
+            snapshot = default;
+            SafeFileHandle? handle = _handle;
+            if (handle == null || handle.IsInvalid || handle.IsClosed)
+            {
+                LogService.DebugFile($"Smart[disk {Info.DiskNumber}] handle invalid");
+                return false;
+            }
+            return SmartCounterReader.TryRead(handle, out snapshot, $"disk {Info.DiskNumber}");
+        }
+
+        /// <summary>
+        /// 只读探测：临时开一个句柄读 SMART 计数（盘可以处于联机或脱机状态，不改变盘的状态）。
+        /// 这几种 SMART IOCTL 都带 `FILE_READ_ACCESS | FILE_WRITE_ACCESS` 权限位，
+        /// **只读句柄一定会失败（Win32 5）**，所以直接按读写方式打开。
+        /// </summary>
+        public static bool TryReadSmartCounters(int diskNumber, out SmartCounterSnapshot snapshot)
+        {
+            snapshot = default;
+            if (diskNumber < 0) return false;
+
+            try
+            {
+                using SafeFileHandle probe = CreateDiskHandle(diskNumber, FileAccess.ReadWrite,
+                    FileShare.ReadWrite | FileShare.Delete);
+                return SmartCounterReader.TryRead(probe, out snapshot, $"disk {diskNumber}");
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"Smart[disk {diskNumber}] open failed: {ex.GetType().Name}: {ex.Message}");
+                snapshot = default;
+                return false;
+            }
+        }
+
         #region 打开与关闭
 
         /// <summary>

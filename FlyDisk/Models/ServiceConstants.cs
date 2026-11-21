@@ -61,8 +61,17 @@ namespace FlyDisk.Models
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "FlyDisk");
 
-        /// <summary>配置文件路径（本程序启动时读取；设置对话框保存时写入）</summary>
+        /// <summary>配置格式版本（用户可手改的 config.json；不符就出厂重置）</summary>
+        public const int ConfigSchemaVersion = 2;
+
+        /// <summary>状态格式版本（程序维护的 state.json；不符就重置状态）</summary>
+        public const int StateSchemaVersion = 1;
+
+        /// <summary>配置文件路径（用户可手动修改；本程序启动时读取）</summary>
         public static readonly string ConfigFilePath = Path.Combine(DataDirectory, "config.json");
+
+        /// <summary>程序本地状态文件路径（确认标记、上次选盘、设备派生快照；不应手改）</summary>
+        public static readonly string StateFilePath = Path.Combine(DataDirectory, "state.json");
 
         /// <summary>
         /// 展示用的容量串（**1024 进制**，标 GiB / MiB，见 AGENTS.md §4.4 的"标注必须与进制一致"）。

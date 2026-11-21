@@ -41,6 +41,7 @@ namespace FlyDisk
     public partial class Form1 : ThemedForm, ILocalizable
     {
         private DiskConfig _config;
+        private AppState _state;
 
         /// <summary>
         /// 一次「启动加速」里的单个会话：一块盘 = 一个引擎实例；远程形态是 `Disk == null` 的单会话。
@@ -139,6 +140,8 @@ namespace FlyDisk
 
             // 配置在启动那一刻被读进引擎；运行中改配置不生效 ⇒ 设置入口在运行时会锁住
             _config = ConfigService.Load();
+            _state = StateService.Load();
+            StateService.ApplySnapshots(_config, _state);
 
             设置ToolStripMenuItem.Click += 设置ToolStripMenuItem_Click;
             检查器ToolStripMenuItem.Click += 检查器ToolStripMenuItem_Click;
@@ -289,8 +292,10 @@ namespace FlyDisk
             using (var settingsForm = new Settings(working, entries =>
                 {
                     _config.L2Disks = entries.Select(e => e.Clone()).ToList();
-                    if (ConfigService.Save(_config, out string saveError)) return null;
-                    return saveError;
+                    StateService.CaptureSnapshots(_config, _state);
+                    if (!ConfigService.Save(_config, out string saveError)) return saveError;
+                    StateService.Save(_state, out _);
+                    return null;
                 }))
             {
                 if (settingsForm.ShowDialog() != DialogResult.OK) return;
@@ -302,6 +307,8 @@ namespace FlyDisk
             // 不能说"已保存"却什么都没写进去（用户会以为配置生效了，见 未解决的疑点.md TD-10）
             if (ConfigService.Save(_config, out string error))
             {
+                StateService.CaptureSnapshots(_config, _state);
+                StateService.Save(_state, out _);
                 Log(Locale.T("main.log.configSaved", ServiceConstants.ConfigFilePath));
             }
             else
@@ -365,7 +372,7 @@ namespace FlyDisk
                     return;
                 }
 
-                using var pick = new PickerForm(owned, _config.PhysicalDiskIdentity,
+                using var pick = new PickerForm(owned, _state.PhysicalDiskIdentity,
                     okTextKey: "selectDisk.ok.verify");
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisk == null) return;
                 target = pick.SelectedDisk;
@@ -385,6 +392,10 @@ namespace FlyDisk
             }
 
             if (target == null || cache == null) return;
+
+            // 校验同样会把源盘脱机（L2Verifier.Open → PhysicalDiskHandle.OpenReadOnly），
+            // 所以在打开校验窗口之前先查一遍占用（见 docs/启动前占用检查_设计与施工计划.md）。
+            if (!ConfirmOccupancyBeforeVerify(target)) return;
 
             // L2Verifier 只读 config.SsdCachePath：给它一份指向"这块盘自己的目录"的副本
             DiskConfig verifyConfig = _config.Clone();
@@ -424,7 +435,7 @@ namespace FlyDisk
                     Dialogs.Notice(this, Locale.T("dialog.notice.noDisks"), Locale.T("main.msg.noDisks"));
                     return;
                 }
-                using var pick = new PickerForm(disks, _config.PhysicalDiskIdentity, offlineOnly: true,
+                using var pick = new PickerForm(disks, _state.PhysicalDiskIdentity, offlineOnly: true,
                     okTextKey: "selectDisk.ok.reonline");
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisk == null) return;
                 picked = pick.SelectedDisk;
@@ -1312,18 +1323,20 @@ namespace FlyDisk
                     return;
                 }
 
-                // 每块盘各有自己的 L2 卷：把所有已配置的 L2 卷所在的物理盘都标成不能加速
-                // （加速会把那块盘整盘脱机，L2 也就跟着没了）。
-                var l2CacheDisks = new List<int>();
+                // 每块盘各有自己的 L2 卷：记下"这块盘的 L2 落在哪个物理盘"。
+                // 只有**本次勾选的盘**确实用到某块盘上的 L2 时，那块盘才不能同时被加速；
+                // 配置里其它盘用 L2 不影响本次选择。
+                var l2CacheDiskByTarget = new Dictionary<string, int>(StringComparer.Ordinal);
                 foreach (L2DiskConfig entry in _config.L2Disks)
                 {
-                    if (!entry.Enabled) continue;   // 停用的 L2 本次不用，不必因此禁止加速那个卷
+                    if (!entry.Enabled) continue;   // 停用的 L2 本次不用，不构成冲突
+                    if (string.IsNullOrWhiteSpace(entry.DiskIdentity)) continue;
                     if (string.IsNullOrWhiteSpace(entry.CacheVolume)) continue;
                     int number = PhysicalDiskHandle.GetL2CacheDiskNumber(true, entry.CacheVolume);
-                    if (number >= 0 && !l2CacheDisks.Contains(number)) l2CacheDisks.Add(number);
+                    if (number >= 0) l2CacheDiskByTarget[entry.DiskIdentity] = number;
                 }
 
-                using var pick = new PickerForm(disks, _config.LastAcceleratedDiskIdentities, l2CacheDisks,
+                using var pick = new PickerForm(disks, _state.LastAcceleratedDiskIdentities, l2CacheDiskByTarget,
                     "selectDisk.ok.start");
                 if (pick.ShowDialog(this) != DialogResult.OK || pick.SelectedDisks.Count == 0) return;
                 picked = pick.SelectedDisks;
@@ -1341,14 +1354,18 @@ namespace FlyDisk
             // 同一缓存卷上多块盘的 L2 上限要合起来算一次（逐盘检查看不到彼此）
             if (!ValidateL2SpaceForStart(picked)) return;
 
+            // **脱机之前**先逐盘查占用：占用状态下脱机有概率失败（见 docs/启动前占用检查_设计与施工计划.md）。
+            // 用户终止时任何盘都还没被脱机，系统状态一点没动。
+            if (!ConfirmOccupancyBeforeStart(picked)) return;
+
             // 记住这次的选择（**全部**）：只用于下次在选盘框里默认勾中，绝不作为启动依据
-            _config.LastAcceleratedDiskIdentities = new List<string>();
+            _state.LastAcceleratedDiskIdentities = new List<string>();
             foreach (PhysicalDiskInfo disk in picked)
             {
-                _config.LastAcceleratedDiskIdentities.Add(PhysicalDiskHandle.DescribeIdentity(disk));
+                _state.LastAcceleratedDiskIdentities.Add(PhysicalDiskHandle.DescribeIdentity(disk));
             }
-            _config.PhysicalDiskIdentity = _config.LastAcceleratedDiskIdentities[0];
-            ConfigService.Save(_config, out _);
+            _state.PhysicalDiskIdentity = _state.LastAcceleratedDiskIdentities[0];
+            StateService.Save(_state, out _);
 
             _targetOperationPending = true;
             _targetOperationStarting = true;
@@ -1404,6 +1421,89 @@ namespace FlyDisk
                 _targetOperationPending = false;
                 _targetOperationStarting = false;
                 RefreshStatus();
+            }
+        }
+
+        /// <summary>
+        /// 启动前的占用检查（**任何盘脱机之前**执行）：逐盘串行扫描，查到占用 / 扫描失败时
+        /// 由 <see cref="OccupancyQuery.RunForStart"/> 当场问用户“继续启动还是终止启动”，选继续才查下一块。
+        ///
+        /// 原本就脱机的盘**跳过**：它没有挂载卷可定位，别人也打不开它上面的文件。
+        /// 返回 false = 用户终止，调用方直接放弃本次启动（此刻没有任何盘被脱机）。
+        /// </summary>
+        private bool ConfirmOccupancyBeforeStart(IReadOnlyList<PhysicalDiskInfo> disks)
+        {
+            var checkable = new List<PhysicalDiskInfo>(disks.Count);
+            foreach (PhysicalDiskInfo disk in disks)
+            {
+                if (IsDiskOnlineNow(disk))
+                {
+                    checkable.Add(disk);
+                }
+                else
+                {
+                    Log(Locale.T("main.log.occupySkipOffline", DiskText.Short(disk.DiskNumber)));
+                }
+            }
+
+            if (checkable.Count == 0)
+            {
+                Log(Locale.T("main.log.occupySkippedAll"));
+                return true;
+            }
+
+            OccupancyGateResult result = OccupancyQuery.RunForStart(this, checkable);
+            if (result == OccupancyGateResult.Aborted)
+            {
+                Log(Locale.T("main.log.occupyAborted"));
+                return false;
+            }
+
+            if (result == OccupancyGateResult.Continued)
+                Log(Locale.T("main.log.occupyContinued"));
+            else
+                Log(Locale.T("main.log.occupyPassed", checkable.Count));
+
+            return true;
+        }
+
+        /// <summary>
+        /// 「校验 L2」前的占用检查：校验同样会把源盘脱机（`PhysicalDiskHandle.OpenReadOnly`），
+        /// 所以与启动用同一套检查，只是文案 / 按钮换成“校验”口径。
+        /// 返回 false = 用户终止，调用方不打开校验窗口。
+        /// </summary>
+        private bool ConfirmOccupancyBeforeVerify(PhysicalDiskInfo disk)
+        {
+            if (!IsDiskOnlineNow(disk))
+            {
+                Log(Locale.T("main.log.occupySkipOffline", DiskText.Short(disk.DiskNumber)));
+                return true;
+            }
+
+            OccupancyGateResult result = OccupancyQuery.RunForVerify(this, disk);
+            if (result == OccupancyGateResult.Aborted)
+            {
+                Log(Locale.T("main.log.occupyVerifyAborted"));
+                return false;
+            }
+
+            if (result == OccupancyGateResult.Continued)
+                Log(Locale.T("main.log.occupyVerifyContinued"));
+
+            return true;
+        }
+
+        /// <summary>现取磁盘的联机状态——选盘那一刻的快照可能已经过期。</summary>
+        private static bool IsDiskOnlineNow(PhysicalDiskInfo disk)
+        {
+            try
+            {
+                return PhysicalDiskHandle.Probe(disk.DiskNumber).IsOnline;
+            }
+            catch
+            {
+                // 探测失败就沿用快照：真正的失败会在扫描或启动时如实报出
+                return disk.IsOnline;
             }
         }
 
@@ -1714,8 +1814,7 @@ namespace FlyDisk
                     BytesPerSector = disk.BytesPerSector,
                 };
                 _config.L2Disks.Add(entry);
-                if (!ConfigService.Save(_config, out string saveError))
-                    LogService.DebugFile($"L2 配置恢复：保存失败（下次启动会重试）：{saveError}");
+                SaveConfigAndStateQuietly();
                 Log(Locale.T("main.log.l2Recovered", DiskText.Full(disk), entry.CacheVolume));
             }
 
@@ -1724,16 +1823,14 @@ namespace FlyDisk
             if (entry.OwnerHash == 0)
             {
                 entry.OwnerHash = SsdCacheService.ComputeIdentity(BlockSourceInfo.FromDisk(disk, disk.IsOnline));
-                if (!ConfigService.Save(_config, out string saveError))
-                    LogService.DebugFile($"L2 配置：保存身份散列失败（下次启动会重试）：{saveError}");
+                SaveConfigAndStateQuietly();
             }
 
             // 扇区大小快照：只在首次得知时写入（之后不更新）
             if (entry.BytesPerSector <= 0 && disk.BytesPerSector > 0)
             {
                 entry.BytesPerSector = disk.BytesPerSector;
-                if (!ConfigService.Save(_config, out string saveError))
-                    LogService.DebugFile($"L2 配置：保存扇区大小快照失败（下次启动会重试）：{saveError}");
+                SaveConfigAndStateQuietly();
             }
 
             if (string.IsNullOrWhiteSpace(entry.CacheVolume)) return false;
@@ -1742,6 +1839,20 @@ namespace FlyDisk
             maxBytes = entry.MaxBytes;
             sectorsPerBlock = entry.SectorsPerBlock;
             return true;
+        }
+
+        /// <summary>
+        /// 静默保存：配置写 config.json，每盘派生快照写 state.json。
+        /// 失败只落诊断日志（这些调用都发生在"顺手补全配置"的路径上，不打断用户的启动流程）。
+        /// </summary>
+        private void SaveConfigAndStateQuietly()
+        {
+            if (!ConfigService.Save(_config, out string configError))
+                LogService.DebugFile($"保存配置失败（下次启动会重试）：{configError}");
+
+            StateService.CaptureSnapshots(_config, _state);
+            if (!StateService.Save(_state, out string stateError))
+                LogService.DebugFile($"保存本机状态失败（下次启动会重试）：{stateError}");
         }
 
         /// <summary>
@@ -1764,9 +1875,9 @@ namespace FlyDisk
             }
             else
             {
-                l2Enabled = _config.EnableSsdCache;
-                l2Path = _config.SsdCachePath;
-                l2Max = _config.SsdCacheMaxBytes;
+                l2Enabled = _state.EnableSsdCache;
+                l2Path = _state.SsdCachePath;
+                l2Max = _state.SsdCacheMaxBytes;
             }
 
             DiskConfig config = _config.Clone();
@@ -1849,14 +1960,15 @@ namespace FlyDisk
         /// 的事都由 UI 在**脱机之前**问完——用户中止或这里报错时，系统状态一点没动。引擎那边因此不再返回
         /// 任何"要你去问"的结果；它在装载期遇到不自洽会**直接报错终止**（不再静默重建）。
         ///
-        /// 顺序：① 容器属于这块盘吗 → ② 这份账本可信吗（上次没正常关服 / 盘原本联机）→ ③ 容量变了吗 / 被夹取了吗。
+        /// 顺序：① 账本格式 / 完整性 → ② 账本状态（脏 / 失效）→ ③ 块大小 → ④ 可信度 → ⑤ 容量变了吗 / 被夹取了吗。
         /// 每一步选"清空"都 = **删掉账本文件**（引擎随后会新建一份空的）。
         ///
-        /// 第 ② 步的口径（2026-10-27，**旧规则优先，再按设备类型**）：
-        /// ① 身份戳不符（上次没正常关服）⇒ 校验 / 清空 / 中止，**所有类型都不给绕过**；
-        /// ② 戳没问题时：**可移动设备**（USB / 1394 / SD / 读卡器）不看联机状态，每次启动都要校验（无绕过）；
-        ///    **热插拔盘**（如开了热插拔的 SATA 口）**每次启动都提示**（联机、脱机都算），额外给「无视风险启动」；
-        ///    **内建盘**维持原判据（联机 ⇒ 校验；脱机 + 戳一致 ⇒ 直接启动）。
+        /// 第 ④ 步的口径（2026-11-21，**源盘写入计数**，详见 docs/L2可信判据改造_SMART写入计数与账本v4.md）：
+        /// ① 盘启动时联机 ⇒ 不读计数，直接不可信（联机必然被系统挂载 / 修改）；
+        /// ② 脱机时读源盘 SMART 累计写入计数（0xF1）：可读、已证明可靠、与账本基线相等 ⇒ **直接放行**（所有设备类型）；
+        ///    变了 ⇒ 不可信；
+        /// ③ 读不到 / 未证明可靠 / 没基线 ⇒ 回退原判据：内建盘放行；可移动 / 热插拔盘不可信。
+        /// 不可信提示统一为「校验 / 清空 / 中止」；隐藏开关 `AllowRiskBypass` 打开时额外给「无视风险启动」。
         /// </summary>
         /// <param name="source">目标块源（本地 = 本机这块盘；远程 = 对端那块盘）——设备身份探测要用</param>
         /// <param name="diskNumber">本地形态的物理盘号（远程传 -1，只用于文案）</param>
@@ -1865,7 +1977,7 @@ namespace FlyDisk
         /// 而且远程**不支持逐块校验**（见下）。
         /// </param>
         /// <param name="allowOnlineLedger">
-        /// 只有当用户在热插拔盘的提示里选了「无视风险启动」时才为 true（交给引擎放行联机账本）。
+        /// 只有当用户不可信提示里选了「无视风险启动」时才为 true（交给引擎放行联机账本）。
         /// </param>
         /// <returns>true = 可以继续启动；false = 用户中止或预检失败</returns>
         private bool PrepareL2BeforeStart(DiskConfig config, BlockSourceInfo source, int diskNumber,
@@ -1888,50 +2000,77 @@ namespace FlyDisk
 
                 if (!config.EnableSsdCache || string.IsNullOrWhiteSpace(config.SsdCachePath)) return true;
 
-                // ① "容器属于哪块盘"不再单独判：缓存目录本身按设备身份散列命名，换盘/换卷时新目录是空的。
-                if (!SsdCacheService.LedgerExists(config)) return true;   // 没有账本：引擎会新建一份空的
+                // ① 账本状态（不读内容、只读头部）：没有账本 ⇒ 引擎会新建一份空的
+                if (!SsdCacheService.TryReadLedgerStatus(config, out L2LedgerProbe probe)) return true;
 
-                // ①′ **块大小必须与容器一致**：不一致时连校验都跑不了（校验器同样要求块大小一致），
-                //     只能清空重建或中止。放在"要不要校验"之前问，避免用户白跑一趟校验窗口。
+                if (probe.Status == L2LedgerStatus.NoLedger) return true;
+
+                if (probe.Status == L2LedgerStatus.Incompatible)
+                {
+                    return HandleUnsuitableLedger(config, diskText, "main.msg.l2LedgerIncompatible");
+                }
+
+                if (probe.Status == L2LedgerStatus.Corrupt)
+                {
+                    return HandleUnsuitableLedger(config, diskText, "main.msg.l2LedgerCorrupt");
+                }
+
+                // 容器不属于这块盘（目录被复用 / 换了盘）⇒ 同样只能清空
+                long expectedIdentity = SsdCacheService.ComputeIdentity(source);
+                if (probe.OwnerIdentity != expectedIdentity)
+                {
+                    LogService.DebugFile(
+                        $"L2 预检：缓存目录归属 0x{probe.OwnerIdentity:X16} 与当前盘 0x{expectedIdentity:X16} 不符");
+                    return HandleUnsuitableLedger(config, diskText, "main.msg.l2LedgerCorrupt");
+                }
+
+                // ①′ **块大小必须与容器一致**：不一致时连校验都跑不了，只能清空重建或中止。
                 if (!HandleBlockSizeMismatch(config, diskText)) return false;
 
-                // ② 账本可信吗？**旧规则优先**：上次没正常关服（身份戳不符）时，对所有设备类型都
-                //    只给 校验 / 清空 / 中止，不给任何绕过——那种账本本身就是没写完的快照。
-                string stamp = SsdCacheService.LedgerStampMismatch(config);
-
-                // 旧规则通过后，才按**设备类型**决定要不要提示：
-                //  · 可移动设备（USB / 1394 / SD / 读卡器）：不看联机状态，只要用 L2 就**每次启动都校验**，
-                //    不提供绕过——它可能被拿到别的电脑上写过，本机无法判断；
-                //  · 热插拔盘（如开了热插拔的 SATA 口）：明显是专业用户，**每次启动都提示**（无论联机还是脱机），
-                //    并额外给「无视风险启动」——脱机只说明系统没挂载它，不等于没人写过；
-                //  · 内建盘：维持原判据（联机 ⇒ 校验；脱机 + 戳一致 ⇒ 直接启动）。
-                bool online = localOnlineCheck && source.WasOnline;
-                bool removable = localOnlineCheck && source.IsRemovableDevice;
-                bool hotPlug = localOnlineCheck && source.IsHotPlugDisk;
-                bool allowBypass = false;
+                // ② 判定可信度（详见 docs/L2可信判据改造_SMART写入计数与账本v4.md）
+                bool bypassAllowed = localOnlineCheck && _config.AllowRiskBypass;
+                bool bypassEligible = false;
                 string untrusted;
-                if (stamp.Length > 0)
+
+                if (probe.Status == L2LedgerStatus.Stale)
                 {
-                    untrusted = stamp;
+                    untrusted = Locale.T("engine.start.l2LedgerStale");
+                    bypassAllowed = false;
                 }
-                else if (removable)
+                else if (probe.Status == L2LedgerStatus.Dirty)
                 {
-                    untrusted = Locale.T("engine.start.l2RemovableNeedsVerify", diskNumber);
+                    untrusted = Locale.T("engine.l2.stampMismatch");
+                    bypassAllowed = false;
                 }
-                else if (hotPlug)
+                else if (!localOnlineCheck)
                 {
-                    allowBypass = true;
-                    untrusted = Locale.T(online
-                        ? "engine.start.l2HotplugNeedsVerify"
-                        : "engine.start.l2HotplugOfflineNeedsVerify", diskNumber);
+                    // 远程形态：读不到对端盘的计数，Clean 就放行（与旧行为一致）
+                    untrusted = string.Empty;
                 }
-                else if (online)
+                else if (source.WasOnline)
                 {
+                    // 联机 = 系统必然挂载 / 写过它，不读计数，直接判不可信
                     untrusted = Locale.T("engine.start.l2OnlineNeedsVerify", diskNumber);
+                    bypassEligible = true;
                 }
                 else
                 {
-                    untrusted = string.Empty;
+                    untrusted = JudgeBySourceWriteCounters(probe, diskNumber, out bool evidenceUsable);
+                    if (untrusted.Length == 0)
+                    {
+                        Log(Locale.T("main.log.l2WriteCountersUnchanged", diskText));
+                    }
+                    else if (!evidenceUsable && !source.IsRemovableDevice && !source.IsHotPlugDisk)
+                    {
+                        // 内建盘 + 读不到计数：**回退原判据**（脱机 + 戳一致 ⇒ 放行）
+                        Log(Locale.T("main.log.l2CountersUnavailableInternal", diskText));
+                        LogService.DebugFile($"L2 预检：磁盘 {diskNumber} 计数不可用，内建盘回退原判据（放行）");
+                        untrusted = string.Empty;
+                    }
+                    else
+                    {
+                        bypassEligible = true;
+                    }
                 }
 
                 if (untrusted.Length > 0)
@@ -1952,50 +2091,53 @@ namespace FlyDisk
                         return ClearLedgerForStart(config);
                     }
 
-                    if (allowBypass)
+                    int choice;
+                    if (bypassAllowed)
                     {
-                        // 热插拔盘专属：无视风险启动 / 校验 / 清空 / 中止（最后一项 = 什么都不做）
-                        int hotplugChoice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"),
-                            Locale.T("main.msg.l2NeedsVerifyHotplug", untrusted),
+                        // 隐藏开关打开时才有第四项：无视风险启动 / 校验 / 清空 / 中止
+                        choice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"),
+                            Locale.T("main.msg.l2NeedsVerifyUnifiedBypass", untrusted),
                             Locale.T("l2.choose.startAnyway"), Locale.T("l2.choose.verify"),
                             Locale.T("l2.choose.clear"), Locale.T("l2.choose.abort"));
 
-                        if (hotplugChoice == 0)
+                        if (choice == 0)
                         {
                             allowOnlineLedger = true;
                             Log(Locale.T("main.log.l2BypassRisk", diskNumber));
                             return ConfirmCapacityChange(config, diskText);
                         }
-
-                        if (hotplugChoice == 3)
+                        if (choice == 3)
                         {
                             Log(Locale.T("main.log.abortedL2Verify"));
                             return false;
                         }
-
-                        if (hotplugChoice == 2)
+                        if (choice == 2)
                         {
                             Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userDeclinedVerify", untrusted)));
                             return ClearLedgerForStart(config);
                         }
-                        // hotplugChoice == 1 ⇒ 落到下面的校验
+                        // choice == 1 ⇒ 落到下面的校验
                     }
                     else
                     {
-                        int verifyChoice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"),
-                            removable
-                                ? Locale.T("main.msg.l2NeedsVerifyRemovable", untrusted)
-                                : Locale.T("main.msg.l2NeedsVerify", untrusted),
+                        string body = Locale.T("main.msg.l2NeedsVerifyUnified", untrusted);
+                        if (bypassEligible)
+                        {
+                            // 隐藏开关未打开：告诉用户"可以看帮助文档打开跳过选项"，但不直接给出配置细节
+                            body += "\r\n\r\n" + Locale.T("main.msg.l2BypassHint");
+                        }
+
+                        choice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsVerify"), body,
                             Locale.T("l2.choose.verify"), Locale.T("l2.choose.clear"), Locale.T("l2.choose.abort"));
 
-                        if (verifyChoice == 2)
+                        if (choice == 2)
                         {
                             // 关闭 / Esc 也落在这里：什么都不动，不启动
                             Log(Locale.T("main.log.abortedL2Verify"));
                             return false;
                         }
 
-                        if (verifyChoice == 1)
+                        if (choice == 1)
                         {
                             Log(Locale.T("main.log.l2Cleared", Locale.T("main.reason.userDeclinedVerify", untrusted)));
                             return ClearLedgerForStart(config);
@@ -2012,13 +2154,11 @@ namespace FlyDisk
 
                     if (!consistent)
                     {
-                        // 校验没跑干净（取消 / 中止 / 有没修完的不一致）⇒ **中止启动，不做任何补救动作**：
-                        // 不动盘的状态、不动配置、不动缓存文件（用户没点的事，程序不替他做）。
+                        // 校验没跑干净（取消 / 中止 / 有没修完的不一致）⇒ **中止启动，不做任何补救动作**
                         Log(Locale.T("main.log.abortedL2Verify"));
                         return false;
                     }
 
-                    // 校验干净：校验器已把源盘脱机、并把身份戳写回自洽 ⇒ 引擎这次自然采信账本
                     Log(Locale.T("main.log.l2VerifyPassed"));
                 }
 
@@ -2032,6 +2172,61 @@ namespace FlyDisk
                 Dialogs.Fail(this, Locale.T("dialog.fail.l2Preflight"), Locale.T("main.msg.l2PreflightFailed", ex.Message));
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 启动前预检的"源盘写入计数"判据：
+        /// 返回空串 = 计数没变（账本可信）；返回非空 = 原因文案。
+        /// <paramref name="evidenceUsable"/> = 这份证据是否可用于判定（读不到 / 未证明活性 / 没基线时为 false，
+        /// 由调用方决定是否回退到内建盘的老判据）。
+        /// </summary>
+        private string JudgeBySourceWriteCounters(L2LedgerProbe probe, int diskNumber, out bool evidenceUsable)
+        {
+            evidenceUsable = false;
+
+            if (!PhysicalDiskHandle.TryReadSmartCounters(diskNumber, out SmartCounterSnapshot current) ||
+                !current.Valid)
+            {
+                LogService.DebugFile($"L2 预检：磁盘 {diskNumber} 读不到 SMART 写入计数");
+                return Locale.T("engine.start.l2SourceWritesUnknown", diskNumber);
+            }
+
+            L2SourceState stored = probe.Source;
+            LogService.DebugFile(
+                $"L2 预检：磁盘 {diskNumber} SMART 写入 {current.Written}，账本基线 {unchecked((ulong)stored.LbaWritten)}" +
+                $"（有效 {stored.Valid} / 活性 {stored.Live} / 有基线 {stored.HasBaseline}）");
+
+            if (!stored.Valid || !stored.HasBaseline || !stored.Live)
+            {
+                LogService.DebugFile(
+                    $"L2 预检：磁盘 {diskNumber} 计数不可用" +
+                    $"（Valid={stored.Valid} / 活性={stored.Live} / 有基线={stored.HasBaseline}）");
+                return Locale.T("engine.start.l2SourceWritesUnknown", diskNumber);
+            }
+
+            evidenceUsable = true;
+            if (unchecked((long)current.Written) == stored.LbaWritten) return string.Empty;
+
+            LogService.DebugFile(
+                $"L2 预检：磁盘 {diskNumber} 计数变化 {unchecked((ulong)stored.LbaWritten)} -> {current.Written}");
+            return Locale.T("engine.start.l2SourceWritesChanged",
+                diskNumber, unchecked((ulong)stored.LbaWritten), current.Written);
+        }
+
+        /// <summary>账本格式不兼容 / 损坏：只能「清空重建 / 中止」。</summary>
+        private bool HandleUnsuitableLedger(DiskConfig config, string diskText, string reasonKey)
+        {
+            int choice = Dialogs.Choose(this, Locale.T("dialog.l2NeedsHandle"),
+                Locale.T(reasonKey, diskText),
+                Locale.T("l2.choose.clearAndStart"), Locale.T("l2.choose.abort"));
+            if (choice != 0)
+            {
+                Log(Locale.T("main.log.abortedL2Verify"));
+                return false;
+            }
+
+            Log(Locale.T("main.log.l2Cleared", Locale.T(reasonKey, diskText)));
+            return ClearLedgerForStart(config);
         }
 
         /// <summary>

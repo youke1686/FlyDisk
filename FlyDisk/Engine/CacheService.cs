@@ -326,7 +326,7 @@ namespace FlyDisk.Engine
         /// 与 <see cref="Release"/> 拆开，是为了让"没等到静止"时也能先落一份脏账本：
         /// 释放（④b）必须等所有在途命令真正退出，而落账本不必。
         /// </summary>
-        public void CommitLedger(LedgerCommit kind)
+        public void CommitLedger(LedgerCommit kind, L2SourceState? sourceState = null)
         {
             if (Interlocked.Exchange(ref _shutdown, 1) != 0) return;
 
@@ -340,13 +340,16 @@ namespace FlyDisk.Engine
 
             try
             {
-                _ssd?.CommitLedger(kind);
+                _ssd?.CommitLedger(kind, sourceState);
             }
             catch (Exception ex)
             {
                 LogService.DebugFile($"提交 L2 账本时出错：{ex.Message}");
             }
         }
+
+        /// <summary>本次装载时账本里记的源盘写入基线（没有 L2 时为 default）</summary>
+        public L2SourceState LoadedSourceState => _ssd?.LoadedSourceState ?? default;
 
         /// <summary>
         /// 停机序列 ④b：关容器、清索引、把所有 Slab 归还系统。

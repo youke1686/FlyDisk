@@ -68,6 +68,9 @@ namespace FlyDisk.Engine
         private CacheService? _cache;
         private CachedPhysicalDisk? _disk;
 
+        /// <summary>本地会话开始时读到的 SMART 计数（用于停服时证明计数通道是活的；远程为 default）</summary>
+        private SmartCounterSnapshot _sourceCountersAtStart;
+
         /// <summary>
         /// 本次会话登录后新出现的克隆盘号（iSCSI 会话枚举出来的那些盘）。
         /// 用途：占用查询的选盘框标注"(加速中)"；强制停止后"重新联机"的守卫（同签名双盘）。
@@ -230,6 +233,11 @@ namespace FlyDisk.Engine
             // 走到这里才动系统状态：脱机 + 独占打开
             PhysicalDiskHandle device = PhysicalDiskHandle.Open(target.DiskNumber);
             _device = device;   // 先登记：异常路径上 StopCore 要靠它把盘恢复原状
+
+            // 会话起点读一次 SMART（此时盘已脱机、没有别人能写它）；停服时再读一次做活性对账
+            _sourceCountersAtStart = device.TryReadSmartCounters(out SmartCounterSnapshot startCounters)
+                ? startCounters
+                : default;
             try
             {
                 BlockGeometry geometry = _geometry ?? BlockGeometry.Minimal(target.BytesPerSector, target.SizeBytes);
@@ -606,6 +614,18 @@ namespace FlyDisk.Engine
             // ② 立刻关上 LUN 后端：库里 target 的命令队列**没有排空手段**，队列尾巴上的命令会在
             //    下面几步（关句柄、写账本）之后才被执行。让它们撞上"目标已停止"的 IO 错误，
             //    比让它们碰到已释放的句柄（ObjectDisposedException 会把工作线程带走）安全得多。
+            CacheStats? stats = null;
+            try
+            {
+                // 只要"本次会话有没有源盘 IO"，不要 DeviceDescription / 连接查询（停止中那两项没意义）
+                var counters = new CacheStats();
+                _cache?.FillSnapshot(counters);
+                counters.SsdCacheEnabled = _config.EnableSsdCache;
+                counters.WriteSectorsTotal = _disk?.WriteSectorsTotal ?? 0;
+                stats = counters;
+            }
+            catch { /* 统计读不到不影响停止 */ }
+
             _disk?.Close();
 
             CachedPhysicalDisk? disk = _disk;
@@ -639,8 +659,13 @@ namespace FlyDisk.Engine
             Volatile.Write(ref _cleanupPending, 1);
             try
             {
+                // 干净停止才写"源盘写入基线"（脏账本本来就不采信，写了也没人用）
+                L2SourceState? sourceState = commit == LedgerCommit.Clean && device != null
+                    ? BuildSourceState(device, cache, stats)
+                    : null;
+
                 cache?.FreezeForShutdown();
-                cache?.CommitLedger(commit);
+                cache?.CommitLedger(commit, sourceState);
             }
             catch (Exception ex)
             {
@@ -681,6 +706,57 @@ namespace FlyDisk.Engine
             }
 
             Volatile.Write(ref _cleanupPending, 0);
+        }
+
+        /// <summary>
+        /// 干净停止时构造"源盘写入基线"：读一次 SMART，并用**本次会话的源盘 IO** 证明计数通道是活的。
+        /// 读不到 / 证明不了都返回 Unknown（下次启动回退原判据），**绝不影响停止流程**。
+        /// </summary>
+        private L2SourceState BuildSourceState(PhysicalDiskHandle device, CacheService? cache, CacheStats? stats)
+        {
+            if (!device.TryReadSmartCounters(out SmartCounterSnapshot stop) || !stop.Valid)
+            {
+                LogService.DebugFile("停服：读不到源盘 SMART 写入计数 ⇒ 下次启动按“无法判断”处理");
+                return L2SourceState.Unknown;
+            }
+
+            bool hadSourceIo = stats != null &&
+                (stats.WriteSectorsTotal > 0 ||
+                 (stats.SsdCacheEnabled ? stats.SsdMissBlocksTotal > 0 : stats.L1MissBlocksTotal > 0));
+            bool countersMoved = _sourceCountersAtStart.Valid &&
+                (stop.Written != _sourceCountersAtStart.Written || stop.Read != _sourceCountersAtStart.Read);
+            bool inheritedLive = cache?.LoadedSourceState.Live ?? false;
+
+            bool live;
+            if (countersMoved)
+            {
+                live = true;
+            }
+            else if (hadSourceIo)
+            {
+                // 有回源读写、计数却一动不动 ⇒ 桥返回的是静态表，不能采信
+                live = false;
+                LogService.DebugFile("停服：本次会话有源盘 IO 但 SMART 计数没有变化 ⇒ 该盘计数不可信");
+            }
+            else
+            {
+                live = inheritedLive;
+            }
+
+            L2SourceFlags flags = L2SourceFlags.Valid | L2SourceFlags.HasBaseline;
+            if (live) flags |= L2SourceFlags.Live;
+
+            LogService.DebugFile(
+                $"停服：SMART 写入计数 {stop.Written}、读取计数 {stop.Read}、通电 {stop.PowerCycles}、活性 {(live ? "已证明" : "未证明")}");
+
+            return new L2SourceState
+            {
+                LbaWritten = unchecked((long)stop.Written),
+                LbaRead = unchecked((long)stop.Read),
+                PowerCycles = stop.PowerCycles,
+                Flags = flags,
+                StopUtcTicks = DateTime.UtcNow.Ticks
+            };
         }
 
         #endregion

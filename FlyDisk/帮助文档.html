@@ -569,8 +569,8 @@
 <p>系统默认行为：直接从源盘读取（会有少量内存缓存，但通常可以忽略）</p>
 <p>我们的行为：优先从 L1 L2 中读取数据，若 L1 L2 中均没有对应数据，才回到源盘读取数据，并同时直接存放到 L1 中，按需存放到 L2 中以便下次读取到相同数据时的加速</p>
 <p>L2 缓存是按需增长的：只有真正读到的数据才会写进 L2，容器也随写入逐步扩大，不会预先占满你设定的预算。</p>
-<div class="note">L2 能跨重启保留，但在上次出现非正常退出、目标盘被手动联机等情况后需要进行全量校验以保证数据不出错，启动时若发现问题，程序会弹窗让你选择。<strong>可移动设备</strong>（USB、1394、SD、读卡器）只要使用 L2，<strong>每次启动都必须先校验</strong>；<strong>可热插拔的盘</strong>（例如 BIOS 里把 SATA 口设成热插拔）<strong>每次启动都会提示</strong>，并额外提供「无视风险启动」，请自行判断。</div>
-<div class="warn"> <strong>⚠ 注意：</strong>在开启 L2 功能时，你<strong>有责任避免</strong>进行手动脱机、使用另一个电脑/双操作系统的另一个使用硬盘等会<strong>令 L2 和实际数据不一致</strong>的操作，这种操作我们的程序无法有效自动察觉，应<strong>手动触发一轮 L2 校验</strong>。如你不确定你的操作是否会导致上述问题，也应<strong>手动触发一轮 L2 校验</strong>。</div>
+<div class="note">L2 能跨重启保留。程序在正常停止时记下源盘的 SMART 累计写入计数；下次启动会再读一次——<strong>计数没变</strong>就说明程序没运行时没人写过这块盘，直接采信；<strong>计数变了、盘启动时联机、或读不到计数</strong>则弹窗让你选择校验 / 清空 / 中止。<strong>可移动设备</strong>（USB、1394、SD、读卡器）在计数可读且未变化时<strong>不再每次强制校验</strong>；只有读不到计数时才回退到原来的保守口径。</div>
+<div class="warn"> <strong>⚠ 注意：</strong>程序<strong>能发现</strong>大部分“程序没运行时盘被写过”的情况（借助磁盘自身的写入计数），但不是所有 USB 桥 / 硬盘都提供这个计数。若某块盘读不到计数，可移动 / 热插拔设备仍会在每次启动时要求你确认。拿不准时，手动触发一轮 L2 校验永远是最稳的。</div>
 
 <h2 id="mainui-zh">主界面说明</h2>
 
@@ -602,6 +602,16 @@
     <li>对于因为某种原因不能加速的盘，会说明原因及排查方法（如果有）。</li>
     <li>可能还有一些其他的相关的提示，建议关注一下。</li>
 </ul>
+
+<h3>启动前的占用检查</h3>
+<p>点「启动加速」并选好盘之后，程序会在<strong>任何硬盘被脱机之前</strong>逐块检查有没有程序正占着它（复用「占用查询」的扫描与界面）。</p>
+<ul>
+    <li><strong>发现占用</strong>：结果框顶部会用<strong>红色</strong>标出「❌硬盘被占用：…请关闭这些程序后重试」；关闭结果框后会询问「继续启动 / 终止启动」。</li>
+    <li><strong>检查失败</strong>（例如定位不到卷）：弹窗说明错误，并同样询问是否继续；检查失败不一定会影响启动。</li>
+    <li><strong>多块盘按顺序逐块检查</strong>：选「继续启动」才会检查下一块；原本就脱机的盘跳过检查。</li>
+    <li>选「终止启动」时<strong>没有任何盘被脱机</strong>，可以关闭占用程序后重试。</li>
+</ul>
+<p>「校验 L2」同样会在打开校验窗口前做一次检查（校验也要把源盘脱机），选项为「继续校验 / 终止校验」。</p>
 
 <h2 id="settings-zh">设置界面</h2>
 <p>通过菜单「<strong>设置</strong>」打开，窗口分「<strong>基础</strong>」（左）与「<strong>高级</strong>」（右）两栏。</p>
@@ -679,6 +689,7 @@
     <li>若发现不一致，可点「<strong>修复</strong>」：把源盘的数据回写到 L2 容器，把这些错乱的块修回来。</li>
     <li>校验过程可随时「<strong>取消</strong>」&nbsp;</li>
 </ol>
+<p>开始校验前会先做一次占用检查（校验也需要把源盘脱机）：发现占用或检查失败时，可以选择「继续校验」或「终止校验」。</p>
 <h2 id="reonline-zh">重新联机硬盘（把盘还给系统）</h2>
 
 <p>使用 L2 的目标盘在停止加速后保持脱机、系统不可见，以便下次加速使用；未使用 L2 的盘会在停止成功后自动联机（启动失败清理、克隆盘重试与关机路径不会）。要手动把盘交还给操作系统，有两种办法：</p>
@@ -696,10 +707,12 @@
 <ol>
     <li><strong>选盘</strong>：只列出<strong>联机</strong>盘。脱机盘没有挂载点，系统里定位不到它的卷，所以查不了。</li>
     <li><strong>开始检查</strong>：程序枚举全系统的句柄，并与该盘的卷设备路径比对。进度框可以随时取消，计数行显示「已检查 N / M 个进程」。</li>
-    <li><strong>结果</strong>：只读文本框，可直接选中复制。每个程序会列出它占用了多少句柄、打开了哪些文件/目录（按路径去重）；没有发现占用时也会如实说明。</li>
+    <li><strong>结果</strong>：顶部是盘信息与汇总（发现占用时首行用<strong>红色</strong>标出），中间是可点选的程序列表（按句柄数从多到少排列），底部显示选中程序的 PID、可执行文件路径与它打开的文件/目录。上下两块文本都可直接选中复制；没有选中列表项时，底部会提示「选择列表的一项以查看详细信息」。</li>
 </ol>
 
 <div class="note">「未发现占用」不等于绝对没有：文件系统挂载、系统服务等仍可能占着这块盘。选盘框信息区底部的署名说明本功能基于 <strong>Handle2</strong> 开源项目（MIT 许可证）。</div>
+
+<p>「启动加速」与「校验 L2」在脱机前也会自动调用这套检查：结果框顶部会用红色标出被占用的盘，并让你选择继续还是终止。</p>
 
 <h2 id="remote-zh">远程加速（实验性）</h2>
 
@@ -757,6 +770,11 @@
     <li><strong>「L2 缓存需要校验」</strong>（上次没正常关服、盘原本是联机状态等）：<strong>「是」= 现在开始校验</strong>（打开校验窗口逐块比对，可能要几分钟；校验干净后启动会带着这份 L2 继续）；「否」= 清空这份 L2 并继续启动。默认停在「是」。</li>
 </ul>
 <p>拿不准时：在「不匹配」弹窗选「否」中止启动，再到菜单「校验 L2」逐块比对、修复后再启动，是最稳的一步。</p>
+
+<h3 id="l2-bypass-zh">读不到 SMART 计数时：允许无视风险启动（隐藏选项）</h3>
+<p>如果某块可移动 / 热插拔盘每次启动都提示“无法确认 L2 缓存是否仍然有效”，而你自己确定它不会在别的电脑或别的系统里被写入，可以在 <code>%ProgramData%\FlyDisk\config.json</code> 中把 <code>"AllowRiskBypass"</code> 设为 <code>true</code>，然后重新启动程序。</p>
+<p>首次生效时程序会弹出一个风险确认框；确认后，不可信提示里会多出「无视风险启动」这一项。它只覆盖“启动时联机 / 计数变化 / 计数不可读 / 没有基线”，<strong>不覆盖“上次没有正常关服”</strong>。把开关改回 <code>false</code>（或在确认框里选「恢复关闭」）后，这一项会消失。</p>
+<div class="warn"><strong>⚠ 注意：</strong>选「无视风险启动」意味着你接受“这块盘可能在别处被写过、而程序看不出来”的风险；如果缓存已经过期，程序可能返回过期数据。拿不准时不要用它，直接校验或清空。</div>
 
 <h3>启动时提示 L2 容量要放大 / 缩小，或说受缓存盘空间限制？</h3>
 <p>当你把某块盘的「L2 上限」改成与上次不同的值时，程序会在启动加速前让你确认：</p>
@@ -999,8 +1017,8 @@
 <p>Default system behavior: read straight from the source disk (there is a small amount of memory caching, usually negligible).</p>
 <p>Our behavior: prefer reading from L1 / L2; only when the data is in neither do we fall back to the source disk, and then we store it directly into L1 and, as needed, into L2, so that reading the same data next time is accelerated.</p>
 <p>The L2 cache grows on demand: only data that is actually read is written into it, and the container expands as it is written to — it does not occupy the whole limit up front.</p>
-<div class="note">L2 survives reboots, but after an abnormal exit last time, the target disk being manually brought online, or similar cases, a full verification is needed to make sure the data is correct. If a problem is found at startup, the program shows a dialog for you to choose. <strong>Removable devices</strong> (USB, 1394, SD, card readers) <strong>must be verified on every start</strong> whenever they use L2; <strong>hot-pluggable disks</strong> (for example a SATA port configured as hot-plug in the BIOS) <strong>prompt on every start</strong> and additionally offer "Start Anyway" — judge at your own discretion.</div>
-<div class="warn"> <strong>⚠ Note:</strong> while L2 is enabled, <strong>it is your responsibility to avoid</strong> operations that make <strong>L2 and the actual data inconsistent</strong>, such as manually taking the disk offline or using the disk from another computer / another OS in a dual-boot setup. The program cannot reliably detect such operations automatically, so you should <strong>manually trigger a round of L2 verification</strong>. If you are unsure whether your operation could cause the above problem, you should also <strong>manually trigger a round of L2 verification</strong>.</div>
+<div class="note">L2 survives reboots. On a clean stop the program records the source disk's SMART cumulative write counter; on the next start it reads it again — <strong>unchanged means nobody wrote to the disk while the program was not running</strong>, so the cache is trusted; <strong>changed, disk online at startup, or counter unreadable</strong> brings up the verify / clear / abort dialog. <strong>Removable devices</strong> (USB, 1394, SD, card readers) are <strong>no longer verified on every start</strong> when the counter is readable and unchanged; only when the counter is unavailable does the old conservative rule apply.</div>
+<div class="warn"> <strong>⚠ Note:</strong> the program <strong>can detect</strong> most cases where the disk was written while it was not running (using the disk's own write counter), but not every USB bridge / drive exposes that counter. When it is unavailable, removable / hot-pluggable disks still ask you on every start. If in doubt, manually running a round of L2 verification is always the safest choice.</div>
 
 <h2 id="mainui-en">Main Window</h2>
 
@@ -1033,6 +1051,16 @@
     <li>For a disk that cannot be accelerated for some reason, the reason and troubleshooting steps are shown (if any).</li>
     <li>There may be some other related hints — worth a look.</li>
 </ul>
+
+<h3>Usage check before startup</h3>
+<p>After you click "Start Acceleration" and choose disks, the program checks each disk <strong>before any disk is taken offline</strong> to see whether some program is using it (reusing the Disk Usage scanner and UI).</p>
+<ul>
+    <li><strong>Usage found</strong>: the top of the result window shows a <strong>red</strong> line "❌ Disk in use: … close them and try again"; after you close it, you are asked "Continue Startup / Abort Startup".</li>
+    <li><strong>Check failed</strong> (for example, no volume could be located): a dialog explains the error and asks the same question; a failed check does not necessarily affect startup.</li>
+    <li><strong>Several disks are checked one by one</strong>: only after you choose "Continue Startup" is the next disk checked; disks that are already offline are skipped.</li>
+    <li>Choosing "Abort Startup" leaves <strong>every disk untouched</strong> (none is taken offline), so you can close the occupying programs and try again.</li>
+</ul>
+<p>"Verify L2" performs the same check before opening the verification window (verification also takes the source disk offline), with "Continue Verification / Abort Verification".</p>
 
 <h2 id="settings-en">Settings</h2>
 <p>Open it from the "<strong>Settings</strong>" menu. The window has two columns: <strong>Basic</strong> (left) and <strong>Advanced</strong> (right).</p>
@@ -1107,6 +1135,7 @@
     <li>If inconsistencies are found, click "<strong>Repair</strong>": it writes the source data back into the L2 container and fixes those scrambled blocks.</li>
     <li>Verification can be <strong>cancelled</strong> at any time.&nbsp;</li>
 </ol>
+<p>Before verification starts, the program performs a usage check first (verification also takes the source disk offline): if usage is found or the check fails, you can choose "Continue Verification" or "Abort Verification".</p>
 
 <h2 id="reonline-en">Re-online a Disk (give the disk back to the system)</h2>
 
@@ -1125,10 +1154,12 @@
 <ol>
     <li><strong>Pick a disk</strong>: only <strong>online</strong> disks are listed. An offline disk has no mount point, so its volumes cannot be located in the system and it cannot be checked.</li>
     <li><strong>Start Check</strong>: the program enumerates system handles and matches them against the disk's volume device paths. The progress dialog can be cancelled at any time, and the counter shows "N / M processes checked".</li>
-    <li><strong>Result</strong>: a read-only text box you can select and copy. For each program it lists how many handles it holds and which files/folders it opened (deduplicated by path); if nothing is found, it says so explicitly.</li>
+    <li><strong>Result</strong>: the top shows disk info and a summary (with a <strong>red</strong> first line when usage is found), the middle is a clickable program list sorted by handle count, and the bottom shows the selected program's PID, executable path, and the files/folders it opened. Both text areas can be selected and copied; when no list item is selected, the bottom area says "Select an item in the list to see details."</li>
 </ol>
 
 <div class="note">"No usage found" is not an absolute guarantee: a mounted file system or a system service may still be using the disk. The credit at the bottom of the picker's info area notes that this feature is based on the <strong>Handle2</strong> open-source project (MIT License).</div>
+
+<p>"Start Acceleration" and "Verify L2" also invoke this check automatically before taking a disk offline: the top of the result window marks the disk in red and lets you continue or abort.</p>
 
 <h2 id="remote-en">Remote Acceleration (Experimental)</h2>
 
@@ -1187,6 +1218,11 @@
     <li><strong>"L2 cache needs verification"</strong> (abnormal shutdown last time, the disk was originally online, etc.): <strong>Yes = start verifying now</strong> (opens the verify window and compares block by block, which may take minutes; if it comes back clean, startup continues with this L2); No = clear this L2 and continue startup. The default is Yes.</li>
 </ul>
 <p>If unsure: in the "mismatch" dialog choose No to abort startup, then run "Verify L2" from the menu to compare block by block and repair before starting — that is the safest step.</p>
+
+<h3 id="l2-bypass-en">When the SMART counter is unavailable: allow risky start (hidden option)</h3>
+<p>If a removable / hot-pluggable disk asks “cannot confirm whether the L2 cache is still valid” on every start, and you are sure it is never written on another computer or in another OS, set <code>"AllowRiskBypass"</code> to <code>true</code> in <code>%ProgramData%\FlyDisk\config.json</code> and restart FlyDisk.</p>
+<p>The first time it takes effect, the program shows a risk confirmation. After you confirm, the untrusted dialog gains a “Start anyway” choice. It covers only “online at startup / counter changed / counter unreadable / no baseline” and <strong>does not cover “last shutdown was not clean”</strong>. Setting the switch back to <code>false</code> (or choosing “Revert to off” in the confirmation) removes the choice.</p>
+<div class="warn"><strong>⚠ Note:</strong> “Start anyway” means you accept the risk that the disk may have been written elsewhere without the program being able to see it; if the cache is stale, the program may return stale data. Do not use it when in doubt — verify or clear instead.</div>
 
 <h3>At startup it says the L2 size will grow / shrink, or is limited by free space on the cache disk?</h3>
 <p>When you change a disk's "L2 limit" to a value different from last time, the program asks you to confirm before starting acceleration:</p>

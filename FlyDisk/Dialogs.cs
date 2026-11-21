@@ -103,6 +103,8 @@ namespace FlyDisk
                 throw new ArgumentException("分支框至少需要两个选项（最后一项是\"什么都不做\"）。", nameof(choices));
 
             using var form = new ChoiceForm(title, body, choices);
+            // 启动阶段（还没有主窗口）owner 为 null：CenterParent 会退化成默认位置，看起来没居中
+            form.StartPosition = owner != null ? FormStartPosition.CenterParent : FormStartPosition.CenterScreen;
             if (owner != null) form.ShowDialog(owner);
             else form.ShowDialog();
             return form.ChosenIndex;

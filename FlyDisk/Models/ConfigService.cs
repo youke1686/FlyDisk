@@ -22,52 +22,87 @@ using System.Text.Json;
 namespace FlyDisk.Models
 {
     /// <summary>
-    /// 配置持久化：配置文件存放在 %ProgramData%\FlyDisk\config.json。
+    /// **用户配置**持久化：`%ProgramData%\FlyDisk\config.json`。
     ///
-    /// 阶段一时这个目录还需要"给 BUILTIN\Users 授修改权限"（服务以 SYSTEM 建目录、普通用户的 UI 写不进）；
-    /// 单进程后整条 ACL 补齐逻辑都不再需要，随之删除。
+    /// 划分标准（与 <see cref="StateService"/> 配套）：这个文件里的每一项用户都可以直接编辑；
+    /// 程序维护的状态在 `state.json`。文件带 <c>SchemaVersion</c>，**不做向后兼容**：
+    /// 缺失 / 不符 / 解析失败 ⇒ 把旧文件改名 `config.json.old`，写出厂默认值。
     /// </summary>
     public static class ConfigService
     {
         private static readonly string ConfigPath = ServiceConstants.ConfigFilePath;
 
+        /// <summary>最近一次"出厂重置"的原因（供启动流程落诊断日志；空 = 没有重置）</summary>
+        public static string LastResetReason { get; private set; } = string.Empty;
+
         public static DiskConfig Load()
         {
+            LastResetReason = string.Empty;
             try
             {
-                if (File.Exists(ConfigPath))
+                if (!File.Exists(ConfigPath)) return NewDefault();
+
+                string json = File.ReadAllText(ConfigPath);
+                DiskConfig? config = JsonSerializer.Deserialize<DiskConfig>(json);
+                if (config == null)
                 {
-                    string json = File.ReadAllText(ConfigPath);
-                    return JsonSerializer.Deserialize<DiskConfig>(json) ?? new DiskConfig();
+                    return ResetToDefault("config.json 解析结果为空");
                 }
+                if (config.SchemaVersion != ServiceConstants.ConfigSchemaVersion)
+                {
+                    return ResetToDefault(
+                        $"config.json 版本 {config.SchemaVersion} != {ServiceConstants.ConfigSchemaVersion}");
+                }
+                return config;
             }
-            catch
+            catch (Exception ex)
             {
-                // 配置读不出来就用默认值（首次运行、文件被改坏都走这里）
+                // 用户手改坏了也走这里：保留旧文件、出厂重置，不把程序卡死在启动阶段
+                return ResetToDefault(ex.Message);
             }
-            return new DiskConfig();
         }
 
         /// <summary>
-        /// 保存配置。**失败不吞**：返回 false 并给出原因，由调用方（设置对话框）如实报错。
-        /// 此前这里吞掉一切异常，而 UI 无条件提示"配置已保存"——用户以为生效、重启后行为却没变
-        /// （见 未解决的疑点.md TD-10）。
+        /// 保存配置。**失败不吞**：返回 false 并给出原因，由调用方如实报错。
         /// </summary>
         public static bool Save(DiskConfig config, out string error)
         {
             error = string.Empty;
+            string tempPath = ConfigPath + ".tmp";
             try
             {
                 Directory.CreateDirectory(ServiceConstants.DataDirectory);
+                config.SchemaVersion = ServiceConstants.ConfigSchemaVersion;
+
                 string json = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(ConfigPath, json);
+                File.WriteAllText(tempPath, json);
+                if (File.Exists(ConfigPath)) File.Replace(tempPath, ConfigPath, null);
+                else File.Move(tempPath, ConfigPath);
                 return true;
             }
             catch (Exception ex)
             {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 清理失败无补救手段 */ }
                 error = ex.Message;
                 return false;
             }
+        }
+
+        private static DiskConfig NewDefault()
+            => new() { SchemaVersion = ServiceConstants.ConfigSchemaVersion };
+
+        private static DiskConfig ResetToDefault(string reason)
+        {
+            LastResetReason = reason;
+            try
+            {
+                if (File.Exists(ConfigPath)) File.Move(ConfigPath, ConfigPath + ".old", overwrite: true);
+            }
+            catch
+            {
+                // 改名失败也不拦启动：旧文件最多继续留在原地，下次启动会再试一次
+            }
+            return NewDefault();
         }
     }
 }

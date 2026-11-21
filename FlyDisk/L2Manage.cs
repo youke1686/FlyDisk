@@ -150,6 +150,58 @@ namespace FlyDisk
 
             return true;
         }
+
+        /// <summary>
+        /// 启动时处理**旧版本格式**的 L2 账本（v3 及更早）：不迁移，直接问「清空 / 退出」。
+        ///
+        /// 与旧布局的区别：旧布局是"文件放错了位置"，这里是"当前目录里的文件格式太旧"。
+        /// **清空失败 = 退出程序**：不解决的话，那块盘下次启动仍然会失败。
+        /// </summary>
+        /// <returns>true = 可以继续启动；false = 用户选择退出 / 清空失败</returns>
+        public static bool PromptRemoveIncompatibleLedgers(DiskConfig config)
+        {
+            List<L2CacheInfo> dirs;
+            try
+            {
+                dirs = SsdCacheService.DescribeAllL2Caches(config)
+                    .FindAll(c => c.Status == L2LedgerStatus.Incompatible);
+            }
+            catch (Exception ex)
+            {
+                LogService.DebugFile($"旧版本 L2 账本探测失败（按没有处理）：{ex.Message}");
+                return true;
+            }
+
+            if (dirs.Count == 0) return true;
+
+            string list = string.Join(Environment.NewLine, dirs.ConvertAll(d => d.Directory));
+            int choice = Dialogs.Choose(null, Locale.T("dialog.incompatibleL2Found"),
+                Locale.T("main.msg.incompatibleL2Found", list),
+                Locale.T("l2.choose.clearAndStart"), Locale.T("l2.choose.exit"));
+
+            if (choice != 0) return false;
+
+            var failed = new List<string>();
+            foreach (L2CacheInfo cache in dirs)
+            {
+                if (!TryClear(cache, out string error))
+                {
+                    failed.Add($"{cache.Directory}{Environment.NewLine}  {error}");
+                }
+            }
+
+            if (failed.Count > 0)
+            {
+                LogService.DebugFile($"清空旧版本 L2 缓存失败：{string.Join(" | ", failed)}");
+                Dialogs.Fail(null, Locale.T("dialog.fail.deleteLegacyL2"),
+                    Locale.T("main.msg.incompatibleL2DeleteFailed",
+                        string.Join(Environment.NewLine + Environment.NewLine, failed)));
+                return false;   // 没清掉就退出，避免带着必然失败的账本继续跑
+            }
+
+            LogService.DebugFile($"已清空旧版本 L2 缓存：{list}");
+            return true;
+        }
     }
 
     /// <summary>「L2 管理」窗口：单窗口配置表（见 <see cref="L2Manage"/> 类注释）。</summary>
@@ -219,6 +271,9 @@ namespace FlyDisk
             public long OwnerHash;
             public PhysicalDiskInfo? Info;
             public string Text = string.Empty;
+            /// <summary>当前接上了，但不适合作为加速目标（系统盘 / 程序盘 / 分页文件盘）</summary>
+            public bool Blocked;
+            public string BlockReason = string.Empty;
             public override string ToString() => Text;
         }
 
@@ -349,16 +404,60 @@ namespace FlyDisk
 
             try
             {
+                // 先收全部盘（含被硬拦的）：被硬拦但**已经有配置行**的盘仍要按真实格式显示出来，
+                // 否则它会掉进"已配置但没接上"的兜底分支，变成一条没有盘号 / 盘符的“未接上”记录。
+                var present = new List<DiskChoice>();
+
                 foreach (PhysicalDiskInfo disk in PhysicalDiskHandle.Enumerate())
                 {
                     string identity = PhysicalDiskHandle.DescribeIdentity(disk);
                     if (identity.Length == 0) continue;
-                    _diskChoices.Add(new DiskChoice
+
+                    // 与启动校验同一判据：系统盘 / 本程序所在盘 / 分页文件所在盘**不能作为加速目标**。
+                    // 这些盘在启动时会被硬拦，不应该先让用户在「L2 管理」里给它建一条注定失败的配置。
+                    string blockReason = PhysicalDiskHandle.DescribeTargetDiskBlockReason(disk.DiskNumber);
+                    var choice = new DiskChoice
                     {
                         Identity = identity,
                         OwnerHash = SsdCacheService.ComputeIdentity(BlockSourceInfo.FromDisk(disk, disk.IsOnline)),
                         Info = disk,
+                        // 选择框这一列很窄：用窄格式（单层括号 + 逗号），宽格式的全角空格会把后半截挤没
                         Text = DiskText.Full(disk),
+                    };
+
+                    if (blockReason.Length > 0)
+                    {
+                        choice.Blocked = true;
+                        choice.BlockReason = blockReason;
+                        choice.Text = $"{DiskText.Full(disk)}  [{blockReason}]";
+                        present.Add(choice);
+                        continue;
+                    }
+
+                    _diskChoices.Add(choice);
+                    present.Add(choice);
+                }
+
+                // 已配置但当前没接上的盘：也放进下拉，保证那一行能正常显示
+                foreach (L2DiskConfig entry in _config.L2Disks)
+                {
+                    if (entry.DiskIdentity.Length == 0) continue;
+                    if (_diskChoices.Exists(c => string.Equals(c.Identity, entry.DiskIdentity, StringComparison.Ordinal))) continue;
+
+                    DiskChoice? presentChoice = present.Find(c =>
+                        string.Equals(c.Identity, entry.DiskIdentity, StringComparison.Ordinal));
+                    if (presentChoice != null)
+                    {
+                        // 接上了、但被硬拦（例如系统盘）：按真实盘信息显示，选择时再拒绝
+                        _diskChoices.Add(presentChoice);
+                        continue;
+                    }
+
+                    _diskChoices.Add(new DiskChoice
+                    {
+                        Identity = entry.DiskIdentity,
+                        OwnerHash = entry.OwnerHash,
+                        Text = DiskText.NotConnected(entry.DiskIdentity),
                     });
                 }
             }
@@ -514,7 +613,8 @@ namespace FlyDisk
                 bool initialized = cache != null && SameVolume(cache.DriveRoot, entry.CacheVolume);
                 if (cache != null) usedCacheDirs.Add(cache.Directory);
 
-                bool complete = !string.IsNullOrWhiteSpace(entry.CacheVolume) && entry.MaxBytes > 0;
+                bool complete = !string.IsNullOrWhiteSpace(entry.DiskIdentity) &&
+                                !string.IsNullOrWhiteSpace(entry.CacheVolume) && entry.MaxBytes > 0;
                 bool needsVerify = initialized && cache!.LastShutdownClean != true;
                 string enabledStatus;
                 if (!complete) enabledStatus = Locale.T("l2m.statusIncomplete");
@@ -524,9 +624,13 @@ namespace FlyDisk
 
                 string disabledStatus = !complete
                     ? Locale.T("l2m.statusIncomplete")
-                    : needsVerify
-                        ? Locale.T("l2m.statusNeedsVerify")
-                        : Locale.T("l2m.statusDisabled");
+                    : !initialized
+                        // 配置完整、只是还没有缓存：与"启用 / 停用"无关，统一显示"未初始化"。
+                        // 「待配置」只属于"配置信息不完整"，优先级最低。
+                        ? Locale.T(choice?.Info == null ? "l2m.statusNotConnected" : "l2m.statusNoCache")
+                        : needsVerify
+                            ? Locale.T("l2m.statusNeedsVerify")
+                            : Locale.T("l2m.statusDisabled");
 
                 // 块大小：已初始化的行以**容器头里存的值**为准（配置可能被手改过）；
                 // 其余行按条目（0 = 用最小块）；未接上的盘用扇区快照。
@@ -881,6 +985,20 @@ namespace FlyDisk
                 return;
             }
 
+            // 接上了、但被硬拦的盘（系统盘 / 程序盘 / 分页文件盘）：只用于显示已有行，不允许新选
+            if (choice.Blocked && !string.Equals(choice.Identity, row.DiskIdentity, StringComparison.Ordinal))
+            {
+                Dialogs.Notice(this, Locale.T("dialog.notice.blockedDisk"),
+                    Locale.T("l2m.msg.blockedDisk", choice.BlockReason));
+
+                DiskChoice? previous = row.DiskIdentity.Length > 0
+                    ? _diskChoices.Find(c => string.Equals(c.Identity, row.DiskIdentity, StringComparison.Ordinal))
+                    : null;
+                view.Disk.SelectedIndex = previous != null ? view.Disk.Items.IndexOf(previous) : -1;
+                UpdateDiskPrompt(view);
+                return;
+            }
+
             row.DiskIdentity = choice.Identity;
             row.OwnerHash = choice.OwnerHash;
             row.IsConfig = true;
@@ -900,11 +1018,20 @@ namespace FlyDisk
             UpdateDiskPrompt(view);
         }
 
-        /// <summary>盘/卷被编辑后：该行要重新保存才生效，状态先回到「待配置」</summary>
+        /// <summary>盘/卷被编辑后：该行要重新保存才生效，状态先回到「未初始化」或「待配置」</summary>
         private static void ResetEditedStatus(Row row)
         {
-            row.StatusEnabled = Locale.T("l2m.statusNew");
-            row.StatusDisabled = Locale.T("l2m.statusNew");
+            // 「待配置」只属于"配置信息不完整"（没有盘 / 没有卷 / 上限无效），优先级最低；
+            // 配置完整但还没有缓存（包括刚改了盘 / 卷）⇒ 「未初始化」，与启用状态无关。
+            bool complete = row.DiskIdentity.Length > 0 &&
+                            !string.IsNullOrWhiteSpace(row.CacheVolume) &&
+                            row.MaxBytes > 0;
+            string status = complete
+                ? Locale.T("l2m.statusNoCache")
+                : Locale.T("l2m.statusIncomplete");
+
+            row.StatusEnabled = status;
+            row.StatusDisabled = status;
             row.Status = row.Enabled ? row.StatusEnabled : row.StatusDisabled;
         }
 

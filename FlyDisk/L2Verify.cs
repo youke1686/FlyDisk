@@ -120,14 +120,14 @@ namespace FlyDisk.Engine
         /// <summary>只读探测容器头时最多读多少字节（头字段都在前 40 字节，其余为零）</summary>
         private const int ContainerHeaderPeekBytes = 4096;
 
-        private const uint CONTAINER_MAGIC = 0x44434453;   // "SDCD"
-        private const int CONTAINER_VERSION = 2;
-        private const int CONTAINER_HASH_LEN = 32;         // 头部校验和覆盖的字节数
+        private const uint CONTAINER_MAGIC = L2LedgerFormat.ContainerMagic;
+        private const int CONTAINER_VERSION = L2LedgerFormat.ContainerVersion;
+        private const int CONTAINER_HASH_LEN = L2LedgerFormat.ContainerHashLen;
 
-        private const uint INDEX_MAGIC = 0x31434453;       // "SDC1"
-        private const int INDEX_VERSION = 3;               // 3：L2 删掉 S 环（正文只写 M 环，头部 sLimit/sCount 恒 0）
-        private const int INDEX_HEADER_SIZE = 96;
-        private const int INDEX_HEADER_HASH_OFFSET = 88;
+        private const uint INDEX_MAGIC = L2LedgerFormat.IndexMagic;
+        private const int INDEX_VERSION = L2LedgerFormat.IndexVersion;
+        private const int INDEX_HEADER_SIZE = L2LedgerFormat.IndexHeaderSize;
+        private const int INDEX_HEADER_HASH_OFFSET = L2LedgerFormat.IndexHeaderHashOffset;
         private const int RING_SLACK = 4;                  // 与 SsdCacheService 的环形缓冲余量一致
 
         private const string ContainerFileName = "cache.dat";
@@ -156,6 +156,7 @@ namespace FlyDisk.Engine
 
         private long _containerId;          // 容器头部当前的戳（进会话时会被轮换成新的，见 RotateStamp）
         private long _indexContainerId;     // 索引里记的戳（= 上次正常关服时的戳）：确认一致时要把它写回容器头
+        private byte[]? _indexHeaderBytes;  // 载入时的索引头原样（确认一致时只改状态位再写回）
         private long _deviceIdentity;       // 容器头里的设备身份（重写头部时要原样写回）
         private bool _stampRotated;         // 本次会话已把容器头戳轮换过（"进过校验窗口"的痕迹）
         private int _slotCount;
@@ -255,21 +256,19 @@ namespace FlyDisk.Engine
             if (_container.Length < CONTAINER_HASH_LEN + 8)
                 throw new InvalidOperationException(Locale.T("l2v.err.containerLength", _container.Length, CONTAINER_HASH_LEN + 8));
 
-            int headerBytes = (int)Math.Min(ContainerHeaderPeekBytes, _container.Length);
+            int headerBytes = (int)Math.Min(L2LedgerFormat.ContainerHeaderPeekBytes, _container.Length);
             byte[] header = new byte[headerBytes];
             _container.ReadExactly(header, 0, headerBytes);
 
-            if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
-                BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
-                BitConverter.ToInt32(header, 4) != CONTAINER_VERSION)
+            if (!L2ContainerHeader.TryRead(header, out L2ContainerHeader containerHeader))
             {
                 throw new InvalidOperationException(Locale.T("l2v.err.containerHeaderBad"));
             }
 
-            _containerId = BitConverter.ToInt64(header, 8);
-            _slotCount = BitConverter.ToInt32(header, 16);
-            int blockSize = BitConverter.ToInt32(header, 20);
-            long deviceIdentity = BitConverter.ToInt64(header, 24);
+            _containerId = containerHeader.ContainerId;
+            _slotCount = containerHeader.SlotCount;
+            int blockSize = containerHeader.BlockSize;
+            long deviceIdentity = containerHeader.DeviceIdentity;
             _deviceIdentity = deviceIdentity;
 
             if (blockSize != _blockSize || _slotCount <= 0)
@@ -299,17 +298,13 @@ namespace FlyDisk.Engine
         private void WriteContainerHeader(long containerId)
         {
             byte[] header = new byte[_blockSize];
-            using (var ms = new MemoryStream(header))
-            using (var w = new BinaryWriter(ms))
+            new L2ContainerHeader
             {
-                w.Write(CONTAINER_MAGIC);
-                w.Write(CONTAINER_VERSION);
-                w.Write(containerId);
-                w.Write(_slotCount);
-                w.Write(_blockSize);
-                w.Write(_deviceIdentity);
-                w.Write(Hash(header, 0, CONTAINER_HASH_LEN));
-            }
+                ContainerId = containerId,
+                SlotCount = _slotCount,
+                BlockSize = _blockSize,
+                DeviceIdentity = _deviceIdentity
+            }.Write(header);
 
             _container!.Position = 0;
             _container.Write(header, 0, _blockSize);
@@ -336,8 +331,35 @@ namespace FlyDisk.Engine
             if (_container == null || !_stampRotated) return;
 
             WriteContainerHeader(_indexContainerId);
+            WriteIndexClean();
             _stampRotated = false;
             LogService.DebugFile($"L2 校验：账本已确认与源盘一致，容器身份戳已写回 0x{_indexContainerId:X16}");
+        }
+
+        /// <summary>校验干净：把索引头状态写回 Clean，并清掉旧的源盘写入基线（下一次干净停止再写）。</summary>
+        private void WriteIndexClean()
+        {
+            if (_indexHeaderBytes == null) return;
+            try
+            {
+                if (!L2IndexHeader.TryRead(_indexHeaderBytes, out L2IndexHeader header)) return;
+                header.State = L2LedgerState.Clean;
+                header.ContainerId = _indexContainerId;
+                header.Source = L2SourceState.Unknown;
+
+                byte[] updated = header.ToBytes();
+                string indexPath = Path.Combine(_dir, IndexFileName);
+                using var fs = new FileStream(indexPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
+                    bufferSize: 1, FileOptions.RandomAccess);
+                fs.Position = 0;
+                fs.Write(updated, 0, updated.Length);
+                fs.Flush(true);
+            }
+            catch (Exception ex)
+            {
+                // 校验本身已经成功；写不回 Clean 只会让下次启动再问一次，不影响数据
+                LogService.DebugFile($"L2 校验：写回账本状态失败（下次启动会再要求校验）：{ex.Message}");
+            }
         }
 
         /// <summary>
@@ -407,53 +429,44 @@ namespace FlyDisk.Engine
             byte[] header = new byte[INDEX_HEADER_SIZE];
             fs.ReadExactly(header, 0, INDEX_HEADER_SIZE);
 
-            uint magic = BitConverter.ToUInt32(header, 0);
-            int version = BitConverter.ToInt32(header, 4);
-            int blockSize = BitConverter.ToInt32(header, 8);
-            int slotCount = BitConverter.ToInt32(header, 12);
-            int sLimit = BitConverter.ToInt32(header, 16);
-            int mLimit = BitConverter.ToInt32(header, 20);
-            int ghostLimit = BitConverter.ToInt32(header, 24);
-            int usedSlots = BitConverter.ToInt32(header, 28);
-            int sCount = BitConverter.ToInt32(header, 32);
-            int mCount = BitConverter.ToInt32(header, 36);
-            int ghostCount = BitConverter.ToInt32(header, 40);
-            long generation = BitConverter.ToInt64(header, 44);
-            long containerId = BitConverter.ToInt64(header, 52);
-
-            if (magic != INDEX_MAGIC || version != INDEX_VERSION || blockSize != _blockSize)
+            if (BitConverter.ToUInt32(header, 0) != INDEX_MAGIC ||
+                BitConverter.ToInt32(header, 4) != INDEX_VERSION)
                 throw new InvalidOperationException(Locale.T("l2v.err.indexHeaderBad"));
-            if (Hash(header, 0, INDEX_HEADER_HASH_OFFSET) != BitConverter.ToUInt64(header, INDEX_HEADER_HASH_OFFSET))
+
+            if (!L2IndexHeader.TryRead(header, out L2IndexHeader parsed))
                 throw new InvalidOperationException(Locale.T("l2v.err.indexHeaderHash"));
+
+            int blockSize = parsed.BlockSize;
+            int slotCount = parsed.SlotCount;
+            int mCount = parsed.MCount;
+            int ghostCount = parsed.GhostCount;
+            long generation = parsed.Generation;
+            long containerId = parsed.ContainerId;
+
+            if (blockSize != _blockSize)
+                throw new InvalidOperationException(Locale.T("l2v.err.indexHeaderBad"));
             // 容器与索引记的槽数**可以不同**：中途缩放过、且那次没正常关服时，容器头已按新容量重写、
             // 而索引还是更早那次的快照。索引里的槽号必然 < 索引的槽数，所以**只要不超过容器记的槽数**
-            // 就仍然全在容器范围内、照样可校验（与主装载的缩放口径一致）；
-            // 真超过才说明容器被换过/被截断，拒绝。
+            // 就仍然全在容器范围内、照样可校验（与主装载的缩放口径一致）；真超过才说明容器被换过/被截断，拒绝。
             if (slotCount <= 0 || slotCount > _slotCount)
                 throw new InvalidOperationException(Locale.T("l2v.err.indexSlotCount", slotCount, _slotCount));
 
             // 身份戳：索引里记的是"上次正常关服那一刻"的戳，容器头是"上次开机时轮换的"戳。
-            // 两者不符 = **上次没有正常关服**（掉电/强杀/崩溃）：索引还是上上次的快照，而容器已被上次运行改过。
-            // 这**不代表账本没救**——索引本身结构自洽（上面那几条都过了），逐块比对会把所有错乱的槽
-            // （包括"索引指向的槽已被复用给别的块"）用源盘数据修回正确内容，映射随之重新正确。
-            // 所以这里只记录、不拒绝；本次校验干净时由 ConfirmLedger 把戳写回来自洽。
+            // 两者不符 = **上次没有正常关服**；本次校验干净时由 ConfirmLedger 把状态写回 Clean。
             _indexContainerId = containerId;
+            _indexHeaderBytes = header;
             if (containerId != _containerId)
             {
                 LogService.DebugFile(
                     $"L2 校验：索引的身份戳 0x{containerId:X16} 与容器头的 0x{_containerId:X16} 不符（上次未正常关服）" +
-                    "⇒ 按“可校验恢复”处理：逐块比对修复内容，校验干净则把戳写回索引里的值。");
+                    "⇒ 按“可校验恢复”处理：逐块比对修复内容，校验干净则把状态写回 Clean。");
             }
-            // v3 起 S 环已删除：头部 sLimit/sCount 恒 0
-            if (sLimit != 0 || sCount != 0 || mLimit < 0 || mCount < 0 || mCount > mLimit + RING_SLACK)
-                throw new InvalidOperationException(Locale.T("l2v.err.indexRing", sLimit, sCount, mCount, mLimit));
-            if (ghostLimit < 0 || ghostCount < 0 || ghostCount > Math.Max(1, ghostLimit))
-                throw new InvalidOperationException(Locale.T("l2v.err.indexGhost", ghostCount, ghostLimit));
-            if (usedSlots != sCount + mCount)
-                throw new InvalidOperationException(Locale.T("l2v.err.indexUsedSlots", usedSlots, sCount + mCount));
-            if (usedSlots < 0 || usedSlots > _slotCount)
-                throw new InvalidOperationException(Locale.T("l2v.err.indexUsedSlotsRange", usedSlots, _slotCount));
+            if (mCount < 0 || mCount > slotCount)
+                throw new InvalidOperationException(Locale.T("l2v.err.indexRingV4", mCount, slotCount));
+            if (ghostCount < 0 || ghostCount > (long)slotCount * 4)
+                throw new InvalidOperationException(Locale.T("l2v.err.indexGhost", ghostCount, slotCount * 4));
 
+            int usedSlots = mCount;
             _occupied = usedSlots;
             _generation = generation;
 
@@ -469,7 +482,7 @@ namespace FlyDisk.Engine
                 using (var br = new BinaryReader(body, Encoding.UTF8, leaveOpen: true))
                 {
                     // M 环的条目依次登记即可：这里只需要"块号 ↔ 槽号"这张表
-                    for (int i = 0; i < sCount + mCount; i++)
+                    for (int i = 0; i < mCount; i++)
                     {
                         int slot = br.ReadInt32();
                         long block = br.ReadInt64();
@@ -834,14 +847,12 @@ namespace FlyDisk.Engine
                     fs.ReadExactly(header, 0, headerBytes);
                 }
 
-                if (Hash(header, 0, CONTAINER_HASH_LEN) != BitConverter.ToUInt64(header, CONTAINER_HASH_LEN) ||
-                    BitConverter.ToUInt32(header, 0) != CONTAINER_MAGIC ||
-                    BitConverter.ToInt32(header, 4) != CONTAINER_VERSION)
+                if (!L2ContainerHeader.TryRead(header, out L2ContainerHeader containerHeader))
                 {
                     return null;
                 }
 
-                return BitConverter.ToInt64(header, 24);
+                return containerHeader.DeviceIdentity;
             }
             catch
             {
@@ -862,17 +873,6 @@ namespace FlyDisk.Engine
                 h = (h ^ c) * 1099511628211UL;
             }
             return unchecked((long)h);
-        }
-
-        private static ulong Hash(byte[] data, int offset, int count)
-        {
-            ulong h = 14695981039346656037UL;
-            for (int i = 0; i < count; i++)
-            {
-                h ^= data[offset + i];
-                h *= 1099511628211UL;
-            }
-            return h;
         }
 
         /// <summary>把读出的字节流增量喂给 FNV-1a（账本正文校验和的算法，与 SsdCacheService 一致）</summary>
